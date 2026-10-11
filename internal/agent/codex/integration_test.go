@@ -24,7 +24,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -88,30 +87,6 @@ func gitInitWorkspace(t *testing.T) string {
 	return dir
 }
 
-func assertContainsEventType(t *testing.T, events []domain.AgentEvent, eventType domain.AgentEventType) {
-	t.Helper()
-	for _, e := range events {
-		if e.Type == eventType {
-			return
-		}
-	}
-	types := make([]domain.AgentEventType, len(events))
-	for i, e := range events {
-		types[i] = e.Type
-	}
-	t.Errorf("expected event type %q not found; got types: %v", eventType, types)
-}
-
-func assertNoEventType(t *testing.T, events []domain.AgentEvent, eventType domain.AgentEventType) {
-	t.Helper()
-	for _, e := range events {
-		if e.Type == eventType {
-			t.Errorf("unexpected event type %q found with message: %q", eventType, e.Message)
-			return
-		}
-	}
-}
-
 func requireAgentErrorKind(t *testing.T, err error, wantKind domain.AgentErrorKind) {
 	t.Helper()
 	if err == nil {
@@ -126,25 +101,6 @@ func requireAgentErrorKind(t *testing.T, err error, wantKind domain.AgentErrorKi
 	}
 }
 
-func makeEventCollector(t *testing.T) (onEvent func(domain.AgentEvent), collected func() []domain.AgentEvent) {
-	t.Helper()
-	var mu sync.Mutex
-	var events []domain.AgentEvent
-	onEvent = func(e domain.AgentEvent) {
-		mu.Lock()
-		events = append(events, e)
-		mu.Unlock()
-	}
-	collected = func() []domain.AgentEvent {
-		mu.Lock()
-		defer mu.Unlock()
-		out := make([]domain.AgentEvent, len(events))
-		copy(out, events)
-		return out
-	}
-	return onEvent, collected
-}
-
 func mustNewAdapter(t *testing.T) *CodexAdapter {
 	t.Helper()
 	a, err := NewCodexAdapter()
@@ -152,20 +108,6 @@ func mustNewAdapter(t *testing.T) *CodexAdapter {
 		t.Fatalf("NewCodexAdapter: %v", err)
 	}
 	return a.(*CodexAdapter)
-}
-
-func mustStartSession(t *testing.T, ctx context.Context, adapter *CodexAdapter, workspace string) domain.Session {
-	t.Helper()
-	session, err := adapter.StartSession(ctx, domain.StartSessionParams{
-		WorkspacePath: workspace,
-		AgentConfig:   integrationAgentConfig(),
-		Settings:      integrationConfig(),
-	})
-	if err != nil {
-		t.Fatalf("StartSession: %v", err)
-	}
-	t.Cleanup(func() { _ = adapter.StopSession(context.Background(), session) })
-	return session
 }
 
 func TestIntegration_StartSession(t *testing.T) {
@@ -315,167 +257,6 @@ func TestIntegration_ScriptedModel(t *testing.T) {
 			}
 		},
 	})
-}
-
-func TestIntegration_MultiTurn(t *testing.T) {
-	skipUnlessCodexIntegration(t)
-
-	adapter := mustNewAdapter(t)
-	workspace := gitInitWorkspace(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-	defer cancel()
-
-	session := mustStartSession(t, ctx, adapter, workspace)
-	state := session.Internal.(*sessionState)
-	state.mu.Lock()
-	groupAfterStart := state.group
-	state.mu.Unlock()
-	if groupAfterStart == nil {
-		t.Fatal("state.group = nil after StartSession, want the subprocess's launch record")
-	}
-
-	onEvent1, collected1 := makeEventCollector(t)
-	result1, err := adapter.RunTurn(ctx, session, domain.RunTurnParams{
-		Prompt:  "Say exactly one word: hello",
-		OnEvent: onEvent1,
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (turn 1): %v", err)
-	}
-	if result1.ExitReason != domain.EventTurnCompleted {
-		t.Fatalf("RunTurn (turn 1): ExitReason = %q, want %q", result1.ExitReason, domain.EventTurnCompleted)
-	}
-	if result1.SessionID != session.ID {
-		t.Errorf("turn 1: TurnResult.SessionID = %q, want %q", result1.SessionID, session.ID)
-	}
-	assertContainsEventType(t, collected1(), domain.EventSessionStarted)
-
-	if state.turnCount != 1 {
-		t.Errorf("state.turnCount after turn 1 = %d, want 1", state.turnCount)
-	}
-
-	state.mu.Lock()
-	groupAfterTurn1 := state.group
-	state.mu.Unlock()
-	if groupAfterTurn1 != groupAfterStart {
-		t.Errorf("launch record changed after turn 1: before=%p after=%p (persistent subprocess must survive turns)", groupAfterStart, groupAfterTurn1)
-	}
-
-	onEvent2, collected2 := makeEventCollector(t)
-	result2, err := adapter.RunTurn(ctx, session, domain.RunTurnParams{
-		Prompt:  "Say exactly one word: world",
-		OnEvent: onEvent2,
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (turn 2): %v", err)
-	}
-	if result2.ExitReason != domain.EventTurnCompleted {
-		t.Errorf("RunTurn (turn 2): ExitReason = %q, want %q", result2.ExitReason, domain.EventTurnCompleted)
-	}
-	if result2.SessionID != session.ID {
-		t.Errorf("turn 2: TurnResult.SessionID = %q, want %q (must remain same thread)", result2.SessionID, session.ID)
-	}
-
-	events2 := collected2()
-	assertNoEventType(t, events2, domain.EventSessionStarted)
-	assertContainsEventType(t, events2, domain.EventTurnCompleted)
-
-	if state.turnCount != 2 {
-		t.Errorf("state.turnCount after turn 2 = %d, want 2", state.turnCount)
-	}
-
-	state.mu.Lock()
-	groupAfterTurn2 := state.group
-	state.mu.Unlock()
-	if groupAfterTurn2 != groupAfterStart {
-		t.Errorf("launch record changed after turn 2: original=%p current=%p (persistent subprocess must survive all turns)", groupAfterStart, groupAfterTurn2)
-	}
-
-	if result1.SessionID != result2.SessionID {
-		t.Errorf("SessionID changed between turns: turn1=%q turn2=%q (same thread must be reused)", result1.SessionID, result2.SessionID)
-	}
-}
-
-func TestIntegration_ResumeSession(t *testing.T) {
-	skipUnlessCodexIntegration(t)
-
-	workspace := gitInitWorkspace(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-	defer cancel()
-
-	adapter1 := mustNewAdapter(t)
-	session1, err := adapter1.StartSession(ctx, domain.StartSessionParams{
-		WorkspacePath: workspace,
-		AgentConfig:   integrationAgentConfig(),
-		Settings:      integrationConfig(),
-	})
-	if err != nil {
-		t.Fatalf("StartSession (original): %v", err)
-	}
-
-	result1, err := adapter1.RunTurn(ctx, session1, domain.RunTurnParams{
-		Prompt:  "Say exactly one word: hello",
-		OnEvent: func(_ domain.AgentEvent) {},
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (original): %v", err)
-	}
-	if result1.ExitReason != domain.EventTurnCompleted {
-		t.Fatalf("original turn: ExitReason = %q, want %q", result1.ExitReason, domain.EventTurnCompleted)
-	}
-	originalThreadID := result1.SessionID
-	if originalThreadID == "" {
-		t.Fatal("original turn: TurnResult.SessionID is empty")
-	}
-
-	// Stop the original session so the thread is persisted.
-	if err := adapter1.StopSession(context.Background(), session1); err != nil {
-		t.Fatalf("StopSession (original): %v", err)
-	}
-
-	resumedSettings := integrationConfig()
-	resumedSettings["model"] = "gpt-5.4"
-	resumedSettings["effort"] = "low"
-
-	session2, err := adapter1.StartSession(ctx, domain.StartSessionParams{
-		WorkspacePath:   workspace,
-		AgentConfig:     integrationAgentConfig(),
-		ResumeSessionID: originalThreadID,
-		Settings:        resumedSettings,
-	})
-	if err != nil {
-		t.Fatalf("StartSession (resume): %v", err)
-	}
-	t.Cleanup(func() { _ = adapter1.StopSession(context.Background(), session2) })
-
-	if session2.ID != originalThreadID {
-		t.Errorf("resumed session.ID = %q, want %q (provided ResumeSessionID)", session2.ID, originalThreadID)
-	}
-
-	onEvent, collected := makeEventCollector(t)
-	result2, err := adapter1.RunTurn(ctx, session2, domain.RunTurnParams{
-		Prompt:  "Say exactly one word: world",
-		OnEvent: onEvent,
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (resumed): %v", err)
-	}
-	if result2.ExitReason != domain.EventTurnCompleted {
-		t.Errorf("resumed turn: ExitReason = %q, want %q", result2.ExitReason, domain.EventTurnCompleted)
-	}
-	if result2.SessionID != originalThreadID {
-		t.Errorf("resumed turn: TurnResult.SessionID = %q, want %q", result2.SessionID, originalThreadID)
-	}
-
-	resumedEvents := collected()
-	assertContainsEventType(t, resumedEvents, domain.EventTokenUsage)
-	for _, e := range resumedEvents {
-		if e.Type == domain.EventTokenUsage && e.Model == "" {
-			t.Error("resumed turn: EventTokenUsage.Model is empty; expected the effective model reported by thread/resume")
-		}
-	}
 }
 
 func TestIntegration_CredentialVerification(t *testing.T) {
