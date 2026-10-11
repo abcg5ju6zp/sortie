@@ -255,14 +255,7 @@ jobs:
 
       - name: Enable Codex sandbox namespaces
         if: matrix.adapter == 'codex'
-        run: |
-          # Bubblewrap needs user namespaces on the disposable Ubuntu runner.
-          if [ -f /proc/sys/kernel/unprivileged_userns_clone ]; then
-            sudo sysctl -w kernel.unprivileged_userns_clone=1
-          fi
-          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
+        run: scripts/codex-sandbox-enable.sh
 
       - name: Run integration check
         id: check
