@@ -60,6 +60,10 @@ import (
 // exercise the shutdown-error path without a 5-second wait.
 var serverShutdownTimeout = 5 * time.Second
 
+// startupDone, when set, is called once startup has finished and the
+// orchestrator is about to run. Tests set it to stop [run] without a deadline.
+var startupDone func()
+
 // abandonCh is created by main before [run] is called, and the signal
 // goroutine closes it on a second interrupt so every in-flight shutdown
 // wait ends at once. Every path through main gets a live channel,
@@ -923,6 +927,9 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		}()
 	}
 
+	if startupDone != nil {
+		startupDone()
+	}
 	o.Run(ctx)
 
 	if srv != nil {

@@ -89,7 +89,7 @@ func TestRunDatabaseCreatedNextToWorkflow(t *testing.T) {
 	wfPath := writeWorkflowFile(t, workflowDir)
 
 	var stdout, stderr bytes.Buffer
-	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted(t, []string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -129,7 +129,7 @@ Do {{ .issue.title }}.
 	}
 
 	var stdout, stderr bytes.Buffer
-	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted(t, []string{wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (preflight should fail); stderr: %s", code, stderr.String())
 	}
@@ -230,7 +230,7 @@ func TestRunDatabaseCustomPath(t *testing.T) {
 	wfPath := writeWorkflowFileWithDBPath(t, workflowDir, dbFile)
 
 	var stdout, stderr bytes.Buffer
-	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted(t, []string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -262,7 +262,7 @@ func TestRunDatabaseRelativePath(t *testing.T) {
 	wfPath := writeWorkflowFileWithDBPath(t, workflowDir, "data/my.db")
 
 	var stdout, stderr bytes.Buffer
-	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted(t, []string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}

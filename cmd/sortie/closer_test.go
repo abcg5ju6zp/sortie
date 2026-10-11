@@ -187,7 +187,7 @@ func TestRunAdapterCloseNotCalledForNonClosers(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted(t, []string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("run() = %d, want 0; stderr: %s", code, stderr.String())
 	}
