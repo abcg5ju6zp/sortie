@@ -20,10 +20,10 @@ func fixture(name string) string {
 
 func newAdapter(t *testing.T, path string, activeStates []any) *FileAdapter {
 	t.Helper()
-	config := map[string]any{"path": path}
-	if activeStates != nil {
-		config["active_states"] = activeStates
+	if activeStates == nil {
+		activeStates = []any{"to do", "in progress", "done", "open"}
 	}
+	config := map[string]any{"path": path, "active_states": activeStates}
 	a, err := NewFileAdapter(config)
 	if err != nil {
 		t.Fatalf("NewFileAdapter: %v", err)
@@ -134,28 +134,6 @@ func TestNewFileAdapter_TypeFaultVsAbsentKey(t *testing.T) {
 	})
 }
 
-func TestNewFileAdapter_YAMLAnySliceExtraction(t *testing.T) {
-	t.Parallel()
-
-	// YAML decoders produce []any, not []string. Verify the constructor
-	// handles this without panic and lowercases state values.
-	config := map[string]any{
-		"path":          fixture("basic.json"),
-		"active_states": []any{"To Do", "In Progress"},
-	}
-	a, err := NewFileAdapter(config)
-	if err != nil {
-		t.Fatalf("NewFileAdapter: %v", err)
-	}
-	fa := a.(*FileAdapter)
-	if !fa.activeStates["to do"] {
-		t.Error("active_states missing 'to do'")
-	}
-	if !fa.activeStates["in progress"] {
-		t.Error("active_states missing 'in progress'")
-	}
-}
-
 func TestFetchCandidateIssues(t *testing.T) {
 	t.Parallel()
 
@@ -192,16 +170,16 @@ func TestFetchCandidateIssues(t *testing.T) {
 		adaptertest.AssertCandidateBlockerSource(t, registry.BlockersFromCandidates, proj1, 1)
 	})
 
-	t.Run("no active states returns all", func(t *testing.T) {
+	t.Run("no active states returns none", func(t *testing.T) {
 		t.Parallel()
 
-		a := newAdapter(t, fixture("basic.json"), nil)
+		a := newAdapter(t, fixture("basic.json"), []any{})
 		issues, err := a.FetchCandidateIssues(ctx)
 		if err != nil {
 			t.Fatalf("FetchCandidateIssues: %v", err)
 		}
-		if len(issues) != 3 {
-			t.Fatalf("got %d issues, want 3", len(issues))
+		if len(issues) != 0 {
+			t.Fatalf("got %d issues, want 0", len(issues))
 		}
 	})
 
@@ -750,7 +728,7 @@ func TestRegistryIntegration(t *testing.T) {
 		t.Fatalf("registry.Trackers.Get(\"file\"): %v", err)
 	}
 
-	adapter, err := ctor(map[string]any{"path": fixture("basic.json")})
+	adapter, err := ctor(map[string]any{"path": fixture("basic.json"), "active_states": []any{"To Do"}})
 	if err != nil {
 		t.Fatalf("constructor: %v", err)
 	}

@@ -20,6 +20,8 @@ var _ domain.TrackerAdapter = (*fakeTrackerAdapter)(nil)
 func (fakeTrackerAdapter) FetchCandidateIssues(context.Context) ([]domain.Issue, error) {
 	return nil, nil
 }
+
+func (fakeTrackerAdapter) SetTrackerStates(func() domain.TrackerStates) {}
 func (fakeTrackerAdapter) FetchIssueByID(context.Context, string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

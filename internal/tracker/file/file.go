@@ -41,8 +41,8 @@ var _ domain.TrackerAdapter = (*FileAdapter)(nil)
 // Overrides are not persisted to disk; they exist only for the
 // lifetime of the adapter instance. Safe for concurrent use.
 type FileAdapter struct {
-	path         string
-	activeStates map[string]bool
+	*issuekit.StateSource
+	path string
 
 	mu               sync.RWMutex
 	overrides        map[string]string           // issue ID -> overridden state
@@ -64,11 +64,11 @@ type labelOverride struct {
 //
 // Optional config keys:
 //   - "active_states" ([]any holding strings): states considered active
-//     for [FileAdapter.FetchCandidateIssues]. If empty, all issues are
-//     candidates.
+//     for [FileAdapter.FetchCandidateIssues]. If empty, no issue is a
+//     candidate.
 //
 // Returns a [*domain.TrackerError] with Kind [domain.ErrTrackerPayload]
-// if "path" is missing or empty.
+// if "path" is missing or empty, or if a state key holds a non-string.
 func NewFileAdapter(config map[string]any) (domain.TrackerAdapter, error) {
 	path, fault := typeutil.StringField(config, "path")
 	if fault != nil {
@@ -81,9 +81,14 @@ func NewFileAdapter(config map[string]any) (domain.TrackerAdapter, error) {
 		}
 	}
 
+	states, err := issuekit.TrackerStatesFromConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
 	return &FileAdapter{
+		StateSource:      issuekit.NewStateSource(states),
 		path:             path,
-		activeStates:     toStringSet(typeutil.ExtractStringSlice(config["active_states"])),
 		overrides:        make(map[string]string),
 		commentOverrides: make(map[string][]domain.Comment),
 		labelOverrides:   make(map[string][]labelOverride),
@@ -91,10 +96,14 @@ func NewFileAdapter(config map[string]any) (domain.TrackerAdapter, error) {
 }
 
 // FetchCandidateIssues returns issues whose state matches the
-// configured active states. Comments are set to nil on all returned
-// issues.
+// configured active states, ignoring letter case. Comments are set to
+// nil on all returned issues. An empty active list returns no issue.
 func (a *FileAdapter) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error) {
 	issues := make([]domain.Issue, 0)
+	active := toStringSet(a.TrackerStates().Active)
+	if len(active) == 0 {
+		return issues, nil
+	}
 	err := trackermetrics.Track(a.metrics, "fetch_candidates", func() error {
 		raws, err := loadIssues(a.path)
 		if err != nil {
@@ -107,7 +116,7 @@ func (a *FileAdapter) FetchCandidateIssues(_ context.Context) ([]domain.Issue, e
 		issues = make([]domain.Issue, 0, len(raws))
 		for _, raw := range raws {
 			raw = a.applyOverride(raw)
-			if len(a.activeStates) > 0 && !a.activeStates[strings.ToLower(raw.State)] {
+			if !active[strings.ToLower(raw.State)] {
 				continue
 			}
 			iss := normalize(raw)

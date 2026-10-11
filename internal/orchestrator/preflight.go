@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"cmp"
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -180,11 +179,13 @@ func ValidateDispatchConfig(params PreflightParams) PreflightResult {
 				}
 			}
 		}
+	}
 
-		// The config loader rules on the state lists as written. A list the
-		// tracker adapter fills from its own fallback needs the same rules
-		// run against the lists the run actually uses.
-		errs = append(errs, validateDefaultedTrackerStates(cfg.Tracker, trackerMeta)...)
+	if len(cfg.Tracker.ActiveStates) == 0 {
+		warns = append(warns, PreflightWarning{
+			Check:   "tracker.active_states.empty",
+			Message: "tracker.active_states is empty, so no issue is dispatched",
+		})
 	}
 
 	// Agent kind must be set for any subsequent agent validation.
@@ -291,7 +292,7 @@ func ValidateDispatchConfig(params PreflightParams) PreflightResult {
 		}
 	}
 
-	errs = append(errs, stageCollisions(cfg, trackerMeta)...)
+	errs = append(errs, stageCollisions(cfg)...)
 
 	// Workspace root must exist and be writable.
 	if cfg.Workspace.Root != "" {
@@ -373,7 +374,7 @@ type stageCollisionSource struct {
 // that equals its stage label, rules in list order and sources in the
 // order stageCollisionSources lists them. It reads configuration and
 // registry metadata only, so it runs without a tracker call.
-func stageCollisions(cfg config.ServiceConfig, trackerMeta registry.TrackerMeta) []PreflightError {
+func stageCollisions(cfg config.ServiceConfig) []PreflightError {
 	var sources []stageCollisionSource
 	var errs []PreflightError
 	for i, rule := range cfg.Dispatch.Rules {
@@ -381,7 +382,7 @@ func stageCollisions(cfg config.ServiceConfig, trackerMeta registry.TrackerMeta)
 			continue
 		}
 		if sources == nil {
-			sources = stageCollisionSources(cfg, trackerMeta)
+			sources = stageCollisionSources(cfg)
 		}
 		for _, source := range sources {
 			if !config.StageLabelsEqual(rule.Stage, source.value) {
@@ -399,14 +400,12 @@ func stageCollisions(cfg config.ServiceConfig, trackerMeta registry.TrackerMeta)
 }
 
 // stageCollisionSources lists every value a stage label must not equal:
-// the tracker states, then the labels Sortie applies to issues. A state
-// list the workflow leaves empty is replaced by the tracker adapter's
-// fallback list.
-func stageCollisionSources(cfg config.ServiceConfig, trackerMeta registry.TrackerMeta) []stageCollisionSource {
+// the tracker states as written, then the labels Sortie applies to issues.
+func stageCollisionSources(cfg config.ServiceConfig) []stageCollisionSource {
 	tc := cfg.Tracker
 	var sources []stageCollisionSource
-	sources = append(sources, stateListSources("active", "tracker.active_states", tc.ActiveStates, trackerMeta.DefaultActiveStates, tc.Kind)...)
-	sources = append(sources, stateListSources("terminal", "tracker.terminal_states", tc.TerminalStates, trackerMeta.DefaultTerminalStates, tc.Kind)...)
+	sources = append(sources, stateListSources("active", tc.ActiveStates)...)
+	sources = append(sources, stateListSources("terminal", tc.TerminalStates)...)
 	for _, named := range []struct{ key, value string }{
 		{"tracker.handoff_state", tc.HandoffState},
 		{"tracker.in_progress_state", tc.InProgressState},
@@ -434,18 +433,12 @@ func stageCollisionSources(cfg config.ServiceConfig, trackerMeta registry.Tracke
 	return append(sources, stageCollisionSource{value: parking, rendering: "the parking label " + strconv.Quote(parking)})
 }
 
-// stateListSources names each state of the written list, or of the
-// adapter's fallback list when the written list is empty. noun is
-// "active" or "terminal" and key the front-matter key of the list.
-func stateListSources(noun, key string, written, fallback []string, kind string) []stageCollisionSource {
-	states, suffix := written, ""
-	if len(written) == 0 {
-		states = fallback
-		suffix = ", which the " + strconv.Quote(kind) + " adapter falls back to because " + key + " is empty"
-	}
+// stateListSources names each state of a written list. noun is "active"
+// or "terminal".
+func stateListSources(noun string, states []string) []stageCollisionSource {
 	sources := make([]stageCollisionSource, len(states))
 	for i, state := range states {
-		sources[i] = stageCollisionSource{value: state, rendering: noun + " state " + strconv.Quote(state) + suffix}
+		sources[i] = stageCollisionSource{value: state, rendering: noun + " state " + strconv.Quote(state)}
 	}
 	return sources
 }
@@ -546,91 +539,6 @@ func missingBlockNotAMappingMessage(ref agentKindRef, found string) string {
 		", but the " + kind + " key in the workflow front matter holds " + found +
 		" where a block of settings was expected; write the kind's settings as keys under " + strconv.Quote(ref.Kind+":") +
 		", or write " + strconv.Quote(ref.Kind+": {}")
-}
-
-// validateDefaultedTrackerStates reports the state collisions that
-// become visible only after the tracker adapter's default state lists
-// fill an empty tracker.active_states or tracker.terminal_states.
-//
-// Both arguments are read-only. The result is nil when no list was
-// defaulted, when the defaulted list produces no collision, or when the
-// written lists already violate a rule, in which case the config loader
-// reports the fault under its own field key.
-func validateDefaultedTrackerStates(tc config.TrackerConfig, meta registry.TrackerMeta) []PreflightError {
-	activeDefaulted := len(tc.ActiveStates) == 0 && len(meta.DefaultActiveStates) > 0
-	terminalDefaulted := len(tc.TerminalStates) == 0 && len(meta.DefaultTerminalStates) > 0
-	if !activeDefaulted && !terminalDefaulted {
-		return nil
-	}
-
-	// A collision the written lists already carry has its own diagnostic from
-	// the config loader. Returning here keeps every diagnostic below
-	// attributable to one empty front-matter key.
-	if config.ValidateHandoffState(tc.HandoffState, tc.ActiveStates, tc.TerminalStates) != nil {
-		return nil
-	}
-	if config.ValidateInProgressState(tc.InProgressState, tc.ActiveStates, tc.TerminalStates, tc.HandoffState) != nil {
-		return nil
-	}
-
-	effectiveActive := tc.ActiveStates
-	if activeDefaulted {
-		effectiveActive = meta.DefaultActiveStates
-	}
-	effectiveTerminal := tc.TerminalStates
-	if terminalDefaulted {
-		effectiveTerminal = meta.DefaultTerminalStates
-	}
-
-	var errs []PreflightError
-
-	// The handoff rule runs once per list, each call passing the other list as
-	// nil, so a violation names the one list whose emptiness the fallback
-	// filled instead of leaving the operator to guess.
-	if activeDefaulted {
-		if err := config.ValidateHandoffState(tc.HandoffState, effectiveActive, nil); err != nil {
-			errs = append(errs, defaultedStateError("tracker.handoff_state", err, "tracker.active_states", tc.Kind))
-		}
-	}
-	if terminalDefaulted {
-		if err := config.ValidateHandoffState(tc.HandoffState, nil, effectiveTerminal); err != nil {
-			errs = append(errs, defaultedStateError("tracker.handoff_state", err, "tracker.terminal_states", tc.Kind))
-		}
-		// The guards above returned on any membership or handoff-equality
-		// violation, so the only rule left for this call is the terminal
-		// collision.
-		if err := config.ValidateInProgressState(tc.InProgressState, effectiveActive, effectiveTerminal, tc.HandoffState); err != nil {
-			errs = append(errs, defaultedStateError("tracker.in_progress_state", err, "tracker.terminal_states", tc.Kind))
-		}
-	}
-
-	return errs
-}
-
-// defaultedStateError builds the diagnostic for a collision that a
-// tracker adapter's fallback state list exposed, naming the empty
-// front-matter key and the tracker kind whose fallback filled it.
-//
-// The sentence before the semicolon is the config loader's own, so both
-// paths report the same collision in the same words. ConfigError.Error
-// is not used: its field prefix belongs to a config-load failure, not to
-// a preflight message.
-func defaultedStateError(check string, err error, emptyKey, kind string) PreflightError {
-	message := err.Error()
-	if cfgErr, ok := errors.AsType[*config.ConfigError](err); ok {
-		message = cfgErr.Message
-	}
-
-	stateNoun := "terminal"
-	if emptyKey == "tracker.active_states" {
-		stateNoun = "active"
-	}
-
-	return PreflightError{
-		Check: check,
-		Message: message + "; " + emptyKey + " is empty, so the " + strconv.Quote(kind) +
-			" adapter falls back to its own " + stateNoun + " states",
-	}
 }
 
 // checkWorkspaceRootWritable verifies that root exists (creating it

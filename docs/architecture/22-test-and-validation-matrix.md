@@ -36,6 +36,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Prompt template renders `issue`, `attempt`, and `run`
 - Prompt rendering fails on unknown variables (strict mode)
 - An `agent.command` that is an empty list, or holds a non-string element, an empty element, or a whitespace-only element zero, fails to load at startup, in `sortie validate` (check `config.agent.command` or `config.agent.command[<i>]`), and on reload, which keeps the previous configuration; a list of strings draws no `type_mismatch` warning
+- An empty `tracker.terminal_states` for a tracker kind that derives state from labels, and a blank entry in `tracker.active_states` or `tracker.terminal_states` for any kind, fail to load at startup, in `sortie validate` (check `config.tracker.terminal_states` or `config.tracker.active_states[<i>]`), and on reload, which keeps the previous configuration; an empty `tracker.active_states` loads and draws the `tracker.active_states.empty` warning
 - A workflow written for a retired kind loads converted: `agent.kind` and each rule's `agent` name the replacement kind, the retired kind's settings block is gone, the replacement kind's block is present, and one conversion record lists each converted reference in order
 - A workflow naming the replacement kind directly, with or without a leftover retired-kind block, is not converted, draws no `agent.kind.retired` advisory, and holds no conversion record
 - A kind registered as a live adapter is never converted, whatever the retired-kind registry holds: the workflow runs on the live kind unchanged, holds no conversion record, and draws only the deprecation advisory
@@ -76,6 +77,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 ### 17.3 Issue Tracker Client
 
 - Candidate issue fetch uses active states and project identifier
+- An empty active list returns no issue and sends no request on every tracker kind, and no adapter substitutes a built-in state list
+- On a tracker that derives state from labels, an open issue with no configured state label is not a candidate and is counted as skipped, a closed issue reads terminal whatever its labels, a terminal label outranks a handoff label, which outranks an active label, and a state list changed by a reload applies to the next operation, a cached `304 Not Modified` response included
+- On a tracker that derives state from labels, `transition_issue` adds the target label before any removal, closes last for a terminal target, refuses a handoff target on a closed issue with nothing written, writes only the target label and labels naming configured states, leaves labels of exactly one configured state on success, and leaves the start state or the target when any step fails; on GitLab the native status change is a request of its own
 - Adapter contract tests cover: normalized field mapping, pagination order, error categories
 - Each tracker adapter ships its own integration test suite
 - Empty `fetch_issues_by_states([])` returns empty without API call
@@ -101,7 +105,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - An issue whose blockers could not be resolved is not eligible either
 - Issue with terminal blockers is eligible
 - Active-state issue refresh updates running entry state
-- Non-active state stops running agent without workspace cleanup
+- A named non-active state stops running agent without workspace cleanup
+- A reading of no state keeps the running agent and changes no snapshot or retry on its first consecutive reading and stops it without workspace cleanup on the second, a reading in a configured state between the two clears the first, and a run that ends before the second reading takes the exit disposition of its last configured state
+- Retry handling reschedules an issue that reads no state at the same attempt, keeping its session, continuation context, and reaction kind, releases the claim and deletes the retry entry on the second consecutive reading, and never resets the issue's hop record
+- An empty per-turn state refresh does not end the turn loop and leaves the last state read as the exit's observed state
 - Terminal state stops running agent and cleans workspace
 - Reconciliation with no running issues is a no-op
 - An issue reported terminal releases its pending reaction entries, reaction attempt counters, pending retry, and claim, whether or not it has a running worker, leaving fingerprint rows intact
@@ -115,9 +122,9 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - A hop count at the ceiling sends no label add, records the target rule and `ceiling` on the run's row, publishes `stage.not_advanced` with reason `ceiling` and the unchanged count before the handoff write, takes the handoff write, and logs the count, the ceiling, and the chain path; the write's success ends the hop count
 - A failed removal of a source stage label after a successful add keeps the hop (record written, claim released), records `partial` on the run's row, publishes `stage.advanced`, logs the labels left, and the next dispatch selects the target through the hop route
 - A made hop cancels every pending reaction kind and a queued retry incumbent and seeds none; the test fails under a build that skips the release or the seeding gate, shown by mutated copies of the code run against it
-- After a hop, a listing without the target label dispatches nothing before a direct read; a read showing the label dispatches the target; a read showing neither releases the hold and routes by the read's labels; a failed read holds the issue for that tick; a terminal or non-active read ends the hop count; the hold survives a restart
-- Each reset trigger (handoff write, terminal exit, non-active exit, park, unpark, reconciliation of a terminal or non-active issue, retry handling of a terminal or non-active issue, the hold's direct read) deletes the hop record and logs the reset; a stage label moved while the issue stays active does not reset, and a cycle built by moving labels stops at the ceiling, also across a restart
-- Reconciliation reads every issue that holds a hop record, whether or not it runs, and a record whose issue is missing from the response is kept
+- After a hop, a listing without the target label dispatches nothing before a direct read; a read showing the label dispatches the target; a read showing neither releases the hold and routes by the read's labels; a failed read holds the issue for that tick; a read showing no state holds the issue for that tick and leaves the record; a terminal or named non-active read ends the hop count; the hold survives a restart
+- Each reset trigger (handoff write, terminal exit, non-active exit, park, unpark, reconciliation of a terminal or non-active issue, retry handling of a terminal or non-active issue, the hold's direct read) deletes the hop record and logs the reset; a no-state reading resets the record only on its second consecutive reading by reconciliation, and never through retry handling or the hold's direct read; a stage label moved while the issue stays active does not reset, and a cycle built by moving labels stops at the ceiling, also across a restart
+- Reconciliation reads every issue that holds a hop record, whether or not it runs, and a record whose issue is missing from the response is kept with its no-state flag unchanged
 - Two hop writes from one source dispatch count once; the record write deletes the issue's retry row in the same transaction and leaves other issues' rows; a hop record, a retry row, and a run-history row round-trip their stage fields and chain identifier across a restart; a result update lands on the row of the given id only, and a missing id is a no-op
 - Routing: of several staged candidates on one chain the most downstream is selected, of candidates on separate chains the lowest list index among the most downstream, the hop target is selected ahead of a downstream leftover label, and with no `next` anywhere selection equals list order
 - A retry that keeps its frozen rule, a persisted retry after a restart, a reaction continuation, and a pending reaction recovered at startup render the frozen `stage.previous` pair; a retry routed afresh renders as a poll tick; every site that copies the rule name onto a retry, reaction, or persisted row copies the pair and the chain identifier too

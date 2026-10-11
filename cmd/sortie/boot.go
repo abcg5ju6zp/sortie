@@ -34,7 +34,8 @@ const (
 // be constructed is rejected and the previous configuration stays in
 // force.
 var workflowValidate workflow.ValidateFunc = func(cfg config.ServiceConfig) error {
-	if err := orchestrator.ValidateConfigForPromotion(cfg); err != nil {
+	trackerMeta, _ := registry.Trackers.Meta(cfg.Tracker.Kind)
+	if err := orchestrator.ValidateConfigForPromotion(cfg, trackerMeta); err != nil {
 		return err
 	}
 	return route.CheckDestinations(cfg.Notifications.Backends, registry.Notifiers.Get)
@@ -268,6 +269,15 @@ func boot(ctx context.Context, p bootParams) (bootResult, int) {
 		logger.Error("failed to construct tracker adapter", slog.Any("error", err))
 		return bootResult{}, 1
 	}
+	trackerAdapter.SetTrackerStates(func() domain.TrackerStates {
+		tracker := mgr.Config().Tracker
+		return domain.TrackerStates{
+			Active:     tracker.ActiveStates,
+			Terminal:   tracker.TerminalStates,
+			Handoff:    tracker.HandoffState,
+			InProgress: tracker.InProgressState,
+		}
+	})
 
 	trackerMeta, _ := registry.Trackers.Meta(cfg.Tracker.Kind)
 	resolver := blockers.NewResolver(trackerAdapter, trackerMeta.BlockerSource, logger)

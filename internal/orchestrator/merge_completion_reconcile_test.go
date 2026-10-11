@@ -69,6 +69,8 @@ func (f *mgcTrackerFake) FetchIssuesByStates(context.Context, []string) ([]domai
 func (f *mgcTrackerFake) FetchCandidateIssues(context.Context) ([]domain.Issue, error) {
 	return nil, nil
 }
+
+func (f *mgcTrackerFake) SetTrackerStates(func() domain.TrackerStates) {}
 func (f *mgcTrackerFake) FetchIssueByID(context.Context, string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

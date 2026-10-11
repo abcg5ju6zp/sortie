@@ -682,9 +682,8 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		}
 
 		if mergeCompletionActive {
-			trackerMeta, _ := registry.Trackers.Meta(br.cfg.Tracker.Kind)
 			var mcErr error
-			mergeCompletionConfig, mcErr = orchestrator.BuildMergeCompletionReactionConfig(mergeCompletionRC, br.cfg.Tracker, trackerMeta)
+			mergeCompletionConfig, mcErr = orchestrator.BuildMergeCompletionReactionConfig(mergeCompletionRC, br.cfg.Tracker)
 			if mcErr != nil {
 				br.logger.Error("invalid merge_completion reaction config", slog.Any("error", mcErr))
 				return 1

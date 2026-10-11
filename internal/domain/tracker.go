@@ -5,6 +5,22 @@ import (
 	"errors"
 )
 
+// TrackerStates is the workflow's state vocabulary as written in front
+// matter, with no default applied and no entry normalized.
+type TrackerStates struct {
+	// Active is tracker.active_states.
+	Active []string
+
+	// Terminal is tracker.terminal_states.
+	Terminal []string
+
+	// Handoff is tracker.handoff_state.
+	Handoff string
+
+	// InProgress is tracker.in_progress_state.
+	InProgress string
+}
+
 // TrackerAdapter defines the contract that all issue tracker
 // integrations must satisfy.
 //
@@ -13,7 +29,8 @@ import (
 // poll loop and reconciliation goroutine.
 type TrackerAdapter interface {
 	// FetchCandidateIssues returns issues in configured active states
-	// for the configured project.
+	// for the configured project. An empty active list returns no issue
+	// and sends no request.
 	//
 	// Results are normalized to [Issue]. The Comments field may be nil
 	// (not fetched) to reduce API cost; callers requiring comments must
@@ -47,7 +64,8 @@ type TrackerAdapter interface {
 	//
 	// The returned map is keyed by issue ID with the value being the
 	// current state name. Issues not found in the tracker are omitted
-	// from the map (not an error). Used for active-run reconciliation.
+	// from the map (not an error). An empty state means the issue reads no
+	// configured state. Used for active-run reconciliation.
 	FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) (map[string]string, error)
 
 	// FetchIssueStatesByIdentifiers returns the current state for each
@@ -167,6 +185,12 @@ type TrackerAdapter interface {
 	// When ctx is canceled or its deadline is exceeded, implementations
 	// may return ctx.Err() directly.
 	RemoveLabel(ctx context.Context, issueID string, label string) error
+
+	// SetTrackerStates installs the function the adapter calls at the start
+	// of each operation that reads the workflow's state lists; until then
+	// the adapter uses the lists it was constructed with. Safe for
+	// concurrent use.
+	SetTrackerStates(current func() TrackerStates)
 }
 
 // BlockerReader is the optional capability a tracker adapter

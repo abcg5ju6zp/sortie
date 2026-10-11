@@ -24,7 +24,7 @@ One consequence: the pull request payload under the current pin carries no merge
 
 ## Where GitHub's model does not match ours
 
-**No workflow states.** A GitHub issue is open or closed. The adapter derives workflow state from repository labels and couples that to the native flag: a terminal target closes the issue, an active target on a closed issue reopens it. Native open with no state label reads as the first configured active state, native closed with no terminal label as the first terminal state. This is the same convention the Gitea adapter uses, deliberately, so operator configuration is uniform across the open/closed trackers.
+**No workflow states.** A GitHub issue is open or closed. The adapter derives workflow state from repository labels and couples that to the native flag: a terminal target closes the issue, an active target on a closed issue reopens it. An open issue with no state label is in no state and is never dispatched: labeling an issue is how an operator hands it to Sortie. A closed issue reads terminal whatever its labels, as the terminal label it carries or else as the first configured terminal state, so a workflow names at least one terminal state. This is the same convention the Gitea adapter uses, deliberately, so operator configuration is uniform across the open/closed trackers.
 
 **The adapter creates no labels.** The repository is expected to carry the state labels before Sortie starts. Creating them would need broader permissions and would write into a namespace the repository's own conventions own. This is the opposite of the Gitea adapter's choice, and the difference is not arbitrary: GitHub's label-add route fails loudly on a name it will not accept, so an operator sees the failure. Gitea's does not, which is why that adapter creates on demand instead.
 
@@ -132,7 +132,7 @@ The primary hourly budget, the search per-minute budget, and the GraphQL budget 
 
 - Candidate polling stays off the search route unless an operator filter requires it, because search draws on the smaller budget.
 - The two GraphQL reads are each gated: the review decision is one call per read, and the merge commit is one call only for a pull request already known to be merged.
-- The per-issue state reads used by reconciliation go through a bounded, per-path ETag cache. A not-modified response reuses the previously derived state without re-deriving it, and does not charge the primary budget. This matters precisely because reconciliation polls the same issues over and over. The cache size is an operator-tunable extension key, and zero disables conditional requests entirely.
+- The per-issue state reads used by reconciliation go through a bounded, per-path ETag cache. The cache stores the issue's labels and closed flag rather than a derived state, so a not-modified response is derived again under the state lists in force, and does not charge the primary budget. This matters precisely because reconciliation polls the same issues over and over. The cache size is an operator-tunable extension key, and zero disables conditional requests entirely.
 
 Secondary limits are separate again and are not a quota you can count down; they arrive as a rejection carrying a retry hint. The adapter never sleeps or retries on its own: it classifies, appends the retry hint to the message, and leaves backoff to the orchestrator.
 

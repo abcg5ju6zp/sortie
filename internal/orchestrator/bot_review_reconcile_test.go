@@ -1070,6 +1070,8 @@ func (s *botReviewErrTrackerStub) FetchIssuesByStates(_ context.Context, _ []str
 func (s *botReviewErrTrackerStub) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error) {
 	return nil, nil
 }
+
+func (s *botReviewErrTrackerStub) SetTrackerStates(func() domain.TrackerStates) {}
 func (s *botReviewErrTrackerStub) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

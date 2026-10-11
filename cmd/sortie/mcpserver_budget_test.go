@@ -61,6 +61,8 @@ func (tr *budgetE2ETracker) FetchCandidateIssues(_ context.Context) ([]domain.Is
 	}}, nil
 }
 
+func (tr *budgetE2ETracker) SetTrackerStates(func() domain.TrackerStates) {}
+
 func (tr *budgetE2ETracker) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

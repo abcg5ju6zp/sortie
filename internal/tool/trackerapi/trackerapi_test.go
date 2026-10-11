@@ -26,6 +26,8 @@ func (m *mockTrackerAdapter) FetchCandidateIssues(ctx context.Context) ([]domain
 	return nil, nil
 }
 
+func (m *mockTrackerAdapter) SetTrackerStates(func() domain.TrackerStates) {}
+
 func (m *mockTrackerAdapter) FetchIssueByID(ctx context.Context, issueID string) (domain.Issue, error) {
 	if m.fetchByIDFn != nil {
 		return m.fetchByIDFn(ctx, issueID)

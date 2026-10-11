@@ -128,7 +128,7 @@ The endpoint defaults to Linear's single hosted GraphQL URL; there is no self-ho
 
 `tracker.query_filter` is a JSON object merged into the fetch filter as extra sibling fields, which Linear ANDs with the adapter's own constraints. The top-level team and state keys are rejected so an operator cannot widen the team or state scope out from under the state model, the fragment travels in the variables object rather than the query text, and the filter map is rebuilt per call so concurrent fetches never share it.
 
-Configured state names are validated online, by the preflight, not offline. The offline validator only checks shapes it can decide without a network call: endpoint form, a team key that looks like a team key rather than an owner/repo path, and state list elements. Empty or padded state names are errors here rather than warnings, because construction rejects them.
+Configured state names are validated online, by the preflight, not offline. The offline validator only checks shapes it can decide without a network call: endpoint form, a team key that looks like a team key rather than an owner/repo path, and state list elements. Padded state names are errors here rather than warnings, because construction rejects them. An empty state name fails the workflow load on every tracker, so it never reaches this validator.
 
 Writes are ordinary data changes, so they emit whatever webhooks and automations the operator has configured in their workspace. Sortie polls and consumes no webhooks itself, so this is an operator-awareness note rather than a dependency.
 

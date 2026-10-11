@@ -29,15 +29,6 @@ func TestLinearAdapterRegistration(t *testing.T) {
 		t.Errorf("Trackers.Meta(%q).RequiresAPIKey = %v, want %v", "linear", meta.RequiresAPIKey, true)
 	}
 
-	// The declared fallback lists must be the variables NewLinearAdapter
-	// substitutes, because the dispatch preflight rules on the declared ones.
-	if !slices.Equal(meta.DefaultActiveStates, defaultActiveStates) {
-		t.Errorf("Trackers.Meta(%q).DefaultActiveStates = %v, want %v", "linear", meta.DefaultActiveStates, defaultActiveStates)
-	}
-	if !slices.Equal(meta.DefaultTerminalStates, defaultTerminalStates) {
-		t.Errorf("Trackers.Meta(%q).DefaultTerminalStates = %v, want %v", "linear", meta.DefaultTerminalStates, defaultTerminalStates)
-	}
-
 	if _, err := registry.Trackers.Get("linear"); err != nil {
 		t.Errorf("Trackers.Get(%q) = %v, want registered constructor", "linear", err)
 	}
@@ -237,30 +228,6 @@ func TestEndpointVerdictAgreesWithConstructor(t *testing.T) {
 	}
 }
 
-func TestNewAdapterSuccess(t *testing.T) {
-	t.Parallel()
-
-	f := newFakeClient()
-	seedPreflight(f, t)
-
-	got, err := newAdapter(f, "SOR", defaultActiveStates, defaultTerminalStates, "in review", nil, nil)
-	if err != nil {
-		t.Fatalf("newAdapter: %v", err)
-	}
-
-	adapter, ok := got.(*LinearAdapter)
-	if !ok {
-		t.Fatalf("newAdapter returned %T, want *LinearAdapter", got)
-	}
-	if adapter.handoffState != "In Review" {
-		t.Errorf("handoffState = %q, want %q (canonical casing from preflight cache)", adapter.handoffState, "In Review")
-	}
-	wantActive := []string{"Backlog", "Todo", "In Progress"}
-	if !reflect.DeepEqual(adapter.activeStates, wantActive) {
-		t.Errorf("activeStates = %v, want %v", adapter.activeStates, wantActive)
-	}
-}
-
 func TestParseQueryFilter(t *testing.T) {
 	t.Parallel()
 
@@ -417,6 +384,48 @@ func TestFetchCandidateIssues(t *testing.T) {
 		if len(issues) != 0 {
 			t.Errorf("FetchCandidateIssues len = %d, want 0", len(issues))
 		}
+	})
+
+	t.Run("empty active list sends no request and returns no issue", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeClient()
+		seedPreflight(f, t)
+		got, err := newAdapter(f, "SOR", testStates(nil, ""), nil, nil)
+		if err != nil {
+			t.Fatalf("newAdapter: %v", err)
+		}
+		callsBeforeFetch := len(f.calls)
+
+		issues, err := got.FetchCandidateIssues(context.Background())
+		if err != nil {
+			t.Fatalf("FetchCandidateIssues: %v", err)
+		}
+
+		if issues == nil || len(issues) != 0 {
+			t.Errorf("FetchCandidateIssues(empty active) = %v, want non-nil empty slice", issues)
+		}
+		if got := len(f.calls) - callsBeforeFetch; got != 0 {
+			t.Errorf("GraphQL requests during FetchCandidateIssues = %d, want 0", got)
+		}
+	})
+
+	t.Run("sends active states in the team's casing", func(t *testing.T) {
+		t.Parallel()
+
+		f := newFakeClient()
+		seedPreflight(f, t)
+		f.queueBody("query CandidateIssues", loadFixture(t, "issues_empty.json"))
+		got, err := newAdapter(f, "SOR", testStates([]string{"backlog", "TODO"}, ""), nil, nil)
+		if err != nil {
+			t.Fatalf("newAdapter: %v", err)
+		}
+
+		if _, err := got.FetchCandidateIssues(context.Background()); err != nil {
+			t.Fatalf("FetchCandidateIssues: %v", err)
+		}
+
+		assertStateFilter(t, assertFilterVar(t, f.callsFor("query CandidateIssues")[0]), []string{"Backlog", "Todo"})
 	})
 
 	t.Run("sends configured active states inside the merged filter", func(t *testing.T) {

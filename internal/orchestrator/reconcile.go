@@ -575,6 +575,10 @@ func releaseIssueRuntimeState(ctx context.Context, state *State, store retryEntr
 // issue the tracker reports terminal, whether or not that issue has a
 // running worker. An issue the tracker reports outside the active states
 // loses its stage hop record.
+//
+// An issue reported in no state (an empty state name) is acted on only at
+// its second consecutive such reading, because a person's label edit can
+// pass through zero state labels for a moment.
 func reconcileTrackerState(state *State, params ReconcileParams, log *slog.Logger, ctx context.Context, metrics domain.Metrics) {
 	if params.TrackerAdapter == nil {
 		return
@@ -598,16 +602,26 @@ func reconcileTrackerState(state *State, params ReconcileParams, log *slog.Logge
 
 	for issueID, stateName := range refreshed {
 		entry := state.Running[issueID]
+		hop := state.StageHops[issueID]
+
+		hasNoState := stateName == ""
+		if !hasNoState {
+			clearNoStateObserved(entry, hop)
+		}
 
 		normalized := strings.ToLower(stateName)
 		_, isTerminal := terminalSet[normalized]
 		_, isActive := activeSet[normalized]
 
-		if hop := state.StageHops[issueID]; hop != nil {
+		if hop != nil {
 			hopLog := logging.WithIssue(log, issueID, hop.Identifier)
 			switch {
 			case isTerminal:
 				resetStageHop(ctx, state, params.Store, issueID, stageResetTerminal, hopLog)
+			case hasNoState:
+				if confirmNoState(&hop.NoStateObserved) {
+					resetStageHop(ctx, state, params.Store, issueID, stageResetNotActive, hopLog)
+				}
 			case !isActive:
 				resetStageHop(ctx, state, params.Store, issueID, stageResetNotActive, hopLog)
 			}
@@ -658,6 +672,12 @@ func reconcileTrackerState(state *State, params ReconcileParams, log *slog.Logge
 
 		entryLog := logging.WithIssue(log, issueID, entry.Identifier)
 
+		if hasNoState && !confirmNoState(&entry.NoStateObserved) {
+			metrics.IncReconciliationActions(actionKeep)
+			entryLog.Info("deferred stop for issue without a state label")
+			continue
+		}
+
 		if isActive {
 			entry.Issue.State = stateName
 			metrics.IncReconciliationActions(actionKeep)
@@ -699,6 +719,28 @@ func reconcileTrackerState(state *State, params ReconcileParams, log *slog.Logge
 		entryLog.Info("stopping worker for non-active issue",
 			slog.String("state", stateName),
 		)
+	}
+}
+
+// confirmNoState records a no-state reading in flag and reports whether
+// the previous reading of the same record was also a no-state one. The
+// first reading sets the flag and returns false.
+func confirmNoState(flag *bool) bool {
+	if *flag {
+		return true
+	}
+	*flag = true
+	return false
+}
+
+// clearNoStateObserved resets the no-state flags of the records an issue
+// holds, after a reading in a state. Either record may be nil.
+func clearNoStateObserved(entry *RunningEntry, hop *StageHopEntry) {
+	if entry != nil {
+		entry.NoStateObserved = false
+	}
+	if hop != nil {
+		hop.NoStateObserved = false
 	}
 }
 

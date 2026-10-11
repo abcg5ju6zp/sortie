@@ -74,7 +74,7 @@ The two failure modes are usefully distinguishable in the response: an unencoded
 
 GitLab issues are natively open or closed with no workflow engine, so the adapter derives state from labels, the same convention the GitHub and Gitea adapters use. The derivation rule itself lives in `internal/issuekit`; the adapter contributes only GitLab's spelling of the two native statuses and the wire decode.
 
-**A whole transition is one request.** The issue update route takes the state change and the label additions and removals together and applies them atomically, so there is no window in which an issue carries a terminal label while still open. Gitea needs up to five requests for the same outcome. When both lists name the same label, removal wins.
+**The labels of a transition are one request, and the state change is another.** The issue update route takes the label additions and removals together, and the adapter confirms the response carries the target label and none of the stale ones. The route commits a `state_event` before the labels of the same request, so a close or reopen would land before the labels it belongs with. The state change therefore travels alone, ordered against the label request so that every reading between the two is the start state or the target. When both lists name the same label, removal wins.
 
 **Labels are created on demand by an attach.** Naming a label that does not exist creates it as a project label and attaches it. That removes the label-hygiene problem that forced the Gitea adapter into an explicit create-on-missing policy: no name-to-id resolution, no separate create call, no silent no-op.
 

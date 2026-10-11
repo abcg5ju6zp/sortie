@@ -17,7 +17,7 @@ Fields:
 - `priority` (integer or null)
   - Lower numbers are higher priority in dispatch sorting.
 - `state` (string)
-  - Current tracker state name.
+  - Current tracker state name. An empty value means the issue is in no configured state: on a tracker that derives state from labels, an open issue that carries no state label reads empty. An empty state is never active, terminal, or the handoff state, so dispatch refuses it.
 - `branch_name` (string or null)
   - Tracker-provided branch metadata if available.
 - `url` (string or null)

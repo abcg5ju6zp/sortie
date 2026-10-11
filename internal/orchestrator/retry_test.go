@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,8 @@ var _ domain.TrackerAdapter = (*mockRetryTracker)(nil)
 func (m *mockRetryTracker) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error) {
 	panic("FetchCandidateIssues must not be called by HandleRetryTimer")
 }
+
+func (m *mockRetryTracker) SetTrackerStates(func() domain.TrackerStates) {}
 
 func (m *mockRetryTracker) FetchIssueByID(_ context.Context, issueID string) (domain.Issue, error) {
 	m.fetchCount++
@@ -709,6 +712,63 @@ func TestHandleRetryTimer(t *testing.T) {
 				}
 				if len(store.deletedIssueID) != 1 || store.deletedIssueID[0] != id {
 					t.Errorf("DeleteRetryEntry calls = %v, want [%s]", store.deletedIssueID, id)
+				}
+			},
+		},
+		{
+			name:    "first no-state reading reschedules and keeps the session, the continuation, the reaction kind and the hop record",
+			issueID: "ISS-8",
+			state: func(t *testing.T, id string) *State {
+				t.Helper()
+				state := retryState(t, id, id, 2)
+				entry := state.RetryAttempts[id]
+				entry.SessionID, entry.ReactionKind = "sess-keep", ReactionKindCI
+				entry.ContinuationContext = map[string]any{"ci_failure": "failing"}
+				state.StageHops[id] = &StageHopEntry{Count: 2}
+				return state
+			},
+			store: func() *mockRetryStore { return &mockRetryStore{} },
+			tracker: func(id string) *mockRetryTracker {
+				return &mockRetryTracker{fetchedIssue: candidateIssue(id, id, "")}
+			},
+			check: func(t *testing.T, id string, state *State, _ *mockRetryStore, _ *mockRetryTracker, _ bool) {
+				t.Helper()
+				entry, ok := state.RetryAttempts[id]
+				if !ok {
+					t.Fatalf("RetryAttempts[%s] missing after the first no-state reading, want rescheduled", id)
+				}
+				if entry.TimerHandle != nil {
+					entry.TimerHandle.Stop()
+				}
+				if entry.Attempt != 2 || entry.SessionID != "sess-keep" || entry.ReactionKind != ReactionKindCI || entry.ContinuationContext == nil || !entry.noStateObserved {
+					t.Errorf("RetryAttempts[%s] = %+v, want attempt 2, session, reaction kind and continuation kept, noStateObserved set", id, entry)
+				}
+				if _, claimed := state.Claimed[id]; !claimed || state.StageHops[id] == nil || len(state.Running) != 0 {
+					t.Errorf("after the first no-state reading claimed = %v, hop kept = %v, running = %d; want true, true, 0", claimed, state.StageHops[id] != nil, len(state.Running))
+				}
+			},
+		},
+		{
+			name:    "second consecutive no-state reading releases the claim and keeps the hop record",
+			issueID: "ISS-9",
+			state: func(t *testing.T, id string) *State {
+				t.Helper()
+				state := retryState(t, id, id, 2)
+				state.RetryAttempts[id].noStateObserved = true
+				state.StageHops[id] = &StageHopEntry{Count: 2}
+				return state
+			},
+			store: func() *mockRetryStore { return &mockRetryStore{} },
+			tracker: func(id string) *mockRetryTracker {
+				return &mockRetryTracker{fetchedIssue: candidateIssue(id, id, "")}
+			},
+			check: func(t *testing.T, id string, state *State, store *mockRetryStore, _ *mockRetryTracker, _ bool) {
+				t.Helper()
+				_, claimed := state.Claimed[id]
+				_, queued := state.RetryAttempts[id]
+				if claimed || queued || !slices.Equal(store.deletedIssueID, []string{id}) || state.StageHops[id] == nil {
+					t.Errorf("after the second no-state reading claimed = %v, queued = %v, deleted = %v, hop kept = %v; want false, false, [%s], true",
+						claimed, queued, store.deletedIssueID, state.StageHops[id] != nil, id)
 				}
 			},
 		},

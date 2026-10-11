@@ -22,9 +22,10 @@ import (
 
 func validConfig(endpoint string) map[string]any {
 	return map[string]any{
-		"endpoint": endpoint,
-		"api_key":  "user@test.com:api_token_123",
-		"project":  "PROJ",
+		"endpoint":      endpoint,
+		"api_key":       "user@test.com:api_token_123",
+		"project":       "PROJ",
+		"active_states": []any{"To Do", "In Progress"},
 	}
 }
 
@@ -161,56 +162,6 @@ func TestNewJiraAdapter(t *testing.T) {
 				t.Fatal("adapter is nil")
 			}
 		})
-	}
-}
-
-func TestNewJiraAdapter_DefaultActiveStates(t *testing.T) {
-	t.Parallel()
-
-	a := mustAdapter(t, validConfig("https://x.atlassian.net"))
-	if len(a.activeStates) != 3 {
-		t.Fatalf("activeStates len = %d, want 3", len(a.activeStates))
-	}
-	if a.activeStates[0] != "Backlog" {
-		t.Errorf("activeStates[0] = %q, want Backlog", a.activeStates[0])
-	}
-
-	// The applied fallback must stay the list the registration declares:
-	// the dispatch preflight rules on the declared one. The adapter applies
-	// no casing change here, so the comparison is verbatim. JiraAdapter
-	// carries no terminal-state field, so only the active list is checked.
-	meta, ok := registry.Trackers.Meta("jira")
-	if !ok {
-		t.Fatal(`Trackers.Meta("jira") reported not registered`)
-	}
-	if len(meta.DefaultActiveStates) == 0 {
-		t.Fatal(`Trackers.Meta("jira").DefaultActiveStates is empty, want the adapter's declared fallback`)
-	}
-	if !slices.Equal(a.activeStates, meta.DefaultActiveStates) {
-		t.Errorf("NewJiraAdapter(config without active_states).activeStates = %v, want %v", a.activeStates, meta.DefaultActiveStates)
-	}
-}
-
-func TestNewJiraAdapter_CustomActiveStates(t *testing.T) {
-	t.Parallel()
-
-	config := validConfig("https://x.atlassian.net")
-	config["active_states"] = []any{"Open", "WIP"}
-	a := mustAdapter(t, config)
-	if len(a.activeStates) != 2 || a.activeStates[0] != "Open" || a.activeStates[1] != "WIP" {
-		t.Errorf("activeStates = %v, want [Open WIP]", a.activeStates)
-	}
-}
-
-func TestNewJiraAdapter_CustomActiveStates_StringSlice(t *testing.T) {
-	t.Parallel()
-
-	// Config layer passes typed []string; the adapter must accept it.
-	config := validConfig("https://x.atlassian.net")
-	config["active_states"] = []string{"To Do", "In Progress"}
-	a := mustAdapter(t, config)
-	if len(a.activeStates) != 2 || a.activeStates[0] != "To Do" || a.activeStates[1] != "In Progress" {
-		t.Errorf("activeStates = %v, want [To Do In Progress]", a.activeStates)
 	}
 }
 
@@ -418,6 +369,31 @@ func TestFetchCandidateIssues_Empty(t *testing.T) {
 	}
 }
 
+func TestFetchCandidateIssues_EmptyActiveStatesSendsNoRequest(t *testing.T) {
+	t.Parallel()
+
+	var requestCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+	}))
+	defer srv.Close()
+
+	config := validConfig(srv.URL)
+	config["active_states"] = []any{}
+	a := mustAdapter(t, config)
+	issues, err := a.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues: %v", err)
+	}
+
+	if issues == nil || len(issues) != 0 {
+		t.Errorf("FetchCandidateIssues(empty active) = %v, want non-nil empty slice", issues)
+	}
+	if got := requestCount.Load(); got != 0 {
+		t.Errorf("HTTP request count = %d, want 0", got)
+	}
+}
+
 func TestFetchCandidateIssues_AuthError(t *testing.T) {
 	t.Parallel()
 
@@ -473,8 +449,7 @@ func TestFetchCandidateIssues_JQLSanitization(t *testing.T) {
 func TestFetchCandidateIssues_StringSliceActiveStates(t *testing.T) {
 	t.Parallel()
 
-	// Regression: config layer passes []string; the adapter must use those
-	// states (not fall back to defaults) in the JQL query.
+	// Regression: config layer passes []string; the adapter must use those states in the JQL query.
 	var receivedJQL string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedJQL = r.URL.Query().Get("jql")
@@ -494,10 +469,6 @@ func TestFetchCandidateIssues_StringSliceActiveStates(t *testing.T) {
 	}
 	if !strings.Contains(receivedJQL, `"Code Review"`) {
 		t.Errorf("JQL missing 'Code Review' state: %q", receivedJQL)
-	}
-	// Must NOT contain default states that weren't configured.
-	if strings.Contains(receivedJQL, `"Backlog"`) {
-		t.Errorf("JQL contains default state 'Backlog' despite custom active_states: %q", receivedJQL)
 	}
 }
 
@@ -2246,8 +2217,8 @@ func TestFetchCandidateIssueByIDEquivalence(t *testing.T) {
 		t.Fatalf("FetchCandidateIssues: got %d issues, want 2", len(candidates))
 	}
 
-	activeSet := make(map[string]bool, len(a.activeStates))
-	for _, s := range a.activeStates {
+	activeSet := make(map[string]bool)
+	for _, s := range a.TrackerStates().Active {
 		activeSet[strings.ToLower(s)] = true
 	}
 

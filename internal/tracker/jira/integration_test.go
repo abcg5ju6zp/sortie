@@ -47,20 +47,7 @@ func integrationConfig(t *testing.T) map[string]any {
 		"project":  project,
 	}
 
-	if states := os.Getenv("SORTIE_JIRA_ACTIVE_STATES"); states != "" {
-		parts := strings.Split(states, ",")
-		trimmed := make([]any, 0, len(parts))
-		for _, s := range parts {
-			v := strings.TrimSpace(s)
-			if v == "" {
-				continue
-			}
-			trimmed = append(trimmed, v)
-		}
-		if len(trimmed) > 0 {
-			cfg["active_states"] = trimmed
-		}
-	}
+	cfg["active_states"] = integrationActiveStates(t)
 	if qf := os.Getenv("SORTIE_JIRA_QUERY_FILTER"); qf != "" {
 		cfg["query_filter"] = qf
 	}
@@ -74,7 +61,7 @@ func integrationEndpoint(t *testing.T) string {
 }
 
 // integrationActiveStates returns the active states from the environment
-// variable or falls back to the adapter's defaults.
+// variable or falls back to the stock Jira software workflow states.
 func integrationActiveStates(t *testing.T) []string {
 	t.Helper()
 	if states := os.Getenv("SORTIE_JIRA_ACTIVE_STATES"); states != "" {
@@ -91,7 +78,7 @@ func integrationActiveStates(t *testing.T) []string {
 			return result
 		}
 	}
-	return defaultActiveStates
+	return []string{"Backlog", "Selected for Development", "In Progress"}
 }
 
 // jiraTimestampFormats lists the formats tried when validating Jira timestamps.

@@ -498,6 +498,8 @@ func (m *mockTrackerAdapter) FetchCandidateIssues(_ context.Context) ([]domain.I
 	return nil, nil
 }
 
+func (m *mockTrackerAdapter) SetTrackerStates(func() domain.TrackerStates) {}
+
 func (m *mockTrackerAdapter) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

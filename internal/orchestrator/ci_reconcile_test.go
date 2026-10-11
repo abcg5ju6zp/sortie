@@ -220,6 +220,8 @@ func (s *ciTrackerStub) FetchIssuesByStates(_ context.Context, _ []string) ([]do
 func (s *ciTrackerStub) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error) {
 	return nil, nil
 }
+
+func (s *ciTrackerStub) SetTrackerStates(func() domain.TrackerStates) {}
 func (s *ciTrackerStub) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }
@@ -1183,6 +1185,8 @@ func (b *blockingCITracker) FetchIssuesByStates(_ context.Context, _ []string) (
 func (b *blockingCITracker) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error) {
 	return nil, nil
 }
+
+func (b *blockingCITracker) SetTrackerStates(func() domain.TrackerStates) {}
 func (b *blockingCITracker) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

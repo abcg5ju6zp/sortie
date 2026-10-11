@@ -52,8 +52,9 @@ func validPreflightParams() PreflightParams {
 		ConfigFunc: func() config.ServiceConfig {
 			return config.ServiceConfig{
 				Tracker: config.TrackerConfig{
-					Kind:   "test-tracker",
-					APIKey: "secret",
+					Kind:         "test-tracker",
+					APIKey:       "secret",
+					ActiveStates: []string{"To Do"},
 				},
 				Agent: config.AgentConfig{
 					Kind:    "test-agent",
@@ -102,21 +103,6 @@ func requireNoCheck(t *testing.T, result PreflightResult, check string) {
 	if hasCheck(t, result, check) {
 		t.Errorf("ValidateDispatchConfig() has unexpected error check %q; got errors: %v", check, result.Errors)
 	}
-}
-
-// stateCollisionErrors returns the result's errors whose check is one of
-// the two state-collision keys, in the order the preflight emitted them.
-// Filtering keeps the assertion independent of the credential and adapter
-// diagnostics the same run may also report.
-func stateCollisionErrors(t *testing.T, result PreflightResult) []PreflightError {
-	t.Helper()
-	var got []PreflightError
-	for _, e := range result.Errors {
-		if e.Check == "tracker.handoff_state" || e.Check == "tracker.in_progress_state" {
-			got = append(got, e)
-		}
-	}
-	return got
 }
 
 // hasWarnCheck reports whether the result contains a warning with the
@@ -509,6 +495,18 @@ func TestValidateDispatchConfig(t *testing.T) {
 			noChecks:       []string{"test.adapter.warn"},
 		},
 		{
+			name: "empty tracker.active_states warns and does not block",
+			modify: func(p *PreflightParams) {
+				p.ConfigFunc = func() config.ServiceConfig {
+					cfg := validPreflightParams().ConfigFunc()
+					cfg.Tracker.ActiveStates = nil
+					return cfg
+				}
+			},
+			wantOK:         true,
+			wantWarnChecks: []string{"tracker.active_states.empty"},
+		},
+		{
 			name: "nil ValidateTrackerConfig produces no adapter diagnostics",
 			modify: func(p *PreflightParams) {
 				p.TrackerRegistry = &stubTrackerRegistry{
@@ -611,9 +609,10 @@ func TestValidateDispatchConfig_QueryFilterPropagation(t *testing.T) {
 			params.ConfigFunc = func() config.ServiceConfig {
 				return config.ServiceConfig{
 					Tracker: config.TrackerConfig{
-						Kind:        "test-tracker",
-						APIKey:      "secret",
-						QueryFilter: queryFilter,
+						Kind:         "test-tracker",
+						APIKey:       "secret",
+						ActiveStates: []string{"To Do"},
+						QueryFilter:  queryFilter,
 					},
 					Agent: config.AgentConfig{
 						Kind:    "test-agent",
@@ -697,9 +696,10 @@ func TestValidateDispatchConfig_APIVersionPropagation(t *testing.T) {
 			params.ConfigFunc = func() config.ServiceConfig {
 				return config.ServiceConfig{
 					Tracker: config.TrackerConfig{
-						Kind:       "test-tracker",
-						APIKey:     "secret",
-						APIVersion: apiVersion,
+						Kind:         "test-tracker",
+						APIKey:       "secret",
+						ActiveStates: []string{"To Do"},
+						APIVersion:   apiVersion,
 					},
 					Agent: config.AgentConfig{
 						Kind:    "test-agent",
@@ -1939,243 +1939,6 @@ func TestValidateDispatchConfig_AgentCommandPerReachedKind(t *testing.T) {
 	}
 }
 
-// TestValidateDispatchConfig_DefaultedTrackerStates covers the collision
-// rules re-run against the effective state lists, the ones a tracker
-// adapter fills from its own fallback when the workflow list is empty.
-// The default lists are declared here rather than read from a real
-// registration: this package links no adapter package, and the stub
-// registry is what makes every shape reachable, including the two-list
-// one the workflow promotion gate rejects before the preflight runs.
-func TestValidateDispatchConfig_DefaultedTrackerStates(t *testing.T) {
-	t.Parallel()
-
-	githubActive := []string{"backlog", "in-progress", "review"}
-	githubTerminal := []string{"done", "wontfix"}
-
-	tests := []struct {
-		name         string
-		tracker      config.TrackerConfig
-		meta         registry.TrackerMeta
-		unregistered bool
-		want         []PreflightError
-	}{
-		{
-			name: "handoff state collides with the defaulted active list",
-			tracker: config.TrackerConfig{
-				Kind:           "github",
-				HandoffState:   "review",
-				TerminalStates: []string{"done"},
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   githubActive,
-				DefaultTerminalStates: githubTerminal,
-			},
-			want: []PreflightError{{
-				Check:   "tracker.handoff_state",
-				Message: `"review" collides with active state "review"; tracker.active_states is empty, so the "github" adapter falls back to its own active states`,
-			}},
-		},
-		{
-			name: "handoff state collides with the defaulted terminal list",
-			tracker: config.TrackerConfig{
-				Kind:         "github",
-				HandoffState: "done",
-				ActiveStates: []string{"backlog"},
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   githubActive,
-				DefaultTerminalStates: githubTerminal,
-			},
-			want: []PreflightError{{
-				Check:   "tracker.handoff_state",
-				Message: `"done" collides with terminal state "done"; tracker.terminal_states is empty, so the "github" adapter falls back to its own terminal states`,
-			}},
-		},
-		{
-			name: "in progress state collides with the defaulted terminal list",
-			tracker: config.TrackerConfig{
-				Kind:            "github",
-				InProgressState: "done",
-				ActiveStates:    []string{"done", "backlog"},
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   githubActive,
-				DefaultTerminalStates: githubTerminal,
-			},
-			want: []PreflightError{{
-				Check:   "tracker.in_progress_state",
-				Message: `"done" collides with terminal state "done"; tracker.terminal_states is empty, so the "github" adapter falls back to its own terminal states`,
-			}},
-		},
-		{
-			name: "comparison is case-insensitive and each side keeps its own casing",
-			tracker: config.TrackerConfig{
-				Kind:           "github",
-				HandoffState:   "REVIEW",
-				TerminalStates: []string{"done"},
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   githubActive,
-				DefaultTerminalStates: githubTerminal,
-			},
-			want: []PreflightError{{
-				Check:   "tracker.handoff_state",
-				Message: `"REVIEW" collides with active state "review"; tracker.active_states is empty, so the "github" adapter falls back to its own active states`,
-			}},
-		},
-		{
-			name: "an explicitly empty active list behaves like an absent key",
-			tracker: config.TrackerConfig{
-				Kind:           "github",
-				HandoffState:   "review",
-				ActiveStates:   []string{},
-				TerminalStates: []string{"done"},
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   githubActive,
-				DefaultTerminalStates: githubTerminal,
-			},
-			want: []PreflightError{{
-				Check:   "tracker.handoff_state",
-				Message: `"review" collides with active state "review"; tracker.active_states is empty, so the "github" adapter falls back to its own active states`,
-			}},
-		},
-		{
-			name: "no diagnostic when the adapter declares no default",
-			tracker: config.TrackerConfig{
-				Kind:           "github",
-				HandoffState:   "review",
-				TerminalStates: []string{"done"},
-			},
-		},
-		{
-			name: "no diagnostic when the defaulted list does not collide",
-			tracker: config.TrackerConfig{
-				Kind:           "github",
-				HandoffState:   "awaiting-human",
-				TerminalStates: []string{"done"},
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   githubActive,
-				DefaultTerminalStates: githubTerminal,
-			},
-		},
-		{
-			name: "no diagnostic when both lists are written",
-			tracker: config.TrackerConfig{
-				Kind:           "github",
-				HandoffState:   "review",
-				ActiveStates:   []string{"backlog"},
-				TerminalStates: []string{"done"},
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   githubActive,
-				DefaultTerminalStates: githubTerminal,
-			},
-		},
-		{
-			name: "no diagnostic when the written lists already violate a rule",
-			tracker: config.TrackerConfig{
-				Kind:         "github",
-				HandoffState: "review",
-				ActiveStates: []string{"review"},
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   githubActive,
-				DefaultTerminalStates: githubTerminal,
-			},
-		},
-		{
-			name: "both lists defaulted reports one diagnostic per list",
-			tracker: config.TrackerConfig{
-				Kind:         "github",
-				HandoffState: "review",
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   []string{"review"},
-				DefaultTerminalStates: []string{"review", "done"},
-			},
-			want: []PreflightError{
-				{
-					Check:   "tracker.handoff_state",
-					Message: `"review" collides with active state "review"; tracker.active_states is empty, so the "github" adapter falls back to its own active states`,
-				},
-				{
-					Check:   "tracker.handoff_state",
-					Message: `"review" collides with terminal state "review"; tracker.terminal_states is empty, so the "github" adapter falls back to its own terminal states`,
-				},
-			},
-		},
-		{
-			name: "both lists defaulted with an in progress state reports nothing",
-			tracker: config.TrackerConfig{
-				Kind:            "github",
-				HandoffState:    "review",
-				InProgressState: "in-progress",
-			},
-			meta: registry.TrackerMeta{
-				DefaultActiveStates:   []string{"review"},
-				DefaultTerminalStates: []string{"review", "done"},
-			},
-		},
-		{
-			name: "no diagnostic for an unregistered kind",
-			tracker: config.TrackerConfig{
-				Kind:           "nonexistent",
-				HandoffState:   "review",
-				TerminalStates: []string{"done"},
-			},
-			unregistered: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			params := validPreflightParams()
-			params.ConfigFunc = func() config.ServiceConfig {
-				return config.ServiceConfig{
-					Tracker: tt.tracker,
-					Agent: config.AgentConfig{
-						Kind:    "test-agent",
-						Command: "/usr/bin/agent",
-					},
-				}
-			}
-			params.TrackerRegistry = &stubTrackerRegistry{
-				getFunc: func(kind string) (registry.TrackerConstructor, error) {
-					if tt.unregistered {
-						return nil, &registry.RegistryError{Dimension: "tracker", Kind: kind}
-					}
-					return nil, nil
-				},
-				metaFunc: func(string) (registry.TrackerMeta, bool) {
-					return tt.meta, !tt.unregistered
-				},
-			}
-
-			result := ValidateDispatchConfig(params)
-
-			got := stateCollisionErrors(t, result)
-			if len(got) != len(tt.want) {
-				t.Fatalf("ValidateDispatchConfig() state collision errors = %v, want %v", got, tt.want)
-			}
-			for i, want := range tt.want {
-				if got[i].Check != want.Check {
-					t.Errorf("ValidateDispatchConfig() errors[%d].Check = %q, want %q", i, got[i].Check, want.Check)
-				}
-				if got[i].Message != want.Message {
-					t.Errorf("ValidateDispatchConfig() errors[%d].Message = %q, want %q", i, got[i].Message, want.Message)
-				}
-			}
-			if len(tt.want) > 0 && result.OK() {
-				t.Errorf("ValidateDispatchConfig() OK = true, want false: a state collision is error severity")
-			}
-		})
-	}
-}
-
 const stageCollisionCheck = "dispatch.stage.collision"
 
 func stageCollisionLine(ruleName string, index int, stage, source string) PreflightError {
@@ -2204,10 +1967,6 @@ func TestValidateDispatchConfig_StageCollisions(t *testing.T) {
 	t.Parallel()
 
 	const tracker = "test-tracker"
-	trackerMeta := registry.TrackerMeta{
-		DefaultActiveStates:   []string{"backlog", "review"},
-		DefaultTerminalStates: []string{"done", "wontfix"},
-	}
 	withReactions := func(reactions map[string]config.ReactionConfig, rules ...config.DispatchRule) config.ServiceConfig {
 		return config.ServiceConfig{Tracker: config.TrackerConfig{Kind: tracker}, Reactions: reactions, Dispatch: config.DispatchConfig{Rules: rules}}
 	}
@@ -2226,11 +1985,9 @@ func TestValidateDispatchConfig_StageCollisions(t *testing.T) {
 	reviewDefaulted.Dispatch.Rules = []config.DispatchRule{stagedPreflightRule("hold", "needs-human")}
 
 	tests := []struct {
-		name         string
-		cfg          config.ServiceConfig
-		meta         registry.TrackerMeta
-		unregistered bool
-		want         []PreflightError
+		name string
+		cfg  config.ServiceConfig
+		want []PreflightError
 	}{
 		{
 			name: "a stage label differing from an active state in case only",
@@ -2251,34 +2008,6 @@ func TestValidateDispatchConfig_StageCollisions(t *testing.T) {
 			name: "the parking label with no reactions block",
 			cfg:  withTracker(config.TrackerConfig{}, stagedPreflightRule("implement", "Needs-Human")),
 			want: []PreflightError{stageCollisionLine("implement", 0, "Needs-Human", `the parking label "needs-human"`)},
-		},
-		{
-			name: "the fallback active list when the written list is empty",
-			cfg:  withTracker(config.TrackerConfig{}, stagedPreflightRule("rev", "Review")),
-			meta: trackerMeta,
-			want: []PreflightError{stageCollisionLine("rev", 0, "Review", `active state "review", which the "test-tracker" adapter falls back to because tracker.active_states is empty`)},
-		},
-		{
-			name: "the fallback terminal list when the written list is empty",
-			cfg:  withTracker(config.TrackerConfig{}, stagedPreflightRule("fin", "WontFix")),
-			meta: trackerMeta,
-			want: []PreflightError{stageCollisionLine("fin", 0, "WontFix", `terminal state "wontfix", which the "test-tracker" adapter falls back to because tracker.terminal_states is empty`)},
-		},
-		{
-			name: "a written active list suppresses the fallback active list",
-			cfg:  withTracker(config.TrackerConfig{ActiveStates: []string{"To Do"}}, stagedPreflightRule("rev", "review")),
-			meta: trackerMeta,
-		},
-		{
-			name: "a written terminal list suppresses the fallback terminal list",
-			cfg:  withTracker(config.TrackerConfig{TerminalStates: []string{"Closed"}}, stagedPreflightRule("fin", "done")),
-			meta: trackerMeta,
-		},
-		{
-			name: "a written active list is compared in full although the fallback holds other values",
-			cfg:  withTracker(config.TrackerConfig{ActiveStates: []string{"To Do", "Triage"}}, stagedPreflightRule("t", "triage")),
-			meta: trackerMeta,
-			want: []PreflightError{stageCollisionLine("t", 0, "triage", `active state "Triage"`)},
 		},
 		{
 			name: "the handoff state",
@@ -2384,34 +2113,21 @@ func TestValidateDispatchConfig_StageCollisions(t *testing.T) {
 			},
 		},
 		{
-			name: "a registered kind with no declared fallback lists compares only the written states",
-			cfg:  withTracker(config.TrackerConfig{HandoffState: "hand"}, stagedPreflightRule("rev", "review")),
-		},
-		{
-			name:         "an unregistered kind reads no fallback list",
-			cfg:          withTracker(config.TrackerConfig{}, stagedPreflightRule("rev", "review")),
-			meta:         trackerMeta,
-			unregistered: true,
-		},
-		{
-			name: "an empty tracker kind reads no fallback list and still compares the written states",
+			name: "an empty tracker kind still compares the written states",
 			cfg: config.ServiceConfig{
 				Tracker:  config.TrackerConfig{HandoffState: "Hold"},
 				Dispatch: config.DispatchConfig{Rules: []config.DispatchRule{stagedPreflightRule("h", "hold")}},
 			},
-			meta: trackerMeta,
 			want: []PreflightError{stageCollisionLine("h", 0, "hold", `tracker.handoff_state "Hold"`)},
 		},
 		{
 			name: "a workflow without a staged rule draws no line although its other labels collide",
 			cfg: withTracker(config.TrackerConfig{ActiveStates: []string{"needs-human"}, HandoffState: "review"},
 				config.DispatchRule{Name: "rest", IsCatchAll: true}),
-			meta: trackerMeta,
 		},
 		{
 			name: "a stage label that equals no source",
 			cfg:  withTracker(config.TrackerConfig{ActiveStates: []string{"To Do"}, TerminalStates: []string{"Done"}, HandoffState: "In Review"}, stagedPreflightRule("plan", "stage-plan")),
-			meta: trackerMeta,
 		},
 	}
 
@@ -2419,19 +2135,8 @@ func TestValidateDispatchConfig_StageCollisions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			var metaKinds []string
 			params := validPreflightParams()
 			params.ConfigFunc = func() config.ServiceConfig { return tt.cfg }
-			params.TrackerRegistry = &stubTrackerRegistry{
-				getFunc: func(string) (registry.TrackerConstructor, error) { return nil, nil },
-				metaFunc: func(kind string) (registry.TrackerMeta, bool) {
-					metaKinds = append(metaKinds, kind)
-					if tt.unregistered {
-						return registry.TrackerMeta{}, false
-					}
-					return tt.meta, true
-				},
-			}
 
 			result := ValidateDispatchConfig(params)
 
@@ -2446,9 +2151,6 @@ func TestValidateDispatchConfig_StageCollisions(t *testing.T) {
 			}
 			if len(tt.want) > 0 && result.OK() {
 				t.Error("ValidateDispatchConfig() OK = true, want false: a stage collision is error severity")
-			}
-			if slices.Contains(metaKinds, "") {
-				t.Errorf("TrackerRegistry.Meta called with an empty kind: %q", metaKinds)
 			}
 		})
 	}
@@ -2524,59 +2226,39 @@ func TestPreflightResult_Error(t *testing.T) {
 func TestValidateConfigForPromotion(t *testing.T) {
 	t.Parallel()
 
+	requiresTerminal := registry.TrackerMeta{RequiresTerminalStates: true}
 	tests := []struct {
-		name     string
-		active   []string
-		terminal []string
-		wantErr  bool
+		name      string
+		meta      registry.TrackerMeta
+		active    []string
+		terminal  []string
+		wantErr   bool
+		wantField string
 	}{
-		{
-			name:     "both empty returns error",
-			active:   nil,
-			terminal: nil,
-			wantErr:  true,
-		},
-		{
-			name:     "active non-empty terminal empty returns nil",
-			active:   []string{"To Do"},
-			terminal: nil,
-			wantErr:  false,
-		},
-		{
-			name:     "active empty terminal non-empty returns nil",
-			active:   nil,
-			terminal: []string{"Done"},
-			wantErr:  false,
-		},
-		{
-			name:     "both non-empty returns nil",
-			active:   []string{"To Do"},
-			terminal: []string{"Done"},
-			wantErr:  false,
-		},
+		{name: "both empty returns error", wantErr: true},
+		{name: "active non-empty terminal empty returns nil", active: []string{"To Do"}},
+		{name: "active empty terminal non-empty returns nil", terminal: []string{"Done"}},
+		{name: "both non-empty returns nil", active: []string{"To Do"}, terminal: []string{"Done"}},
+		{name: "empty terminal list on a tracker that requires one", meta: requiresTerminal, active: []string{"backlog"}, wantErr: true, wantField: "tracker.terminal_states"},
+		{name: "named terminal list on a tracker that requires one", meta: requiresTerminal, active: []string{"backlog"}, terminal: []string{"done"}},
+		{name: "whitespace-only active entry", active: []string{"backlog", "  "}, terminal: []string{"done"}, wantErr: true, wantField: "tracker.active_states[1]"},
+		{name: "empty terminal entry", active: []string{"backlog"}, terminal: []string{"done", ""}, wantErr: true, wantField: "tracker.terminal_states[1]"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg := config.ServiceConfig{
-				Tracker: config.TrackerConfig{
-					ActiveStates:   tt.active,
-					TerminalStates: tt.terminal,
-				},
-			}
+			cfg := config.ServiceConfig{Tracker: config.TrackerConfig{Kind: "test-tracker", ActiveStates: tt.active, TerminalStates: tt.terminal}}
 
-			err := ValidateConfigForPromotion(cfg)
+			err := ValidateConfigForPromotion(cfg, tt.meta)
 
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("ValidateConfigForPromotion() = nil, want error")
-				}
-				return
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateConfigForPromotion(%+v) = %v, want error %v", cfg.Tracker, err, tt.wantErr)
 			}
-			if err != nil {
-				t.Fatalf("ValidateConfigForPromotion() unexpected error: %v", err)
+			var cfgErr *config.ConfigError
+			if tt.wantField != "" && (!errors.As(err, &cfgErr) || cfgErr.Field != tt.wantField) {
+				t.Errorf("ValidateConfigForPromotion(%+v) = %v, want *config.ConfigError on field %q", cfg.Tracker, err, tt.wantField)
 			}
 		})
 	}
@@ -2787,7 +2469,7 @@ func ruleBlockPreflight(cfg config.ServiceConfig) PreflightParams {
 
 func ruleBlockConfig(topLevel map[string]any, defaultKind string, rules ...config.DispatchRule) config.ServiceConfig {
 	cfg := config.ServiceConfig{
-		Tracker:  config.TrackerConfig{Kind: "test-tracker", APIKey: "secret"},
+		Tracker:  config.TrackerConfig{Kind: "test-tracker", APIKey: "secret", ActiveStates: []string{"To Do"}},
 		Agent:    config.AgentConfig{Kind: "claude-code", Command: "/usr/bin/agent"},
 		Dispatch: config.DispatchConfig{Default: config.DispatchSelection{AgentKind: defaultKind}, Rules: rules},
 	}
