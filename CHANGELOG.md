@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-10-11
+
 ### Added
 
 - A dispatch rule can now carry a `stage` label in place of a `match` block: an issue that carries the label runs on that rule wherever it sits in the list, so one label puts an issue on a stage, and an issue with several stage labels runs on the first such rule and logs a warning. `sortie validate` rejects a stage label that two rules share, that names a tracker state, or that is a label Sortie adds itself, such as `needs-human`. ([#1256](https://github.com/sortie-ai/sortie/issues/1256))
@@ -1196,7 +1198,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - CI pipeline with `golangci-lint`, `gofmt` enforcement, and test execution via GitHub Actions.
 - Architecture Decision Records (ADR-0001 through ADR-0005).
 
-[Unreleased]: https://github.com/sortie-ai/sortie/compare/v1.26.0...HEAD
+[Unreleased]: https://github.com/sortie-ai/sortie/compare/v1.27.0...HEAD
+[1.27.0]: https://github.com/sortie-ai/sortie/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/sortie-ai/sortie/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/sortie-ai/sortie/compare/v1.24.1...v1.25.0
 [1.24.1]: https://github.com/sortie-ai/sortie/compare/v1.24.0...v1.24.1
