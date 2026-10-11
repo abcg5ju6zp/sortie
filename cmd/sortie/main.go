@@ -905,10 +905,10 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		})
 		o.AddObserver(srv)
 
+		br.logger.Info("http server listening",
+			slog.String("addr", ln.Addr().String()),
+		)
 		go func() {
-			br.logger.Info("http server listening",
-				slog.String("addr", ln.Addr().String()),
-			)
 			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				br.logger.Error("http server error", slog.Any("error", err))
 			}

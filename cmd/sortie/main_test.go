@@ -22,22 +22,36 @@ import (
 	"time"
 )
 
-// runTestTimeout is the context timeout used by tests that exercise the
-// full run() startup sequence. These tests verify startup behavior
-// (logging, DB creation, flag parsing) and do not need to wait for a
-// poll cycle; the orchestrator shuts down as soon as the context
-// expires.
-//
-// The pure-Go SQLite driver (modernc.org/sqlite) is significantly slower
-// under the race detector and on resource-constrained CI runners, where
-// PRAGMA execution and schema migrations can exceed a sub-second budget.
-// Windows NTFS adds further disk I/O overhead.
-var runTestTimeout = func() time.Duration {
-	if runtime.GOOS == "windows" {
-		return 10 * time.Second
+// runTestTimeout bounds a run() startup that never finishes. It is a
+// failure bound, not a run duration: the pure-Go SQLite driver under the
+// race detector on a starved CI runner can spend seconds in migrations,
+// and a deadline that expires there fails a healthy startup.
+const runTestTimeout = 30 * time.Second
+
+// runUntilStarted runs run() and cancels it as soon as startup has
+// finished, so the orchestrator shuts down without waiting for a poll
+// cycle and a slow startup is never cut short.
+func runUntilStarted(args []string, stdout, stderr io.Writer) int {
+	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
+	defer cancel()
+	return run(ctx, args, stdout, cancelOnStartupDone{w: stderr, cancel: cancel})
+}
+
+// cancelOnStartupDone relies on slog handing each record to a single Write.
+type cancelOnStartupDone struct {
+	w      io.Writer
+	cancel context.CancelFunc
+}
+
+func (c cancelOnStartupDone) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	// Logged at the end of startup; only the listener bind follows, and it
+	// does not consult the context for a literal address.
+	if bytes.Contains(p, []byte("pending reaction recovery")) {
+		c.cancel()
 	}
-	return 2 * time.Second
-}()
+	return n, err
+}
 
 // minimalWorkflow returns a minimal valid WORKFLOW.md content that
 // includes tracker (file) and agent (mock) config needed for the
@@ -247,10 +261,7 @@ func TestRunValidWorkflowWithTimeout(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -276,10 +287,7 @@ func TestRunPortFlagLogged(t *testing.T) {
 	port := freePort(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--port", strconv.Itoa(port), wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--port", strconv.Itoa(port), wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -650,11 +658,8 @@ func TestRunReadOnlyWorkflowDir(t *testing.T) {
 	})
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
 	wfPath := filepath.Join(workflowDir, "WORKFLOW.md")
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (DB must not be created in read-only dir); stderr: %s",
 			code, stderr.String())
@@ -702,10 +707,7 @@ func TestRunLogLevelDebug(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--log-level", "debug", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--log-level", "debug", wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -721,10 +723,7 @@ func TestRunLogLevelWarn(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--log-level", "warn", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--log-level", "warn", wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -767,10 +766,7 @@ func TestRunLogLevelFromExtension(t *testing.T) {
 	wfPath := writeWorkflowFileWithContent(t, dir, minimalWorkflowWithLogLevel("warn"))
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -788,10 +784,7 @@ func TestRunLogLevelFlagOverridesExtension(t *testing.T) {
 	wfPath := writeWorkflowFileWithContent(t, dir, minimalWorkflowWithLogLevel("error"))
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--log-level", "debug", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--log-level", "debug", wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -823,11 +816,8 @@ func TestRunLogLevelDefault(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
 	// No --log-level flag and no extension; default is info.
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -877,10 +867,7 @@ func TestRunExplicitPortServerAddr(t *testing.T) {
 	port := freePort(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--port", strconv.Itoa(port), wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--port", strconv.Itoa(port), wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -895,10 +882,7 @@ func TestRunPortZeroDisablesServer(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--port", "0", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--port", "0", wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -913,10 +897,7 @@ func TestRunCustomHost(t *testing.T) {
 	port := freePort(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--host", "0.0.0.0", "--port", strconv.Itoa(port), wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--host", "0.0.0.0", "--port", strconv.Itoa(port), wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -938,10 +919,7 @@ func TestRunDefaultPortInUseImplicit(t *testing.T) {
 	t.Cleanup(func() { ln.Close() }) //nolint:errcheck // best-effort cleanup
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0 (graceful degradation on implicit default port); stderr: %s", code, stderr.String())
 	}
@@ -962,10 +940,7 @@ func TestRunExplicitPortInUse(t *testing.T) {
 	t.Cleanup(func() { ln.Close() }) //nolint:errcheck // best-effort cleanup
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--port", strconv.Itoa(occupiedPort), wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--port", strconv.Itoa(occupiedPort), wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1; stderr: %s", code, stderr.String())
 	}
@@ -979,10 +954,7 @@ func TestRunInvalidHost(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--host", "invalid", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--host", "invalid", wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1; stderr: %s", code, stderr.String())
 	}
@@ -1018,10 +990,7 @@ func TestRunLogFormatJSON(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--log-format", "json", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--log-format", "json", wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -1052,10 +1021,7 @@ func TestRunLogFormatText(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--log-format", "text", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--log-format", "text", wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -1076,11 +1042,8 @@ func TestRunLogFormatDefault(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
 	// No --log-format flag; default is text.
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -1128,10 +1091,7 @@ func TestRunLogFormatCaseInsensitive(t *testing.T) {
 	wfPath := setupRunDir(t)
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--log-format", "JSON", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--log-format", "JSON", wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -1153,10 +1113,7 @@ func TestRunLogFormatFromExtension(t *testing.T) {
 	wfPath := writeWorkflowFileWithContent(t, dir, minimalWorkflowWithLogFormat("json"))
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -1179,10 +1136,7 @@ func TestRunLogFormatFlagOverridesExtension(t *testing.T) {
 	wfPath := writeWorkflowFileWithContent(t, dir, minimalWorkflowWithLogFormat("json"))
 
 	var stdout, stderr bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{"--log-format", "text", wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{"--log-format", "text", wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, stderr.String())
 	}
@@ -1538,10 +1492,7 @@ func TestRunCIFailureOnly_ConstructsSCMAdapter(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr lockedBuf
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
 	}
@@ -1585,10 +1536,7 @@ func TestRunCIFailure_MismatchedProviders(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr lockedBuf
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (mismatched providers); stderr:\n%s", code, stderr.String())
 	}
@@ -1653,10 +1601,7 @@ func TestRunAutoMerge_UnknownProvider(t *testing.T) {
 	// on a contended Windows runner. The startup error returns in
 	// milliseconds once reached, so the wider budget is a hang-guard
 	// only and never slows the happy path.
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (unknown SCM provider); stderr:\n%s", code, stderr.String())
 	}
@@ -1688,10 +1633,7 @@ func TestRunAutoMerge_MismatchedProviders(t *testing.T) {
 	// on a contended Windows runner. The startup error returns in
 	// milliseconds once reached, so the wider budget is a hang-guard
 	// only and never slows the happy path.
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (mismatched providers); stderr:\n%s", code, stderr.String())
 	}
@@ -1834,10 +1776,7 @@ func TestLabelFixOnly_ConstructsSCMAdapter(t *testing.T) {
 	// run() rejects the unknown SCM provider only after opening and
 	// migrating the database, so the timeout must outlast a slow DB open
 	// on a contended Windows runner (see TestRunAutoMerge_UnknownProvider).
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (unknown SCM adapter for fix-only label_commands); stderr:\n%s", code, stderr.String())
 	}
@@ -1865,10 +1804,7 @@ func TestLabelFixOnly_JoinsProviderConflictCheck(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr lockedBuf
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (mismatched providers); stderr:\n%s", code, stderr.String())
 	}
@@ -1981,10 +1917,7 @@ func TestRunLabelCommandsBothLabelsEmpty_ConfigRejected(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr lockedBuf
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1 (label_commands both labels empty); stderr:\n%s", code, stderr.String())
 	}
@@ -2089,10 +2022,7 @@ func TestRunFiveKindsWiring_AllEnablementRecordsLogged(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr lockedBuf
-	ctx, cancel := context.WithTimeout(context.Background(), runTestTimeout)
-	defer cancel()
-
-	code := run(ctx, []string{wfPath}, &stdout, &stderr)
+	code := runUntilStarted([]string{wfPath}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr:\n%s", code, stderr.String())
 	}
