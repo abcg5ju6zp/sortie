@@ -58,6 +58,8 @@ func (tr *notifyE2ETracker) FetchCandidateIssues(_ context.Context) ([]domain.Is
 	return tr.issues, nil
 }
 
+func (tr *notifyE2ETracker) SetTrackerStates(func() domain.TrackerStates) {}
+
 func (tr *notifyE2ETracker) FetchIssueByID(_ context.Context, issueID string) (domain.Issue, error) {
 	for _, iss := range tr.issues {
 		if iss.ID == issueID {

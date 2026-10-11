@@ -211,7 +211,7 @@ The file adapter is registered under the kind `"file"` in the Sortie tracker reg
 | Key             | Type             | Required | Description                                                                                                                        |
 | --------------- | ---------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `path`          | string           | Yes      | Filesystem path to the JSON file. Resolved relative to the process working directory. Empty string is an error.                    |
-| `active_states` | array of strings | No       | States considered active for `FetchCandidateIssues`. Compared case-insensitively. When absent or empty, all issues are candidates. |
+| `active_states` | array of strings | No       | States considered active for `FetchCandidateIssues`. Compared case-insensitively. When absent or empty, no issue is a candidate. |
 
 ### 8.2 WORKFLOW.md Integration
 
@@ -239,7 +239,7 @@ The file adapter implements the five read operations of Sections 9.1 to 9.5 and 
 
 ### 9.1 FetchCandidateIssues
 
-Returns issues whose state matches the configured `active_states` (case-insensitive). If no active states are configured, returns all issues. Comments are set to `nil` on all returned issues regardless of the file contents.
+Returns issues whose state matches the configured `active_states` (case-insensitive). If no active states are configured, returns no issue. Comments are set to `nil` on all returned issues regardless of the file contents.
 
 **Returns:** `[]Issue` (non-nil, possibly empty).
 

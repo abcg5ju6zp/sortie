@@ -2430,6 +2430,8 @@ func (c *candidateTrackerAdapter) FetchCandidateIssues(ctx context.Context) ([]d
 	return nil, nil
 }
 
+func (c *candidateTrackerAdapter) SetTrackerStates(func() domain.TrackerStates) {}
+
 func TestOrchestratorPreflightFailure(t *testing.T) {
 	t.Parallel()
 
@@ -4453,6 +4455,10 @@ func TestReconciliationGuardOnInvalidReload(t *testing.T) {
 	}
 }
 
+func promotionGate(cfg config.ServiceConfig) error {
+	return ValidateConfigForPromotion(cfg, registry.TrackerMeta{})
+}
+
 func TestReconciliationGuardEndToEnd(t *testing.T) {
 	t.Parallel()
 
@@ -4486,7 +4492,7 @@ do {{ .issue.identifier }}
 	}
 
 	wm, err := workflow.NewManager(workflowPath, discardLogger(),
-		workflow.WithValidateFunc(ValidateConfigForPromotion))
+		workflow.WithValidateFunc(promotionGate))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -4620,7 +4626,7 @@ do {{ .issue.identifier }}
 	}
 
 	wm, err := workflow.NewManager(workflowPath, discardLogger(),
-		workflow.WithValidateFunc(ValidateConfigForPromotion))
+		workflow.WithValidateFunc(promotionGate))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -7901,6 +7907,8 @@ func (s *sweepThrottleTracker) FetchCandidateIssues(_ context.Context) ([]domain
 	return nil, nil
 }
 
+func (s *sweepThrottleTracker) SetTrackerStates(func() domain.TrackerStates) {}
+
 func (s *sweepThrottleTracker) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }
@@ -8719,6 +8727,26 @@ func TestHandleTick_StageLineageChain(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHandleTick_StageHopDirectReadWithoutStateHoldsTheIssue(t *testing.T) {
+	t.Parallel()
+
+	h := newRunHarness(t, runConfig(t, stagedRulesRaw()), "kind-a", "kind-b", "kind-c")
+	h.state.StageHops["id-1"] = &StageHopEntry{Identifier: "S-1", Count: 1, SourceRule: "specify", TargetRule: "plan", TargetLabel: "Stage-Plan"}
+	h.tracker.candidates = []domain.Issue{candidate("id-1", "S-1")}
+	h.tracker.issues["id-1"] = domain.Issue{ID: "id-1", Identifier: "S-1", Title: "S-1"}
+	h.build()
+
+	h.o.handleTick(context.Background())
+	h.o.state.WorkerWg.Wait()
+
+	if _, running := h.o.state.Running["id-1"]; running {
+		t.Error("handleTick() dispatched an issue whose direct read showed no state, want held")
+	}
+	if hop := h.o.state.StageHops["id-1"]; hop == nil || hop.TargetObserved {
+		t.Errorf("handleTick() hop record = %+v, want kept and unobserved", hop)
 	}
 }
 
@@ -9745,6 +9773,8 @@ func (r *runTracker) FetchCandidateIssues(context.Context) ([]domain.Issue, erro
 	defer r.mu.Unlock()
 	return slices.Clone(r.candidates), nil
 }
+
+func (r *runTracker) SetTrackerStates(func() domain.TrackerStates) {}
 
 func (r *runTracker) FetchIssueByID(_ context.Context, id string) (domain.Issue, error) {
 	r.mu.Lock()

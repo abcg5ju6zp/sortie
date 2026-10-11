@@ -16,6 +16,8 @@ func (m *mockTrackerAdapter) FetchCandidateIssues(_ context.Context) ([]Issue, e
 	return nil, nil
 }
 
+func (m *mockTrackerAdapter) SetTrackerStates(func() TrackerStates) {}
+
 func (m *mockTrackerAdapter) FetchIssueByID(_ context.Context, _ string) (Issue, error) {
 	return Issue{}, nil
 }

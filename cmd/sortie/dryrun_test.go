@@ -361,6 +361,8 @@ var _ domain.TrackerAdapter = (*dryRunFakeTracker)(nil)
 func (f *dryRunFakeTracker) FetchCandidateIssues(context.Context) ([]domain.Issue, error) {
 	return f.issues, nil
 }
+
+func (f *dryRunFakeTracker) SetTrackerStates(func() domain.TrackerStates) {}
 func (f *dryRunFakeTracker) FetchIssueByID(context.Context, string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

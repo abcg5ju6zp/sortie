@@ -21,10 +21,11 @@ import (
 // colon-free PAT (Bearer) credential and a non-Cloud host.
 func v2Config(endpoint string) map[string]any {
 	return map[string]any{
-		"endpoint":    endpoint,
-		"api_key":     "pat_token_abc",
-		"project":     "SRV",
-		"api_version": "2",
+		"endpoint":      endpoint,
+		"api_key":       "pat_token_abc",
+		"project":       "SRV",
+		"api_version":   "2",
+		"active_states": []any{"To Do"},
 	}
 }
 

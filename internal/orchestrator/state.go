@@ -282,6 +282,11 @@ type RunningEntry struct {
 	// token warning reaching its threshold and cleared once that write
 	// succeeds.
 	MetadataWritePending bool
+
+	// NoStateObserved is true after a reconcile read the issue in no state
+	// and no later reconcile read it in a state. Set and cleared only by
+	// [reconcileTrackerState].
+	NoStateObserved bool
 }
 
 // RetryEntry holds the runtime state for a pending retry. IssueID,
@@ -301,6 +306,10 @@ type RetryEntry struct {
 	// LastSSHHost is the SSH host from the previous attempt, passed as the
 	// preferred host to [HostPool.AcquireHost]. Runtime-only.
 	LastSSHHost string
+
+	// noStateObserved is true when the fire that scheduled this entry read
+	// the issue in no state. Runtime-only.
+	noStateObserved bool
 
 	// scheduledAt is time.Now() when ScheduleRetry created this entry. Its
 	// monotonic reading makes staleness detection immune to wall-clock
@@ -788,6 +797,11 @@ type StageHopEntry struct {
 
 	// ChainID is the chain of the run whose exit made the hop.
 	ChainID string
+
+	// NoStateObserved is true after a reconcile read the issue in no state
+	// and no later reconcile read it in a state. Set and cleared only by
+	// [reconcileTrackerState].
+	NoStateObserved bool
 }
 
 // State is the single authoritative runtime state owned by the
@@ -1652,12 +1666,9 @@ func BuildLabelFixReactionConfig(cfg config.LabelCommandsConfig) LabelFixReactio
 
 // BuildMergeCompletionReactionConfig extracts and validates
 // merge-completion-specific configuration from a [config.ReactionConfig].
-//
-// meta resolves the default active-state list only; the terminal list is
-// read from tracker as written, with no fallback to
-// [registry.TrackerMeta.DefaultTerminalStates], so the offline validator
-// and the runtime terminal drop agree on what "terminal" means.
-func BuildMergeCompletionReactionConfig(rc config.ReactionConfig, tracker config.TrackerConfig, meta registry.TrackerMeta) (MergeCompletionReactionConfig, error) {
+// The state lists are read from tracker as written, so the offline
+// validator and the runtime terminal drop agree on what "terminal" means.
+func BuildMergeCompletionReactionConfig(rc config.ReactionConfig, tracker config.TrackerConfig) (MergeCompletionReactionConfig, error) {
 	cfg := MergeCompletionReactionConfig{
 		PollIntervalMS:  60000,
 		Escalation:      rc.Escalation,
@@ -1694,15 +1705,10 @@ func BuildMergeCompletionReactionConfig(rc config.ReactionConfig, tracker config
 		return MergeCompletionReactionConfig{}, fmt.Errorf("target_state is required")
 	}
 
-	effectiveActive := tracker.ActiveStates
-	if len(effectiveActive) == 0 {
-		effectiveActive = meta.DefaultActiveStates
-	}
-
 	if strings.EqualFold(cfg.TargetState, tracker.HandoffState) {
 		return MergeCompletionReactionConfig{}, fmt.Errorf("invalid target_state %q: must not equal tracker.handoff_state", cfg.TargetState)
 	}
-	if _, active := stateSet(effectiveActive)[strings.ToLower(cfg.TargetState)]; active {
+	if _, active := stateSet(tracker.ActiveStates)[strings.ToLower(cfg.TargetState)]; active {
 		return MergeCompletionReactionConfig{}, fmt.Errorf("invalid target_state %q: must not be a member of tracker.active_states", cfg.TargetState)
 	}
 	if _, terminal := stateSet(tracker.TerminalStates)[strings.ToLower(cfg.TargetState)]; !terminal {

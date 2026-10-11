@@ -18,7 +18,6 @@ import (
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/prompt"
-	"github.com/sortie-ai/sortie/internal/registry"
 )
 
 var recordGolden = flag.Bool("record-golden", false, "rewrite the golden notification fixtures instead of comparing against them")
@@ -158,7 +157,7 @@ func goldenWiring(t *testing.T, cfg config.ServiceConfig, rec *goldenRecorder) g
 		reconcile.AutoMergeConfig, err = BuildAutoMergeReactionConfig(rc)
 	}
 	if rc, ok := cfg.Reactions["merge_completion"]; ok && err == nil {
-		reconcile.MergeCompletionConfig, err = BuildMergeCompletionReactionConfig(rc, cfg.Tracker, registry.TrackerMeta{})
+		reconcile.MergeCompletionConfig, err = BuildMergeCompletionReactionConfig(rc, cfg.Tracker)
 	}
 	if err != nil {
 		t.Fatalf("building reaction configuration: %v", err)

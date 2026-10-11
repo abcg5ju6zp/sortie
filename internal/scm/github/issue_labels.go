@@ -68,26 +68,7 @@ func githubIssueLabelOps(client *httpkit.Client, owner, repo, issueNumber string
 }
 
 func readIssueLabels(ctx context.Context, client *httpkit.Client, labelsPath string) ([]issuekit.IssueLabel, error) {
-	paginator := httpkit.NewLinkPaginator(client, labelsPath, url.Values{"per_page": {issueLabelsPageSize}}, func(body []byte) ([]githubLabel, error) {
-		var labels []githubLabel
-		if err := json.Unmarshal(body, &labels); err != nil {
-			return nil, &domain.TrackerError{
-				Kind:    domain.ErrTrackerPayload,
-				Message: "failed to parse issue labels response",
-				Err:     err,
-			}
-		}
-		return labels, nil
-	}, httpkit.PaginatorOptions{
-		MaxPages: maxPages,
-		OnLimitReached: func(limit int) {
-			slog.Warn("pagination limit reached",
-				slog.Int("max_pages", limit),
-				slog.String("endpoint", "/repos/{owner}/{repo}/issues/{issue_id}/labels"))
-		},
-	})
-
-	labels, err := paginator.All(ctx)
+	labels, err := readLabelPages(ctx, client, labelsPath, "/repos/{owner}/{repo}/issues/{issue_id}/labels")
 	if err != nil {
 		return nil, err
 	}
@@ -97,6 +78,43 @@ func readIssueLabels(ctx context.Context, client *httpkit.Client, labelsPath str
 		stored[i] = issuekit.IssueLabel{Name: l.Name}
 	}
 	return stored, nil
+}
+
+// readRepositoryLabelNames returns the name of every label the repository
+// defines, the catalog an active state label must come from.
+func readRepositoryLabelNames(ctx context.Context, client *httpkit.Client, owner, repo string) ([]string, error) {
+	labels, err := readLabelPages(ctx, client,
+		"/repos/"+url.PathEscape(owner)+"/"+url.PathEscape(repo)+"/labels",
+		"/repos/{owner}/{repo}/labels")
+	if err != nil {
+		return nil, err
+	}
+	return githubLabelNames(labels), nil
+}
+
+// readLabelPages pages a labels route; endpoint names it in the log when the
+// page limit is reached.
+func readLabelPages(ctx context.Context, client *httpkit.Client, path, endpoint string) ([]githubLabel, error) {
+	paginator := httpkit.NewLinkPaginator(client, path, url.Values{"per_page": {issueLabelsPageSize}}, func(body []byte) ([]githubLabel, error) {
+		var labels []githubLabel
+		if err := json.Unmarshal(body, &labels); err != nil {
+			return nil, &domain.TrackerError{
+				Kind:    domain.ErrTrackerPayload,
+				Message: "failed to parse labels response",
+				Err:     err,
+			}
+		}
+		return labels, nil
+	}, httpkit.PaginatorOptions{
+		MaxPages: maxPages,
+		OnLimitReached: func(limit int) {
+			slog.Warn("pagination limit reached",
+				slog.Int("max_pages", limit),
+				slog.String("endpoint", endpoint))
+		},
+	})
+
+	return paginator.All(ctx)
 }
 
 // reportedLabelList reads the label list a label write answers with. A body

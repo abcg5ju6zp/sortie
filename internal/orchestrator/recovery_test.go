@@ -675,6 +675,8 @@ func (s *recoveryTrackerStub) FetchIssuesByStates(_ context.Context, _ []string)
 func (s *recoveryTrackerStub) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error) {
 	return nil, nil
 }
+
+func (s *recoveryTrackerStub) SetTrackerStates(func() domain.TrackerStates) {}
 func (s *recoveryTrackerStub) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

@@ -28,8 +28,10 @@ The reaction transitions the linked issue to the single state named by its own `
 
 - Required whenever `reactions.merge_completion.provider` is non-empty.
 - MUST NOT equal `tracker.handoff_state` (case-insensitive comparison).
-- MUST NOT be a member of `tracker.active_states` (case-insensitive), falling back to the tracker adapter's default active-state list only when `tracker.active_states` itself is empty.
-- MUST be a member of `tracker.terminal_states` exactly as written in configuration (case-insensitive), with no fallback to the adapter's default terminal-state list.
+- MUST NOT be a member of `tracker.active_states` (case-insensitive).
+- MUST be a member of `tracker.terminal_states` (case-insensitive).
+
+Both lists are read exactly as written in configuration.
 
 `tracker.handoff_state` and `tracker.terminal_states` are themselves required whenever the reaction is configured, each reported as a distinct configuration error when absent.
 

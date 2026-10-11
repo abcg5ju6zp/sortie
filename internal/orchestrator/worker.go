@@ -1401,7 +1401,9 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 				return
 			}
 
-			if stateStr, ok := refreshed[issue.ID]; ok {
+			// An empty state may be a label edit in flight; reconcile alone
+			// stops a run whose issue lost its state label.
+			if stateStr, ok := refreshed[issue.ID]; ok && stateStr != "" {
 				issue.State = stateStr
 				observedIssueState = stateStr
 			}

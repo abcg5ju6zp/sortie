@@ -47,24 +47,23 @@ func optionalEnv(t *testing.T, key string) string {
 }
 
 // activeStates returns the SORTIE_GITLAB_ACTIVE_STATES override when set,
-// else the adapter's own defaultActiveStates, so a change to the adapter's
-// defaults cannot silently desynchronize the suite.
+// else the labels the integration project is seeded with.
 func activeStates(t *testing.T) []string {
 	t.Helper()
 	if raw := os.Getenv("SORTIE_GITLAB_ACTIVE_STATES"); raw != "" {
 		return splitStates(raw)
 	}
-	return defaultActiveStates
+	return []string{"backlog", "in-progress", "review"}
 }
 
 // terminalStates returns the SORTIE_GITLAB_TERMINAL_STATES override when
-// set, else the adapter's own defaultTerminalStates.
+// set, else the labels the integration project is seeded with.
 func terminalStates(t *testing.T) []string {
 	t.Helper()
 	if raw := os.Getenv("SORTIE_GITLAB_TERMINAL_STATES"); raw != "" {
 		return splitStates(raw)
 	}
-	return defaultTerminalStates
+	return []string{"done", "wontfix"}
 }
 
 // splitStates parses a comma-separated state list into a trimmed, non-empty

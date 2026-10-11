@@ -131,10 +131,8 @@ func runValidate(_ context.Context, args []string, stdout io.Writer, stderr io.W
 	// block dispatch even when the dispatch preflight passes, so both the
 	// exit code and the JSON valid flag key on the union of preflight,
 	// reaction, and activation errors.
-	trackerMeta, _ := registry.Trackers.Meta(cfg.Tracker.Kind)
-
 	var forgeDiags []validateDiag
-	for _, rd := range orchestrator.ValidateReactionConfigs(cfg, trackerMeta) {
+	for _, rd := range orchestrator.ValidateReactionConfigs(cfg) {
 		forgeDiags = append(forgeDiags, validateDiag{Severity: rd.Severity, Check: rd.Check, Message: rd.Message})
 	}
 	forgeDiags = append(forgeDiags, activationChecks(cfg)...)

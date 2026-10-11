@@ -1851,7 +1851,6 @@ func TestBuildMergeCompletionReactionConfig(t *testing.T) {
 		name        string
 		rc          config.ReactionConfig
 		tracker     config.TrackerConfig
-		meta        registry.TrackerMeta
 		want        MergeCompletionReactionConfig
 		wantErr     bool
 		wantErrText string
@@ -1950,7 +1949,7 @@ func TestBuildMergeCompletionReactionConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := BuildMergeCompletionReactionConfig(tt.rc, tt.tracker, tt.meta)
+			got, err := BuildMergeCompletionReactionConfig(tt.rc, tt.tracker)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("BuildMergeCompletionReactionConfig(%+v, %+v) = %+v, want error", tt.rc, tt.tracker, got)
@@ -1968,62 +1967,6 @@ func TestBuildMergeCompletionReactionConfig(t *testing.T) {
 			}
 		})
 	}
-}
-
-// TestBuildMergeCompletionReactionConfig_StateListFallbackAsymmetry pins
-// the asymmetry: the terminal list never falls back to TrackerMeta
-// defaults, the active list does, and the fallback only tightens the
-// active check.
-func TestBuildMergeCompletionReactionConfig_StateListFallbackAsymmetry(t *testing.T) {
-	t.Parallel()
-
-	t.Run("terminal defaults never fill in an empty written list", func(t *testing.T) {
-		t.Parallel()
-
-		rc := config.ReactionConfig{Extra: map[string]any{"target_state": "done"}}
-		tracker := config.TrackerConfig{HandoffState: "in-review"}
-		meta := registry.TrackerMeta{DefaultTerminalStates: []string{"done"}}
-
-		_, err := BuildMergeCompletionReactionConfig(rc, tracker, meta)
-		if err == nil {
-			t.Fatal("BuildMergeCompletionReactionConfig(...) = nil error, want error (terminal defaults must not fill in)")
-		}
-		if !strings.Contains(err.Error(), "tracker.terminal_states") {
-			t.Errorf("BuildMergeCompletionReactionConfig(...) error = %q, want substring %q", err.Error(), "tracker.terminal_states")
-		}
-	})
-
-	t.Run("active defaults fill in and reject a target drawn from them", func(t *testing.T) {
-		t.Parallel()
-
-		rc := config.ReactionConfig{Extra: map[string]any{"target_state": "doing"}}
-		tracker := config.TrackerConfig{HandoffState: "in-review", TerminalStates: []string{"doing", "done"}}
-		meta := registry.TrackerMeta{DefaultActiveStates: []string{"doing"}}
-
-		_, err := BuildMergeCompletionReactionConfig(rc, tracker, meta)
-		if err == nil {
-			t.Fatal("BuildMergeCompletionReactionConfig(...) = nil error, want error (active defaults must fill in and reject)")
-		}
-		if !strings.Contains(err.Error(), "tracker.active_states") {
-			t.Errorf("BuildMergeCompletionReactionConfig(...) error = %q, want substring %q", err.Error(), "tracker.active_states")
-		}
-	})
-
-	t.Run("a target outside the active defaults and inside the written terminal list validates", func(t *testing.T) {
-		t.Parallel()
-
-		rc := config.ReactionConfig{Extra: map[string]any{"target_state": "done"}}
-		tracker := config.TrackerConfig{HandoffState: "in-review", TerminalStates: []string{"done"}}
-		meta := registry.TrackerMeta{DefaultActiveStates: []string{"doing"}}
-
-		got, err := BuildMergeCompletionReactionConfig(rc, tracker, meta)
-		if err != nil {
-			t.Fatalf("BuildMergeCompletionReactionConfig(...) unexpected error: %v", err)
-		}
-		if got.TargetState != "done" {
-			t.Errorf("BuildMergeCompletionReactionConfig(...).TargetState = %q, want %q", got.TargetState, "done")
-		}
-	})
 }
 
 func TestBuildLabelFixReactionConfig(t *testing.T) {
@@ -2602,7 +2545,7 @@ func reactionEscalationBuilders() map[string]func(escalation string) (string, er
 			return got.Escalation, err
 		},
 		"merge completion": func(escalation string) (string, error) {
-			got, err := BuildMergeCompletionReactionConfig(rc(escalation), tracker, registry.TrackerMeta{})
+			got, err := BuildMergeCompletionReactionConfig(rc(escalation), tracker)
 			return got.Escalation, err
 		},
 	}

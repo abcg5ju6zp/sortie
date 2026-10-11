@@ -32,7 +32,6 @@ func init() {
 	registry.Trackers.RegisterWithMeta("jira", NewJiraAdapter, registry.TrackerMeta{
 		RequiresProject:       true,
 		RequiresAPIKey:        true,
-		DefaultActiveStates:   defaultActiveStates,
 		ValidateTrackerConfig: validateConfig,
 		BlockerSource:         registry.BlockersFromCandidates,
 	})
@@ -44,9 +43,6 @@ var _ domain.TrackerAdapter = (*JiraAdapter)(nil)
 // searchFields is the comma-separated list of Jira fields requested
 // in search and issue-detail operations.
 const searchFields = "summary,status,priority,labels,assignee,issuetype,parent,issuelinks,created,updated,description"
-
-// defaultActiveStates is applied when the config omits active_states.
-var defaultActiveStates = []string{"Backlog", "Selected for Development", "In Progress"}
 
 // maxSearchResults is the page size for cursor-based search pagination.
 const maxSearchResults = "50"
@@ -62,21 +58,20 @@ const batchSize = 40
 // Jira. The selected API version and the base path derived from it are
 // immutable after construction. Safe for concurrent use.
 type JiraAdapter struct {
-	client       *httpkit.Client
-	project      string
-	activeStates []string
-	endpoint     string
-	queryFilter  string
-	apiVersion   string
-	basePath     string
-	metrics      domain.Metrics // nil-safe: check before calling
+	*issuekit.StateSource
+	client      *httpkit.Client
+	project     string
+	endpoint    string
+	queryFilter string
+	apiVersion  string
+	basePath    string
+	metrics     domain.Metrics // nil-safe: check before calling
 }
 
 // NewJiraAdapter creates a [JiraAdapter] from adapter configuration.
 // Required config keys: "endpoint", "api_key", "project". Optional:
-// "active_states" (defaults to Backlog, Selected for Development, In
-// Progress), "query_filter" (raw JQL fragment), "api_version" ("2" or
-// "3", default "3").
+// "active_states" (an empty list dispatches nothing), "query_filter"
+// (raw JQL fragment), "api_version" ("2" or "3", default "3").
 //
 // On version "3" the api_key must be email:token and authenticates
 // with Basic. On version "2" a colon-free api_key is a Personal Access
@@ -139,9 +134,9 @@ func NewJiraAdapter(config map[string]any) (domain.TrackerAdapter, error) {
 		}
 	}
 
-	activeStates := typeutil.ExtractStringSlice(config["active_states"])
-	if len(activeStates) == 0 {
-		activeStates = defaultActiveStates
+	states, err := issuekit.TrackerStatesFromConfig(config)
+	if err != nil {
+		return nil, err
 	}
 
 	queryFilter, fault := typeutil.StringField(config, "query_filter")
@@ -158,13 +153,13 @@ func NewJiraAdapter(config map[string]any) (domain.TrackerAdapter, error) {
 	}
 
 	return &JiraAdapter{
-		client:       newJiraClient(endpoint, authHeader, userAgent),
-		project:      project,
-		activeStates: activeStates,
-		endpoint:     endpoint,
-		queryFilter:  queryFilter,
-		apiVersion:   apiVersion,
-		basePath:     basePath(apiVersion),
+		StateSource: issuekit.NewStateSource(states),
+		client:      newJiraClient(endpoint, authHeader, userAgent),
+		project:     project,
+		endpoint:    endpoint,
+		queryFilter: queryFilter,
+		apiVersion:  apiVersion,
+		basePath:    basePath(apiVersion),
 	}, nil
 }
 
@@ -332,12 +327,18 @@ func isLocalEndpoint(host string) bool {
 
 // FetchCandidateIssues returns issues in configured active states
 // for the configured project. Comments are set to nil on all returned
-// issues. Results are ordered by priority then creation time.
+// issues. Results are ordered by priority then creation time. An empty
+// active list returns no issue and sends no request.
 func (a *JiraAdapter) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
+	active := a.TrackerStates().Active
+	if len(active) == 0 {
+		return []domain.Issue{}, nil
+	}
+
 	issues := make([]domain.Issue, 0)
 	err := trackermetrics.Track(a.metrics, "fetch_candidates", func() error {
 		var fetchErr error
-		jql := buildCandidateJQL(a.project, a.activeStates, a.queryFilter)
+		jql := buildCandidateJQL(a.project, active, a.queryFilter)
 		issues, fetchErr = a.paginatedSearch(ctx, jql, searchFields)
 		return fetchErr
 	})

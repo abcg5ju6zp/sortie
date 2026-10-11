@@ -113,10 +113,18 @@ function reconcile_running_issues(state):
     return state
 
   for issue in refreshed:
+    entry = state.running[issue.id]
+    if issue.state is empty:                           // the issue reads no configured state
+      if confirm_no_state(entry.no_state_observed):    // sets an unset flag and returns false; true when already set
+        state = terminate_running_issue(state, issue.id, cleanup_workspace=false)
+      else:
+        log_info("deferred stop for issue without a state label")
+      continue
+    entry.no_state_observed = false
     if issue.state in terminal_states:
       state = terminate_running_issue(state, issue.id, cleanup_workspace=true)
     else if issue.state in active_states:
-      state.running[issue.id].issue = issue
+      entry.issue = issue
     else:
       state = terminate_running_issue(state, issue.id, cleanup_workspace=false)
 
@@ -124,6 +132,8 @@ function reconcile_running_issues(state):
   state = reconcile_review_comments(state)
   return state
 ```
+
+The refresh also reads every issue that holds a stage hop record (§8.5), and a hop record decides a no-state reading through `confirm_no_state` on its own flag: the first reading keeps the record, its count, and its hold, and the second resets it with the `not_active` trigger. A reading in a configured state clears the flag, and an issue missing from the response leaves every flag as it is. A run that ends before the second reading takes the exit disposition of its last configured state, because the exit reads the entry's issue snapshot, which a no-state reading never updates.
 
 ```text
 function reconcile_ci_status(state):
@@ -390,6 +400,9 @@ function hold_for_stage_hop(issue, state):
   if err:
     log_warn("stage hop target read failed, holding issue")
     return issue, held                                   // retried next tick
+  if read.state is empty:
+    log_info("stage hop target read shows no state, holding issue")   // the record stays; reconciliation decides on the second reading
+    return issue, held
   if is_terminal_state(read.state):
     reset_stage_hop(state, issue.id, "terminal")
     return issue, held
@@ -518,8 +531,10 @@ function run_agent_attempt(issue, attempt, settings, orchestrator_channel):
       run_hook_best_effort("after_run", workspace.path)
       fail_worker(exit_kind_at_ending(worker_ctx, cancelled_at_ending), "issue state refresh error")
 
-    issue = refreshed_issue[0] or issue
-    observed_issue_state = refreshed_issue[0].state or observed_issue_state  # carried into the exit report
+    if refreshed_issue[0] is present and refreshed_issue[0].state is not empty:
+      issue = refreshed_issue[0]
+      observed_issue_state = issue.state               # carried into the exit report
+    // an empty state keeps the last state read: reconciliation alone stops a run whose issue lost its state label
 
     if issue.state is not active:
       break
@@ -998,18 +1013,32 @@ on_retry_timer(issue_id, state):
   if missing:
     return state
 
-  candidates = tracker.fetch_candidate_issues()
-  if fetch failed:
+  issue, err = tracker.fetch_issue_by_id(issue_id)
+  if err:
     return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
       identifier: retry_entry.identifier,
       error: "retry poll failed",
       session_id: retry_entry.session_id
     })
 
-  issue = find_by_id(candidates, issue_id)
   if issue is null:
     state.claimed.remove(issue_id)
     return state
+
+  if issue.state is empty:                             // decided before the required-field check and any stage hop routing
+    if confirm_no_state(retry_entry.no_state_observed):
+      log_info("issue without a state label, releasing claim")
+      state.claimed.remove(issue_id)
+      delete_retry_entry(issue_id)
+      return state
+    log_info("deferred retry for issue without a state label")
+    // the same attempt number, delayed by the failure backoff of §8.4
+    return schedule_retry_after_backoff(state, issue_id, retry_entry.attempt, {
+      identifier: retry_entry.identifier,
+      error: "issue without a state label",
+      session_id: retry_entry.session_id,              // continuation context and reaction kind ride along
+      no_state_observed: true
+    })
 
   if available_slots(state) == 0:
     return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
@@ -1055,5 +1084,5 @@ on_retry_timer(issue_id, state):
 
 A changed settings result never clears `resume_session_id`; only a changed kind or template does.
 
-`retry_selection` keeps the frozen triple, with a retired kind replaced by its replacement kind, while the kind is still reachable through `agent.kind`, `dispatch.default.agent`, or a rule and the template is still held, and otherwise returns `resolve_rule` over the configuration in force, passing the issue's hop route (§5.3.9, §8.4). A retry that finds its issue terminal or no longer active ends the issue's hop count.
+`retry_selection` keeps the frozen triple, with a retired kind replaced by its replacement kind, while the kind is still reachable through `agent.kind`, `dispatch.default.agent`, or a rule and the template is still held, and otherwise returns `resolve_rule` over the configuration in force, passing the issue's hop route (§5.3.9, §8.4). A retry that finds its issue terminal or no longer active ends the issue's hop count. A retry that finds its issue in no state never touches the hop record.
 

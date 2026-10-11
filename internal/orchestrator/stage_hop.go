@@ -373,6 +373,16 @@ func (o *Orchestrator) holdForStageHop(ctx context.Context, issue domain.Issue, 
 		return issue, false
 	}
 
+	// Reconcile reads every hop-record issue each tick and resets the
+	// record at the second consecutive no-state reading; a single one,
+	// possibly a label edit in flight, only holds the issue for this tick.
+	if read.State == "" {
+		log.Info("stage hop target read showed no state, holding issue",
+			slog.String("target_label", hop.TargetLabel),
+		)
+		return issue, false
+	}
+
 	readState := strings.ToLower(read.State)
 	if _, terminal := terminalSet[readState]; terminal {
 		resetStageHop(ctx, o.state, o.store, issue.ID, stageResetTerminal, log)

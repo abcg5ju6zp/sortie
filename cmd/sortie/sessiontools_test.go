@@ -139,6 +139,8 @@ var _ domain.TrackerAdapter = (*stubTrackerAdapter)(nil)
 func (s *stubTrackerAdapter) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error) {
 	return nil, nil
 }
+
+func (s *stubTrackerAdapter) SetTrackerStates(func() domain.TrackerStates) {}
 func (s *stubTrackerAdapter) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

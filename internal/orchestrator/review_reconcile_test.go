@@ -157,6 +157,8 @@ func (s *reviewTrackerStub) FetchIssuesByStates(_ context.Context, _ []string) (
 func (s *reviewTrackerStub) FetchCandidateIssues(_ context.Context) ([]domain.Issue, error) {
 	return nil, nil
 }
+
+func (s *reviewTrackerStub) SetTrackerStates(func() domain.TrackerStates) {}
 func (s *reviewTrackerStub) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
 	return domain.Issue{}, nil
 }

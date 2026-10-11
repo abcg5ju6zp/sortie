@@ -33,8 +33,6 @@ func init() {
 		RequiresProject:       true,
 		RequiresAPIKey:        true,
 		ValidateTrackerConfig: validateConfig,
-		DefaultActiveStates:   defaultActiveStates,
-		DefaultTerminalStates: defaultTerminalStates,
 		BlockerSource:         registry.BlockersFromCandidates,
 	})
 }
@@ -52,25 +50,17 @@ const topLevelPageSize = 50
 // request.
 const stateBatchChunkSize = 50
 
-// defaultActiveStates is applied when the config omits active_states.
-var defaultActiveStates = []string{"Backlog", "Todo", "In Progress"}
-
-// defaultTerminalStates is applied when the config omits terminal_states.
-var defaultTerminalStates = []string{"Done", "Canceled", "Duplicate"}
-
 // LinearAdapter implements [domain.TrackerAdapter] against Linear. All fields
-// except metrics are set once at construction and never mutated, so the adapter
-// is safe for concurrent use.
+// except metrics and the state source are set once at construction and never
+// mutated, so the adapter is safe for concurrent use.
 type LinearAdapter struct {
-	client         graphQLClient
-	project        string
-	activeStates   []string
-	terminalStates []string
-	handoffState   string
-	queryFilter    map[string]any
-	casingCache    map[string]string
-	log            *slog.Logger
-	metrics        domain.Metrics
+	*issuekit.StateSource
+	client      graphQLClient
+	project     string
+	queryFilter map[string]any
+	casingCache map[string]string
+	log         *slog.Logger
+	metrics     domain.Metrics
 }
 
 // NewLinearAdapter creates a [LinearAdapter] from adapter configuration.
@@ -118,17 +108,9 @@ func NewLinearAdapter(config map[string]any) (domain.TrackerAdapter, error) {
 		}
 	}
 
-	activeStates := typeutil.ExtractStringSlice(config["active_states"])
-	if len(activeStates) == 0 {
-		activeStates = defaultActiveStates
-	}
-	terminalStates := typeutil.ExtractStringSlice(config["terminal_states"])
-	if len(terminalStates) == 0 {
-		terminalStates = defaultTerminalStates
-	}
-	handoffState, fault := typeutil.StringField(config, "handoff_state")
-	if fault != nil {
-		return nil, &domain.TrackerError{Kind: domain.ErrTrackerPayload, Message: fault.Error()}
+	states, err := issuekit.TrackerStatesFromConfig(config)
+	if err != nil {
+		return nil, err
 	}
 
 	rawQueryFilter, fault := typeutil.StringField(config, "query_filter")
@@ -149,27 +131,25 @@ func NewLinearAdapter(config map[string]any) (domain.TrackerAdapter, error) {
 	}
 
 	client := newLinearClient(endpoint, apiKey, userAgent)
-	return newAdapter(client, project, activeStates, terminalStates, handoffState, queryFilter, slog.Default())
+	return newAdapter(client, project, states, queryFilter, slog.Default())
 }
 
 // newAdapter runs the preflight through client and assembles the adapter with
-// canonical-cased state lists. It is the seam shared by the production
+// the team-state casing cache. It is the seam shared by the production
 // constructor and offline tests.
-func newAdapter(client graphQLClient, project string, active, terminal []string, handoff string, queryFilter map[string]any, log *slog.Logger) (domain.TrackerAdapter, error) {
-	casingCache, err := runPreflight(context.Background(), client, project, active, terminal, handoff, log)
+func newAdapter(client graphQLClient, project string, states domain.TrackerStates, queryFilter map[string]any, log *slog.Logger) (domain.TrackerAdapter, error) {
+	casingCache, err := runPreflight(context.Background(), client, project, states.Active, states.Terminal, states.Handoff, log)
 	if err != nil {
 		return nil, err
 	}
 
 	return &LinearAdapter{
-		client:         client,
-		project:        project,
-		activeStates:   canonicalize(active, casingCache),
-		terminalStates: canonicalize(terminal, casingCache),
-		handoffState:   canonicalOne(handoff, casingCache),
-		queryFilter:    queryFilter,
-		casingCache:    casingCache,
-		log:            log,
+		StateSource: issuekit.NewStateSource(states),
+		client:      client,
+		project:     project,
+		queryFilter: queryFilter,
+		casingCache: casingCache,
+		log:         log,
 	}, nil
 }
 
@@ -248,11 +228,17 @@ func (a *LinearAdapter) SetMetrics(m domain.Metrics) {
 
 // FetchCandidateIssues returns issues in the configured active states for the
 // configured team, paginated to exhaustion and sorted client-side by normalized
-// priority then creation time. Comments are nil on every returned issue.
+// priority then creation time. Comments are nil on every returned issue. An
+// empty active list returns no issue and sends no request.
 func (a *LinearAdapter) FetchCandidateIssues(ctx context.Context) ([]domain.Issue, error) {
+	active := a.TrackerStates().Active
+	if len(active) == 0 {
+		return []domain.Issue{}, nil
+	}
+
 	issues := make([]domain.Issue, 0)
 	err := trackermetrics.Track(a.metrics, "fetch_candidates", func() error {
-		fetched, fetchErr := a.fetchIssues(ctx, queryCandidateIssues, a.activeStates)
+		fetched, fetchErr := a.fetchIssues(ctx, queryCandidateIssues, canonicalize(active, a.casingCache))
 		if fetchErr != nil {
 			return fetchErr
 		}

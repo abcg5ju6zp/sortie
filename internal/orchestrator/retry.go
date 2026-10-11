@@ -202,6 +202,14 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		metrics.IncRetries(triggerTimer)
 	}
 
+	// ScheduleRetry builds a fresh entry, so the flag is applied to it
+	// afterwards, and only by the arms that mean to keep it.
+	setNoStateObserved := func(observed bool) {
+		if entry, ok := state.RetryAttempts[issueID]; ok {
+			entry.noStateObserved = observed
+		}
+	}
+
 	// The cancelled worker may not yet have exited, leaving the issue in
 	// Running; re-dispatching would overwrite the entry and spawn a
 	// duplicate. Reschedule at the same attempt to fire after the exit.
@@ -211,6 +219,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			slog.Int("attempt", popped.Attempt),
 		)
 		reschedule(popped.Attempt, delayMS, popped.Error)
+		setNoStateObserved(popped.noStateObserved)
 		return
 	}
 
@@ -406,6 +415,33 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		return
 	}
 
+	// A person's label edit can pass through zero state labels for a
+	// moment, and a released retry loses its session and continuation
+	// context, so the claim goes only at the second consecutive reading.
+	// The stage hop record stays: reconcile decides on it.
+	if issue.State == "" {
+		if !confirmNoState(&popped.noStateObserved) {
+			delayMS := computeBackoffDelay(popped.Attempt, params.MaxRetryBackoffMS)
+			log.Info("deferred retry for issue without a state label",
+				slog.Int("attempt", popped.Attempt),
+				slog.Int64("delay_ms", delayMS),
+			)
+			reschedule(popped.Attempt, delayMS, popped.Error)
+			setNoStateObserved(true)
+			return
+		}
+
+		log.Info("issue without a state label, releasing claim")
+		delete(state.Claimed, issueID)
+
+		if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
+			log.Error("failed to delete retry entry from store",
+				slog.Any("error", err),
+			)
+		}
+		return
+	}
+
 	activeSet := stateSet(params.ActiveStates)
 	terminalSet := stateSet(params.TerminalStates)
 	normalizedState := strings.ToLower(issue.State)
@@ -456,7 +492,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		}
 	}
 
-	if issue.ID == "" || issue.Identifier == "" || issue.Title == "" || issue.State == "" {
+	if issue.ID == "" || issue.Identifier == "" || issue.Title == "" {
 		log.Info("issue missing required fields, releasing claim")
 		delete(state.Claimed, issueID)
 

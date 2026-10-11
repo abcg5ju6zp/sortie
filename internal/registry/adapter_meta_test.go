@@ -30,54 +30,47 @@ func TestAdapterMeta_RealRegistrations(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
-			name         string
-			kind         string
-			wantAPIKey   bool
-			wantProject  bool
-			wantActive   []string
-			wantTerminal []string
+			name               string
+			kind               string
+			wantAPIKey         bool
+			wantProject        bool
+			wantTerminalStates bool
 		}{
 			{
-				name:        "jira requires api_key and project and declares active states only",
+				name:        "jira requires api_key and project",
 				kind:        "jira",
 				wantAPIKey:  true,
 				wantProject: true,
-				wantActive:  []string{"Backlog", "Selected for Development", "In Progress"},
 			},
 			{
-				name:         "github requires api_key and project and declares both state lists",
-				kind:         "github",
-				wantAPIKey:   true,
-				wantProject:  true,
-				wantActive:   []string{"backlog", "in-progress", "review"},
-				wantTerminal: []string{"done", "wontfix"},
+				name:               "github requires api_key, project and terminal states",
+				kind:               "github",
+				wantAPIKey:         true,
+				wantProject:        true,
+				wantTerminalStates: true,
 			},
 			{
-				name:         "gitea requires api_key and project and declares both state lists",
-				kind:         "gitea",
-				wantAPIKey:   true,
-				wantProject:  true,
-				wantActive:   []string{"backlog", "in-progress", "review"},
-				wantTerminal: []string{"done", "wontfix"},
+				name:               "gitea requires api_key, project and terminal states",
+				kind:               "gitea",
+				wantAPIKey:         true,
+				wantProject:        true,
+				wantTerminalStates: true,
 			},
 			{
-				name:         "gitlab requires api_key and project and declares both state lists",
-				kind:         "gitlab",
-				wantAPIKey:   true,
-				wantProject:  true,
-				wantActive:   []string{"backlog", "in-progress", "review"},
-				wantTerminal: []string{"done", "wontfix"},
+				name:               "gitlab requires api_key, project and terminal states",
+				kind:               "gitlab",
+				wantAPIKey:         true,
+				wantProject:        true,
+				wantTerminalStates: true,
 			},
 			{
-				name:         "linear requires api_key and project and declares both state lists",
-				kind:         "linear",
-				wantAPIKey:   true,
-				wantProject:  true,
-				wantActive:   []string{"Backlog", "Todo", "In Progress"},
-				wantTerminal: []string{"Done", "Canceled", "Duplicate"},
+				name:        "linear requires api_key and project",
+				kind:        "linear",
+				wantAPIKey:  true,
+				wantProject: true,
 			},
 			{
-				name: "file requires neither api_key nor project and declares no default states",
+				name: "file requires neither api_key nor project",
 				kind: "file",
 			},
 		}
@@ -97,11 +90,8 @@ func TestAdapterMeta_RealRegistrations(t *testing.T) {
 				if meta.RequiresProject != tt.wantProject {
 					t.Errorf("Trackers.Meta(%q).RequiresProject = %v, want %v", tt.kind, meta.RequiresProject, tt.wantProject)
 				}
-				if !slices.Equal(meta.DefaultActiveStates, tt.wantActive) {
-					t.Errorf("Trackers.Meta(%q).DefaultActiveStates = %v, want %v", tt.kind, meta.DefaultActiveStates, tt.wantActive)
-				}
-				if !slices.Equal(meta.DefaultTerminalStates, tt.wantTerminal) {
-					t.Errorf("Trackers.Meta(%q).DefaultTerminalStates = %v, want %v", tt.kind, meta.DefaultTerminalStates, tt.wantTerminal)
+				if meta.RequiresTerminalStates != tt.wantTerminalStates {
+					t.Errorf("Trackers.Meta(%q).RequiresTerminalStates = %v, want %v", tt.kind, meta.RequiresTerminalStates, tt.wantTerminalStates)
 				}
 			})
 		}

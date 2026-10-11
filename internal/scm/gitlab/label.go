@@ -95,6 +95,22 @@ func pickCasing(variants []string, wanted string) string {
 	return slices.Min(variants)
 }
 
+// catalogCasing returns the casing the project label catalog stores for
+// name, read fresh. A name the catalog lacks, or a catalog read that fails,
+// returns name as given: a missed write is worse than a cosmetic duplicate.
+func catalogCasing(ctx context.Context, client *httpkit.Client, projectPath string, log *slog.Logger, name string) string {
+	catalog, err := fetchProjectLabels(ctx, client, projectPath, log)
+	if err != nil {
+		log.Warn("gitlab label catalog unavailable; attaching the configured spelling",
+			slog.Any("error", err))
+		return name
+	}
+	if stored, ok := resolveCasing(catalog, []string{name})[strings.ToLower(name)]; ok {
+		return stored
+	}
+	return name
+}
+
 // gitlabLabelOps returns the label calls for the issue or merge request
 // served at resourcePath. The tracker adapter and the source-control adapter
 // both drive the shared label writers with it, so one request path serves
@@ -132,14 +148,7 @@ func gitlabLabelOps(client *httpkit.Client, log *slog.Logger, projectPath, resou
 			return stored, nil
 		},
 		Add: func(ctx context.Context, label string) (issuekit.LabelWrite, error) {
-			name := strings.TrimSpace(label)
-			catalog, err := fetchProjectLabels(ctx, client, projectPath, log)
-			if err != nil {
-				log.Warn("gitlab label catalog unavailable; attaching the configured spelling",
-					slog.Any("error", err))
-			} else if stored, ok := resolveCasing(catalog, []string{name})[strings.ToLower(name)]; ok {
-				name = stored
-			}
+			name := catalogCasing(ctx, client, projectPath, log, strings.TrimSpace(label))
 			return putLabels(ctx, client, resourcePath, gitlabIssueUpdate{AddLabels: []string{name}})
 		},
 		Remove: func(ctx context.Context, labels []issuekit.IssueLabel) (issuekit.LabelWrite, error) {
