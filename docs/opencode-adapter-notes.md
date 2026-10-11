@@ -55,7 +55,7 @@ Sessions are persisted in one global database under the user's home directory, n
 
 ## Permissions
 
-OpenCode's permission control is config-driven. Each key resolves to allow, ask, or deny through an ordered rule list; the last matching rule wins, and the default is ask.
+OpenCode's permission control is config-driven. Each key resolves to allow, ask, or deny through an ordered rule list; the last matching rule wins. The documented default is ask, but OpenCode 2.x does not apply it to `external_directory`: with no rule for that key, the runtime reads outside the workspace without asking. So when bypass is off and the tool lists leave `external_directory` undecided, the adapter writes `ask` for it itself, and `opencode run` refuses the access and reports it like any other refused call. A list that names the key sets its action as written.
 
 The adapter sends its policy in the inline configuration document. OpenCode deep-merges that document into the rules from every other configuration source; it does not replace them. So a value inherited from the operator's shell would leak into the result. The adapter removes every variable it manages from the inherited environment before adding its own. Keep that scrub in step with the managed set: a new managed variable that is not scrubbed is a leak.
 

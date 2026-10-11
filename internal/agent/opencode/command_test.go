@@ -513,10 +513,6 @@ func TestTranslateMCPServers(t *testing.T) {
 	})
 }
 
-// TestBuildInlineConfig asserts the inline document's marshaled
-// shape: share is always present as "disabled" and the title agent is
-// always disabled; permission, compaction, and mcp are each present only
-// when their source data is non-empty.
 func TestBuildInlineConfig(t *testing.T) {
 	t.Parallel()
 
@@ -528,14 +524,24 @@ func TestBuildInlineConfig(t *testing.T) {
 		name        string
 		pt          passthroughConfig
 		servers     map[string]mcpConfigDocumentEntry
-		wantPerm    bool
+		wantPerm    string
 		wantCompact bool
 		wantMCP     bool
 	}{
-		{name: "bare configuration carries only share"},
-		{name: "a tool policy adds permission", pt: passthroughConfig{AllowedTools: []string{"read"}}, wantPerm: true},
-		{name: "disable_autocompact adds compaction", pt: passthroughConfig{DisableAutocompact: true}, wantCompact: true},
-		{name: "servers add mcp", servers: servers, wantMCP: true},
+		{name: "bypass on without lists carries only share", pt: passthroughConfig{DangerousSkipPermissions: true}},
+		{name: "bypass off without lists asks for external_directory", wantPerm: `{"external_directory":"ask"}`},
+		{
+			name:     "bypass off with denied_tools only keeps the denies and asks",
+			pt:       passthroughConfig{DeniedTools: []string{"bash"}},
+			wantPerm: `{"bash":"deny","external_directory":"ask"}`,
+		},
+		{
+			name:     "a list naming external_directory keeps its own action",
+			pt:       passthroughConfig{DeniedTools: []string{"external_directory"}},
+			wantPerm: `{"external_directory":"deny"}`,
+		},
+		{name: "disable_autocompact adds compaction", pt: passthroughConfig{DangerousSkipPermissions: true, DisableAutocompact: true}, wantCompact: true},
+		{name: "servers add mcp", pt: passthroughConfig{DangerousSkipPermissions: true}, servers: servers, wantMCP: true},
 	}
 
 	for _, tt := range tests {
@@ -556,8 +562,8 @@ func TestBuildInlineConfig(t *testing.T) {
 				t.Errorf("buildInlineConfig() share = %s, want %q", doc["share"], "disabled")
 			}
 			assertTitleAgentDisabled(t, doc)
-			if _, ok := doc["permission"]; ok != tt.wantPerm {
-				t.Errorf("buildInlineConfig() permission present = %v, want %v", ok, tt.wantPerm)
+			if got := string(doc["permission"]); got != tt.wantPerm {
+				t.Errorf("buildInlineConfig(%+v) permission = %q, want %q", tt.pt, got, tt.wantPerm)
 			}
 			compaction, hasCompaction := doc["compaction"]
 			if hasCompaction != tt.wantCompact {
