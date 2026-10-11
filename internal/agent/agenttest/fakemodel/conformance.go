@@ -1165,7 +1165,7 @@ func toolTrail(run Run, turns []Exchange) string {
 		if event.Type == domain.EventTokenUsage || (event.Type == domain.EventNotification && event.Message == "") {
 			continue
 		}
-		fmt.Fprintf(&b, "\n\tevent %d %s tool=%q error=%t message=%q", i, event.Type, event.ToolName, event.ToolError, redact.Truncate(event.Message, 120))
+		fmt.Fprintf(&b, "\n\tevent %d %s tool=%q error=%t message=%q", i, event.Type, event.ToolName, event.ToolError, redact.Truncate(strings.ReplaceAll(event.Message, run.Environment.Sentinel, "[redacted]"), 120))
 	}
 	return b.String()
 }
