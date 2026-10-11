@@ -20,6 +20,7 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/agent/agenttest"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/redact"
 	"github.com/sortie-ai/sortie/internal/registry"
 	"github.com/sortie-ai/sortie/internal/workspacekit"
 )
@@ -1090,7 +1091,7 @@ func toolPathViolations(run Run, wantOutput string) []string {
 		}
 	}
 	if toolEvents != called {
-		v.add("%d tool_result events, want one per call answered (%d)", toolEvents, called)
+		v.add("%d tool_result events, want one per call answered (%d)%s", toolEvents, called, toolTrail(run, turns))
 	}
 	return v.items
 }
@@ -1125,7 +1126,7 @@ func toolServerViolations(run Run, wantOutput string) []string {
 		}
 	}
 	if len(toolEvents) != called {
-		v.add("%d tool_result events, want one per call answered (%d)", len(toolEvents), called)
+		v.add("%d tool_result events, want one per call answered (%d)%s", len(toolEvents), called, toolTrail(run, turns))
 	}
 	if len(toolEvents) > serverCallStep {
 		i := toolEvents[serverCallStep]
@@ -1138,6 +1139,35 @@ func toolServerViolations(run Run, wantOutput string) []string {
 		}
 	}
 	return v.items
+}
+
+// toolTrail lists each answered call with the result the runtime sent back
+// for it, then every event that is neither usage nor an empty notification,
+// so a missing tool_result names the call that lacks one.
+func toolTrail(run Run, turns []Exchange) string {
+	var b strings.Builder
+	for i, ex := range turns {
+		if ex.Answer.Call == nil {
+			continue
+		}
+		result := "no later request"
+		if i+1 < len(turns) {
+			result = "no result in the next request"
+			for _, r := range turns[i+1].ToolResults {
+				if answersCall(ex.Answer, r) {
+					result = redact.Truncate(strings.ReplaceAll(r.Output, run.Environment.Sentinel, "[redacted]"), 300)
+				}
+			}
+		}
+		fmt.Fprintf(&b, "\n\tcall %q (%s): %q", ex.Answer.Call.Name, requestLabel(ex), result)
+	}
+	for i, event := range run.Events {
+		if event.Type == domain.EventTokenUsage || (event.Type == domain.EventNotification && event.Message == "") {
+			continue
+		}
+		fmt.Fprintf(&b, "\n\tevent %d %s tool=%q error=%t message=%q", i, event.Type, event.ToolName, event.ToolError, redact.Truncate(strings.ReplaceAll(event.Message, run.Environment.Sentinel, "[redacted]"), 120))
+	}
+	return b.String()
 }
 
 // checkToolResult filters next's tool results down to those answering call,

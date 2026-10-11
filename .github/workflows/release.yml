@@ -421,6 +421,12 @@ jobs:
       - name: Install Codex
         run: npm install -g @openai/codex
 
+      - name: Enable Codex sandbox namespaces
+        run: scripts/codex-sandbox-enable.sh
+
+      - name: Check the Codex sandbox starts
+        run: codex sandbox -- /usr/bin/true
+
       - name: Run integration tests
         run: go test -race -count=1 -v -timeout 300s -run 'Integration' ./internal/agent/codex/...
 

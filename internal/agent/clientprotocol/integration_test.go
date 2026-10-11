@@ -71,6 +71,7 @@ import (
 type liveProtocolCapture struct {
 	clientPath string
 	agentPath  string
+	started    time.Time
 	expect     captureExpectation
 	events     func() []domain.AgentEvent // nil for expectHandshakeOnly
 }
@@ -106,6 +107,7 @@ func captureAgentConfig(t *testing.T, command string, expect captureExpectation,
 	capture := liveProtocolCapture{
 		clientPath: filepath.Join(dir, "client.jsonl"),
 		agentPath:  filepath.Join(dir, "agent.jsonl"),
+		started:    time.Now(),
 		expect:     expect,
 		events:     events,
 	}
@@ -129,8 +131,18 @@ func capturedJSONLines(t *testing.T, path string) [][]byte {
 	if err != nil {
 		t.Fatalf("capturedJSONLines(%q) error = %v", path, err)
 	}
+	return splitCapturedFrames(raw)
+}
+
+func splitCapturedFrames(raw []byte) [][]byte {
+	// Stopping the session kills the capture's tee mid-copy, so a final line
+	// without its newline is a torn copy, not a frame the agent sent.
+	text := string(raw)
+	if end := strings.LastIndexByte(text, '\n'); end < len(text)-1 {
+		text = text[:end+1]
+	}
 	var lines [][]byte
-	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(text), "\n") {
 		if line != "" {
 			lines = append(lines, []byte(line))
 		}
@@ -144,6 +156,13 @@ func jsonRPCIDKey(raw json.RawMessage) string {
 
 func assertLiveProtocolConformance(t *testing.T, capture liveProtocolCapture) {
 	t.Helper()
+
+	defer func() {
+		if t.Failed() {
+			logCapturedFrames(t, "client", capture.clientPath, capture.started)
+			logCapturedFrames(t, "agent", capture.agentPath, capture.started)
+		}
+	}()
 
 	requestMethods := make(map[string]string)
 	for _, line := range capturedJSONLines(t, capture.clientPath) {
@@ -225,6 +244,28 @@ func assertLiveProtocolConformance(t *testing.T, capture liveProtocolCapture) {
 		t.Logf("live shape observation: %s", o)
 	}
 	t.Logf("live shape observation: %+v", observed)
+}
+
+// logCapturedFrames logs every frame one side of the capture recorded, and
+// when that side last wrote relative to started, so a failed handshake shows
+// which request went unanswered and how long the runtime had been silent.
+func logCapturedFrames(t *testing.T, side, path string, started time.Time) {
+	t.Helper()
+	if info, err := os.Stat(path); err == nil {
+		t.Logf("%s capture: last write %v after StartSession began", side, info.ModTime().Sub(started).Round(100*time.Millisecond))
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // path is created under this test's temp directory
+	if err != nil {
+		t.Logf("%s capture: %v", side, err)
+		return
+	}
+	const maxFrameBytes = 400
+	for i, line := range splitCapturedFrames(raw) {
+		if len(line) > maxFrameBytes {
+			line = append(line[:maxFrameBytes:maxFrameBytes], "..."...)
+		}
+		t.Logf("%s frame %d: %s", side, i, line)
+	}
 }
 
 // gitInitWorkspace creates a temp directory and runs git init inside

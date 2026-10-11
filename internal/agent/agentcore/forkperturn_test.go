@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -20,6 +21,48 @@ import (
 	"github.com/sortie-ai/sortie/internal/agent/procutil"
 	"github.com/sortie-ai/sortie/internal/domain"
 )
+
+type trapParams struct {
+	Marker       string
+	ExitOnSignal bool
+	ExitCode     int
+}
+
+func trapScenario(_ []string, p trapParams) int {
+	ch := make(chan os.Signal, 1)
+	// On Windows the graceful stop of [procutil.Group.SignalGraceful] arrives
+	// as a console control event that the runtime delivers as an interrupt
+	// rather than as SIGTERM.
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+
+	if err := os.WriteFile(p.Marker, []byte("ready"), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	<-ch
+	if p.ExitOnSignal {
+		return p.ExitCode
+	}
+	agenttest.Hang()
+	return 0
+}
+
+func init() {
+	scenarios["trap"] = agenttest.Typed(trapScenario)
+}
+
+func waitForTrap(t *testing.T, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("subprocess did not install its TERM trap within 5s (marker %q absent)", marker)
+}
 
 // overflowParams parameterizes the "overflow" scenario: it writes Stderr (if
 // any), then a single stdout line of Size 'x' bytes plus a trailing newline.
@@ -173,7 +216,7 @@ func requireAgentError(t *testing.T, err error, want domain.AgentErrorKind) {
 		t.Fatalf("RunTurn() error type = %T (%v), want *domain.AgentError", err, err)
 	}
 	if ae.Kind != want {
-		t.Errorf("AgentError.Kind = %q, want %q", ae.Kind, want)
+		t.Errorf("AgentError.Kind = %q (%v), want %q", ae.Kind, ae, want)
 	}
 }
 
@@ -1087,14 +1130,17 @@ func TestForkPerTurnSession_EarlyExit_RejectedLineIsNotAResponse(t *testing.T) {
 }
 
 // TestForkPerTurnSession_EarlyExit_StopSignaledSuppressesReport pins
-// that a turn whose process Stop signaled reports today's cancellation
-// outcome, never the early-exit report, even though the runtime wrote
-// nothing readable before it died.
+// that a turn whose process Stop signaled reports cancellation, never
+// the early-exit report or a non-zero exit, even though the runtime
+// wrote nothing and ended with a status of its own choosing. A runtime
+// that handles the graceful signal exits however it likes, so the
+// verdict cannot come from the exit status.
 func TestForkPerTurnSession_EarlyExit_StopSignaledSuppressesReport(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	script := agenttest.FakeRuntime(t, tmpDir, "agent", agenttest.OutputScenario, agenttest.Output{Hang: true})
+	marker := filepath.Join(tmpDir, "trap-ready")
+	script := agenttest.FakeRuntime(t, tmpDir, "agent", "trap", trapParams{Marker: marker, ExitOnSignal: true, ExitCode: 3})
 	target := newTestTarget(tmpDir, script)
 	sess := NewForkPerTurnSession(target, hooksWithEarlyExitDisposition(), slog.Default(), 0)
 
@@ -1105,7 +1151,7 @@ func TestForkPerTurnSession_EarlyExit_StopSignaledSuppressesReport(t *testing.T)
 		done <- err
 	}()
 
-	time.Sleep(100 * time.Millisecond) // let the subprocess start
+	waitForTrap(t, marker)
 	if err := sess.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop() = %v", err)
 	}
