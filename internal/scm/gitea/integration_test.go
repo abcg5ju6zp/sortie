@@ -34,13 +34,16 @@ func requireEnv(t *testing.T, key string) string {
 	return v
 }
 
-// integrationConfig builds the adapter config from the integration env vars.
+// integrationConfig builds the adapter config from the integration env vars
+// and the state labels the integration repository is seeded with.
 func integrationConfig(t *testing.T) map[string]any {
 	t.Helper()
 	return map[string]any{
-		"api_key":  requireEnv(t, "SORTIE_GITEA_TOKEN"),
-		"project":  requireEnv(t, "SORTIE_GITEA_PROJECT"),
-		"endpoint": requireEnv(t, "SORTIE_GITEA_ENDPOINT"),
+		"api_key":         requireEnv(t, "SORTIE_GITEA_TOKEN"),
+		"project":         requireEnv(t, "SORTIE_GITEA_PROJECT"),
+		"endpoint":        requireEnv(t, "SORTIE_GITEA_ENDPOINT"),
+		"active_states":   []any{"backlog", "in-progress", "review"},
+		"terminal_states": []any{"done"},
 	}
 }
 
