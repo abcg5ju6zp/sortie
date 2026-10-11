@@ -6,7 +6,7 @@ NITE reads JSON from standard input and writes its decision as JSON to standard 
 
 ## Reports
 
-Each integration job writes its decision to the job summary and the job log. The `nightly-<adapter>-<attempt>` artifact retains `summary.md` and `decision.json` for 14 days, including when tests fail or the incident action fails. `action` describes the selected action. If that action fails after the decision is persisted, the job summary, artifact summary, and error annotation all report the incomplete action separately from a missing decision.
+Each integration job writes its decision to the job summary and the job log. The `nightly-<adapter>-<attempt>` artifact, or `nightly-<adapter>-live-<attempt>` for a live shard, retains `summary.md` and `decision.json` for 14 days, including when tests fail or the incident action fails. `action` describes the selected action. If that action fails after the decision is persisted, the job summary, artifact summary, and error annotation all report the incomplete action separately from a missing decision.
 
 The summary includes the tested version, passed/failed/skipped counts, coverage, incident streaks, the action's reason, failure output, and skipped-test output. Counts identify tests by package and name and exclude parent suites whose results duplicate their children. A parent's own failure is retained when none of its children failed. A parent's skip and its reason are retained even after children ran. A passing parent with only skipped children is not an executed test.
 

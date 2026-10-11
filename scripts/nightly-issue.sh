@@ -77,10 +77,13 @@ provision_labels() {
 # fetch_run_history lists the last MONITOR_LOOKBACK completed runs of
 # workflow_id on DEFAULT_BRANCH, excluding the current run, then looks
 # up the job named JOB_NAME on each one until it holds MAX_SAMPLES_NEEDED
-# samples for it. It appends "<run_id>\t<run_url>\t<conclusion>" per
-# held sample to out_file, newest first. It returns non-zero when a gh
-# call failed, or when at least one run was examined and none of them
-# carried a job named JOB_NAME.
+# samples for it. A matched job whose conclusion carries no verdict
+# (anything but success, failure or timed_out) is passed over and does
+# not fill a slot, so a skipped or cancelled run cannot hide the prior
+# sample. It appends "<run_id>\t<run_url>\t<conclusion>" per held
+# sample to out_file, newest first. It returns non-zero when a gh call
+# failed, or when at least one run was examined and none of them carried
+# a job named JOB_NAME.
 fetch_run_history() {
 	_frh_workflow_id=$1
 	_frh_out=$2
@@ -113,6 +116,10 @@ fetch_run_history() {
 			continue
 		fi
 		_frh_matched=$((_frh_matched + 1))
+		case "$_frh_conclusion" in
+		success | failure | timed_out) ;;
+		*) continue ;;
+		esac
 		_frh_held=$((_frh_held + 1))
 		printf '%s\t%s\t%s\n' "$_frh_run_id" "$_frh_run_url" "$_frh_conclusion" >>"$_frh_out"
 	done <"$_frh_runs_file"

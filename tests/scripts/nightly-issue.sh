@@ -37,7 +37,9 @@ cat >"$tmp/bin/gh" <<'EOF'
 } >>"$GH_ARGV_LOG"
 case "$*" in
 *'/actions/runs/42 --jq .workflow_id') printf '%s\n' 7 ;;
-*'/actions/workflows/7/runs?'*) printf '%s\n' '{"workflow_runs":[]}' ;;
+*'/actions/workflows/7/runs?'*) printf '%s\n' "$GH_RUNS_JSON" ;;
+*'/actions/runs/101/jobs?'*) printf '%s\n' '{"name":"Integration: Example","conclusion":"skipped"}' ;;
+*'/actions/runs/102/jobs?'*) printf '%s\n' '{"name":"Integration: Example","conclusion":"failure"}' ;;
 *'/issues?state=all&labels=ci-nightly'*) printf '%s\n' "$GH_ISSUES_JSON" ;;
 'label create'*) exit 0 ;;
 *' --jq .node_id')
@@ -84,6 +86,7 @@ run_revision() {
 		GITHUB_SHA=deadbeef GITHUB_STEP_SUMMARY="$tmp/summary" \
 		GH_ARGV_LOG="$_gh_log" GH_BODIES_LOG="$_bodies_log" \
 		GH_ISSUES_JSON="$ISSUES_JSON" \
+		GH_RUNS_JSON="${RUNS_JSON:-$no_runs}" \
 		NITE_INPUT_LOG="$tmp/nite.in" \
 		FORMER_ADAPTER_NAME="${FORMER_ADAPTER_NAME:-}" \
 		GH_FAIL_MUTATION="${GH_FAIL_MUTATION:-0}" \
@@ -115,6 +118,7 @@ check_action() {
 title_row='Nightly integration failure: Example'
 open_row=$(printf '[{"number":99,"state":"open","title":"%s","pull_request":null}]' "$title_row")
 closed_row=$(printf '[{"number":99,"state":"closed","title":"%s","pull_request":null}]' "$title_row")
+no_runs='{"workflow_runs":[]}'
 
 check_action open '[]' open
 check_action comment "$open_row" comment
@@ -144,6 +148,12 @@ FORMER_ADAPTER_NAME=
 ISSUES_JSON=$former_row
 run_revision "$SCRIPT" "$tmp/gh.log" "$tmp/bodies.log"
 [ "$(incident_sent_to_nite)" = 'absent 0' ] || fail "former-title incident matched without FORMER_ADAPTER_NAME: $(incident_sent_to_nite)"
+
+RUNS_JSON='{"workflow_runs":[{"id":101,"html_url":"u101"},{"id":102,"html_url":"u102"}]}'
+run_revision "$SCRIPT" "$tmp/gh.log" "$tmp/bodies.log"
+[ "$(jq -c '[.history_read, .history]' "$tmp/nite.in")" = '[true,[{"run_id":102,"run_url":"u102","conclusion":"failure"}]]' ] ||
+	fail "a prior job without a verdict was not passed over in history"
+RUNS_JSON=
 
 GH_FAIL_MUTATION=1
 ISSUES_JSON=$open_row

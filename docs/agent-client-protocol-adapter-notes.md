@@ -113,4 +113,4 @@ The qualification profile in `tools/qualify` drives a live model for minutes and
 
 - A named authentication variable with no value is a clean skip, because the operator mints a temporary credential for each run. Every other missing or malformed coordinate fails the run, so a typo cannot pass green.
 - An offline staleness gate on every push fails when a tracked profile changes without a fresh measurement, or when a runtime's notes disagree with its tracked measurement.
-- The nightly compares the tracked profile's `capability_gap_labels` with the live gap labels through `SORTIE_CLIENTPROTOCOL_PROFILE`, so a capability that changes after qualification is caught. A session that goes unmeasured after its first turn counts `token counts` as a gap even though no notice names it.
+- The nightly live shard compares the tracked profile's `capability_gap_labels` with the live gap labels through `SORTIE_CLIENTPROTOCOL_PROFILE`, so a capability that changes after qualification is caught. A session that goes unmeasured after its first turn counts `token counts` as a gap even though no notice names it.

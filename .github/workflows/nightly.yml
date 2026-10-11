@@ -3,7 +3,13 @@ name: Nightly
 
 on:
   schedule:
-    - cron: "17 2 * * *"
+    # Two or more live days a week keep the previous live sample inside the
+    # MONITOR_LOOKBACK runs the incident policy reads, even when one live run
+    # is lost; one a week does not. integration-live runs unless the
+    # scripted-only cron fired, so an edit here that misses that condition
+    # runs the live tier more often, never less.
+    - cron: "17 2 * * 0,2,3,5,6"
+    - cron: "17 2 * * 1,4"
   workflow_dispatch:
 
 permissions:
@@ -23,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    env:
+    env: &integration-env
       SORTIE_JIRA_ENDPOINT: ${{ secrets.SORTIE_JIRA_ENDPOINT }}
       SORTIE_JIRA_API_KEY: ${{ secrets.SORTIE_JIRA_API_KEY }}
       SORTIE_JIRA_PROJECT: ${{ secrets.SORTIE_JIRA_PROJECT }}
@@ -44,8 +50,7 @@ jobs:
             adapter: claude
             kind: agent
             guard: SORTIE_CLAUDE_TEST
-            credential_env: ANTHROPIC_API_KEY
-            run_filter: Integration
+            run_filter: ^TestIntegration_ScriptedModel$
             test_path: ./internal/agent/claude/...
             timeout: 600s
             node: true
@@ -57,8 +62,7 @@ jobs:
             adapter: codex
             kind: agent
             guard: SORTIE_CODEX_TEST
-            credential_env: CODEX_API_KEY
-            run_filter: Integration
+            run_filter: ^TestIntegration_ScriptedModel$
             test_path: ./internal/agent/codex/...
             timeout: 300s
             node: true
@@ -70,8 +74,7 @@ jobs:
             adapter: copilot
             kind: agent
             guard: SORTIE_COPILOT_TEST
-            credential_env: GH_TOKEN
-            run_filter: Integration
+            run_filter: ^TestIntegration_ScriptedModel$
             test_path: ./internal/agent/copilot/...
             timeout: 300s
             node: true
@@ -84,7 +87,7 @@ jobs:
             adapter: opencode
             kind: agent
             guard: SORTIE_OPENCODE_TEST
-            run_filter: Integration
+            run_filter: ^TestIntegration_ScriptedModel$
             test_path: ./internal/agent/opencode/...
             timeout: 300s
             node: true
@@ -97,7 +100,7 @@ jobs:
             kind: agent
             guard: SORTIE_CLIENTPROTOCOL_TEST
             credential_env: GEMINI_API_KEY
-            run_filter: Integration
+            run_filter: ^TestIntegration_ScriptedModel$
             test_path: ./internal/agent/clientprotocol/...
             timeout: 900s
             node: true
@@ -106,23 +109,7 @@ jobs:
             source: "npm: @google/gemini-cli (unpinned, installs latest)"
             clientprotocol_command: "gemini --acp --skip-trust --approval-mode yolo"
             clientprotocol_asking_command: "gemini --acp"
-            clientprotocol_profile: tools/qualify/profiles/gemini-cli.json
             clientprotocol_model_base_url_env: GOOGLE_GEMINI_BASE_URL
-
-          - name: Kiro - ACP
-            adapter: acp-kiro
-            kind: agent
-            guard: SORTIE_CLIENTPROTOCOL_TEST
-            credential_env: KIRO_API_KEY
-            run_filter: Integration
-            test_path: ./internal/agent/clientprotocol/...
-            timeout: 900s
-            node: false
-            install: curl -fsSL https://cli.kiro.dev/install | bash
-            version_cmd: kiro-cli --version
-            source: "curl https://cli.kiro.dev/install (unpinned, installs latest)"
-            clientprotocol_command: "kiro-cli acp -a"
-            clientprotocol_profile: tools/qualify/profiles/kiro-cli.json
 
           - name: Jira
             adapter: jira
@@ -213,7 +200,7 @@ jobs:
             version_cmd: ""
             source: "GitHub REST API (remote service, no pinned client)"
 
-    steps:
+    steps: &integration-steps
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -286,6 +273,8 @@ jobs:
           INSTALL_CMD: ${{ matrix.install }}
           VERSION_CMD: ${{ matrix.version_cmd }}
           RUN_FILTER: ${{ matrix.run_filter }}
+          SKIP_FILTER: ${{ matrix.skip_filter }}
+          TIER: ${{ matrix.tier }}
           TEST_PATH: ${{ matrix.test_path }}
           TIMEOUT: ${{ matrix.timeout }}
           SORTIE_CLIENTPROTOCOL_COMMAND: ${{ matrix.clientprotocol_command }}
@@ -318,6 +307,15 @@ jobs:
           fi
           echo "ADAPTER_VERSION=${VER}" >> "$GITHUB_ENV"
 
+          # A suite can skip its live cases when the credential is missing,
+          # and a shard that ran nothing concludes success, which the
+          # incident history later counts as a pass.
+          if [ "${TIER}" = live ] && [ -n "${CREDENTIAL_ENV}" ] && [ -z "${!CREDENTIAL_ENV}" ]; then
+            echo "${CREDENTIAL_ENV} is empty; the live tier cannot reach its provider" | tee gotest.json
+            echo "outcome=failure" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ "${ADAPTER}" = codex ]; then
             if ! codex sandbox -- /usr/bin/true > gotest.json 2>&1; then
               cat gotest.json
@@ -338,8 +336,10 @@ jobs:
 
           TIMEOUT_FLAG=()
           if [ -n "${TIMEOUT}" ]; then TIMEOUT_FLAG=(-timeout "${TIMEOUT}"); fi
+          SKIP_FLAG=()
+          if [ -n "${SKIP_FILTER}" ]; then SKIP_FLAG=(-skip "${SKIP_FILTER}"); fi
 
-          go test -json -race -count=1 "${TIMEOUT_FLAG[@]}" -run "${RUN_FILTER}" "${TEST_PATH}" 2>&1 | tee gotest.json
+          go test -json -race -count=1 "${TIMEOUT_FLAG[@]}" -run "${RUN_FILTER}" "${SKIP_FLAG[@]}" "${TEST_PATH}" 2>&1 | tee gotest.json
           status=${PIPESTATUS[0]}
 
           if [ "${status}" -ne 0 ]; then
@@ -373,7 +373,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nightly-${{ matrix.adapter }}-${{ github.run_attempt }}
+          name: ${{ format(matrix.tier == 'live' && 'nightly-{0}-live-{1}' || 'nightly-{0}-{1}', matrix.adapter, github.run_attempt) }}
           path: ${{ runner.temp }}/nightly-report/
           if-no-files-found: warn
           retention-days: 14
@@ -385,6 +385,113 @@ jobs:
         run: |
           echo "Integration check failed for ${ADAPTER}; see the NITE summary and report artifact."
           exit 1
+
+  integration-live:
+    name: "Integration: ${{ matrix.name }}"
+    if: github.event.schedule != '17 2 * * 0,2,3,5,6'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env: *integration-env
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Claude Code (live)
+            adapter: claude
+            kind: agent
+            guard: SORTIE_CLAUDE_TEST
+            credential_env: ANTHROPIC_API_KEY
+            run_filter: Integration
+            skip_filter: ^TestIntegration_ScriptedModel$
+            tier: live
+            test_path: ./internal/agent/claude/...
+            timeout: 600s
+            node: true
+            install: npm install -g --ignore-scripts=false @anthropic-ai/claude-code
+            version_cmd: claude --version
+            source: "npm: @anthropic-ai/claude-code (unpinned, installs latest)"
+
+          - name: OpenAI Codex (live)
+            adapter: codex
+            kind: agent
+            guard: SORTIE_CODEX_TEST
+            credential_env: CODEX_API_KEY
+            run_filter: Integration
+            skip_filter: ^TestIntegration_ScriptedModel$
+            tier: live
+            test_path: ./internal/agent/codex/...
+            timeout: 300s
+            node: true
+            install: npm install -g @openai/codex
+            version_cmd: codex --version
+            source: "npm: @openai/codex (unpinned, installs latest)"
+
+          - name: GitHub Copilot CLI (live)
+            adapter: copilot
+            kind: agent
+            guard: SORTIE_COPILOT_TEST
+            credential_env: GH_TOKEN
+            run_filter: Integration
+            skip_filter: ^TestIntegration_ScriptedModel$
+            tier: live
+            test_path: ./internal/agent/copilot/...
+            timeout: 300s
+            node: true
+            install: npm install -g @github/copilot
+            version_cmd: copilot --version
+            source: "npm: @github/copilot (unpinned, installs latest)"
+
+          - name: OpenCode (live)
+            adapter: opencode
+            kind: agent
+            guard: SORTIE_OPENCODE_TEST
+            run_filter: Integration
+            skip_filter: ^TestIntegration_ScriptedModel$
+            tier: live
+            test_path: ./internal/agent/opencode/...
+            timeout: 300s
+            node: true
+            install: npm install -g --ignore-scripts=false @opencode/cli@2
+            version_cmd: opencode --version
+            source: "npm: @opencode/cli@2 (latest 2.x)"
+
+          - name: Gemini - ACP (live)
+            adapter: acp-gemini
+            kind: agent
+            guard: SORTIE_CLIENTPROTOCOL_TEST
+            credential_env: GEMINI_API_KEY
+            run_filter: Integration
+            skip_filter: ^TestIntegration_ScriptedModel$
+            tier: live
+            test_path: ./internal/agent/clientprotocol/...
+            timeout: 900s
+            node: true
+            install: npm install -g @google/gemini-cli
+            version_cmd: gemini --version
+            source: "npm: @google/gemini-cli (unpinned, installs latest)"
+            clientprotocol_command: "gemini --acp --skip-trust --approval-mode yolo"
+            clientprotocol_profile: tools/qualify/profiles/gemini-cli.json
+
+          - name: Kiro - ACP (live)
+            adapter: acp-kiro
+            kind: agent
+            guard: SORTIE_CLIENTPROTOCOL_TEST
+            credential_env: KIRO_API_KEY
+            run_filter: Integration
+            skip_filter: ^TestIntegration_ScriptedModel$
+            tier: live
+            test_path: ./internal/agent/clientprotocol/...
+            timeout: 900s
+            node: false
+            install: curl -fsSL https://cli.kiro.dev/install | bash
+            version_cmd: kiro-cli --version
+            source: "curl https://cli.kiro.dev/install (unpinned, installs latest)"
+            clientprotocol_command: "kiro-cli acp -a"
+            clientprotocol_profile: tools/qualify/profiles/kiro-cli.json
+
+    steps: *integration-steps
 
   hook-stress:
     name: Windows hook stress
@@ -410,7 +517,7 @@ jobs:
   notify:
     name: Notify Discord
     runs-on: ubuntu-latest
-    needs: [integration, hook-stress]
+    needs: [integration, integration-live, hook-stress]
     # A failed or cancelled nightly is the one worth reporting.
     if: always()
     timeout-minutes: 5
@@ -430,6 +537,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           INTEGRATION: ${{ needs.integration.result }}
+          LIVE: ${{ needs.integration-live.result }}
           HOOK_STRESS: ${{ needs.hook-stress.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -438,7 +546,8 @@ jobs:
             exit 0
           fi
 
-          if [ "${INTEGRATION}" = "success" ] && [ "${HOOK_STRESS}" = "success" ]; then
+          if [ "${INTEGRATION}" = "success" ] && [ "${HOOK_STRESS}" = "success" ] &&
+            { [ "${LIVE}" = "success" ] || [ "${LIVE}" = "skipped" ]; }; then
             printf 'Nightly passed. Integration and Windows hook stress are both green.\n' >message.txt
             scripts/discord-notify.sh <message.txt
           else
@@ -451,12 +560,13 @@ jobs:
 
             jq -n \
               --arg integration "${INTEGRATION}" \
+              --arg live "${LIVE}" \
               --arg hook_stress "${HOOK_STRESS}" \
               --arg url "${RUN_URL}" \
               --slurpfile jobs jobs.json \
               '(if $jobs[0] == [] then
-                  [["Integration", $integration], ["Windows hook stress", $hook_stress]]
-                  | map(select(.[1] != "success") | {name: .[0], conclusion: .[1]})
+                  [["Integration", $integration], ["Live integration", $live], ["Windows hook stress", $hook_stress]]
+                  | map(select(.[1] != "success" and .[1] != "skipped") | {name: .[0], conclusion: .[1]})
                 else
                   $jobs[0] | map(.name |= ltrimstr("Integration: "))
                 end
