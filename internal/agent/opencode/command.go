@@ -35,6 +35,7 @@ type permissionAction string
 
 const (
 	permissionAllow permissionAction = "allow"
+	permissionAsk   permissionAction = "ask"
 	permissionDeny  permissionAction = "deny"
 )
 
@@ -384,12 +385,21 @@ func translateMCPServers(mcpConfigPath string, remote bool) (map[string]mcpConfi
 // buildInlineConfig returns the OPENCODE_CONFIG_CONTENT document:
 // the session's tool policy, sharing fixed to disabled, autocompaction
 // disabled when pt asks for it, the title agent disabled, and servers
-// when non-empty.
+// when non-empty. Unless pt skips permissions, the policy sets
+// external_directory to ask when the tool lists leave it undecided,
+// because OpenCode 2.x applies no default for it.
 func buildInlineConfig(pt passthroughConfig, servers map[string]mcpConfigDocumentEntry) (string, error) {
 	doc := inlineConfigDocument{Share: "disabled", Agent: titleAgentDisabled()}
-	if policy, ok := buildPermissionPolicy(pt); ok {
-		doc.Permission = policy
+	policy, _ := buildPermissionPolicy(pt)
+	if !pt.DangerousSkipPermissions {
+		if policy == nil {
+			policy = permissionPolicy{}
+		}
+		if _, decided := policy["external_directory"]; !decided {
+			policy["external_directory"] = permissionAsk
+		}
 	}
+	doc.Permission = policy
 	if pt.DisableAutocompact {
 		doc.Compaction = &inlineCompaction{Auto: false}
 	}

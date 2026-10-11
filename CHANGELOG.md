@@ -94,6 +94,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - An issue that carries labels of more than one state now logs one warning for each distinct set of labels instead of one for every poll. ([#1278](https://github.com/sortie-ai/sortie/issues/1278))
 
+- With `opencode.dangerously_skip_permissions: false`, the `opencode` agent no longer reads or writes files outside the session workspace; it is refused and reported like any other refused tool call. To allow it, add `external_directory` to `opencode.allowed_tools`. An `external_directory` rule in your own OpenCode configuration no longer applies in this mode. ([#1281](https://github.com/sortie-ai/sortie/issues/1281))
+
 ### Migrations
 
 - Add the `reaction_handoffs` table, recording the review comments each issue's runs were given. An upgrade starts with it empty, so a comment given before the upgrade can be given once more.
