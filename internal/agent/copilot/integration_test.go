@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/sortie-ai/sortie/internal/agent/agenttest/credentialtest"
 	"github.com/sortie-ai/sortie/internal/agent/agenttest/fakemodel"
@@ -140,7 +139,10 @@ func TestIntegration_ScriptedModel(t *testing.T) {
 		Passthrough:   map[string]any{"model": "scripted-model", "max_autopilot_continues": float64(5)},
 		CredentialEnv: []string{"COPILOT_PROVIDER_API_KEY"},
 		Read:          fakemodel.ReadFile,
-		Finish:        fakemodel.Named("task_complete", json.RawMessage(`{"summary":"Read the file."}`)),
+		Finish: func(text string) fakemodel.ToolChoice {
+			summary, _ := json.Marshal(map[string]string{"summary": text})
+			return fakemodel.Named("task_complete", summary)
+		},
 		Launch: func(t *testing.T, env fakemodel.Environment) fakemodel.Launch {
 			return fakemodel.Launch{
 				Config: domain.AgentConfig{
@@ -172,126 +174,6 @@ func TestIntegration_ScriptedModel(t *testing.T) {
 			}
 		},
 	})
-}
-
-func TestIntegration_ResumeSession(t *testing.T) {
-	skipUnlessCopilotIntegration(t)
-
-	adapter, err := NewCopilotAdapter()
-	if err != nil {
-		t.Fatalf("NewCopilotAdapter: %v", err)
-	}
-
-	workspace := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-	defer cancel()
-
-	session, err := adapter.StartSession(ctx, domain.StartSessionParams{
-		Settings:      integrationConfig(),
-		WorkspacePath: workspace,
-		AgentConfig:   domain.AgentConfig{Command: integrationCommand()},
-	})
-	if err != nil {
-		t.Fatalf("StartSession: %v", err)
-	}
-	t.Cleanup(func() { _ = adapter.StopSession(context.Background(), session) })
-
-	result1, err := adapter.RunTurn(ctx, session, domain.RunTurnParams{
-		Prompt:  "Say exactly one word: hello",
-		OnEvent: func(_ domain.AgentEvent) {},
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (turn 1): %v", err)
-	}
-	if result1.SessionID == "" {
-		t.Fatal("turn 1: TurnResult.SessionID is empty")
-	}
-	if result1.ExitReason != domain.EventTurnCompleted {
-		t.Fatalf("turn 1: ExitReason = %q, want %q", result1.ExitReason, domain.EventTurnCompleted)
-	}
-
-	state := session.Internal.(*sessionState)
-	if state.copilotSessionID != result1.SessionID {
-		t.Errorf("state.copilotSessionID = %q, want %q (should match turn 1 result)",
-			state.copilotSessionID, result1.SessionID)
-	}
-	result2, err := adapter.RunTurn(ctx, session, domain.RunTurnParams{
-		Prompt:  "Say exactly one word: world",
-		OnEvent: func(_ domain.AgentEvent) {},
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (turn 2): %v", err)
-	}
-	if result2.ExitReason != domain.EventTurnCompleted {
-		t.Errorf("turn 2: ExitReason = %q, want %q", result2.ExitReason, domain.EventTurnCompleted)
-	}
-	if result2.SessionID != result1.SessionID {
-		t.Errorf("turn 2: SessionID = %q, want %q (same as turn 1)", result2.SessionID, result1.SessionID)
-	}
-}
-
-func TestIntegration_ResumeSessionID(t *testing.T) {
-	skipUnlessCopilotIntegration(t)
-
-	adapter, err := NewCopilotAdapter()
-	if err != nil {
-		t.Fatalf("NewCopilotAdapter: %v", err)
-	}
-
-	workspace := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	session1, err := adapter.StartSession(ctx, domain.StartSessionParams{
-		Settings:      integrationConfig(),
-		WorkspacePath: workspace,
-		AgentConfig:   domain.AgentConfig{Command: integrationCommand()},
-	})
-	if err != nil {
-		t.Fatalf("StartSession (session 1): %v", err)
-	}
-	result1, err := adapter.RunTurn(ctx, session1, domain.RunTurnParams{
-		Prompt:  "Say exactly one word: hello",
-		OnEvent: func(_ domain.AgentEvent) {},
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (session 1): %v", err)
-	}
-	if result1.SessionID == "" {
-		t.Fatal("session 1: TurnResult.SessionID is empty")
-	}
-
-	resumedSettings := integrationConfig()
-	resumedSettings["max_autopilot_continues"] = float64(6)
-	session2, err := adapter.StartSession(ctx, domain.StartSessionParams{
-		WorkspacePath:   workspace,
-		AgentConfig:     domain.AgentConfig{Command: integrationCommand()},
-		ResumeSessionID: result1.SessionID,
-		Settings:        resumedSettings,
-	})
-	if err != nil {
-		t.Fatalf("StartSession (resume): %v", err)
-	}
-	t.Cleanup(func() { _ = adapter.StopSession(context.Background(), session2) })
-
-	if session2.ID != result1.SessionID {
-		t.Errorf("session2.ID = %q, want %q (provided ResumeSessionID)", session2.ID, result1.SessionID)
-	}
-
-	result2, err := adapter.RunTurn(ctx, session2, domain.RunTurnParams{
-		Prompt:  "Say exactly one word: world",
-		OnEvent: func(_ domain.AgentEvent) {},
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (resumed session): %v", err)
-	}
-	if result2.ExitReason != domain.EventTurnCompleted {
-		t.Errorf("resumed session: ExitReason = %q, want %q", result2.ExitReason, domain.EventTurnCompleted)
-	}
-	if result2.SessionID != result1.SessionID {
-		t.Errorf("resumed session: SessionID = %q, want %q (same original session)",
-			result2.SessionID, result1.SessionID)
-	}
 }
 
 func TestIntegration_CredentialVerification(t *testing.T) {

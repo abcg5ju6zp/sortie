@@ -1,6 +1,7 @@
 package fakemodel
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -36,6 +37,12 @@ const (
 	conformanceAuxiliaryAt = iota
 	conformanceFirstTurnAt
 	conformanceSecondTurnAt
+)
+
+const (
+	conformanceContinuedAt = iota + 1
+	conformanceControlAt
+	conformanceResumedAt
 )
 
 const (
@@ -283,6 +290,42 @@ func conformanceGoneRun() conformanceGoneState {
 
 func (s conformanceGoneState) probe(pid int) string { return s.remaining[pid] }
 
+type conformanceContinuationState struct {
+	turns     []continuedTurn
+	resumed   domain.Session
+	exchanges []Exchange
+}
+
+func conformanceContinuationRun() conformanceContinuationState {
+	const originID, controlID = "session-origin", "session-control"
+	started := func(id string) []domain.AgentEvent {
+		return []domain.AgentEvent{{Type: domain.EventSessionStarted, SessionID: id}}
+	}
+	result := func(id string) domain.TurnResult {
+		return domain.TurnResult{SessionID: id, ExitReason: domain.EventTurnCompleted, UsageMeasured: true}
+	}
+	requests := []string{
+		"nonce-p1",
+		"nonce-p1 nonce-a1 nonce-p2",
+		"nonce-p3",
+		"nonce-p1 nonce-a1 nonce-p2 nonce-a2 nonce-p4",
+	}
+	var exchanges []Exchange
+	for step, body := range requests {
+		exchanges = append(exchanges, Exchange{Seq: step + 1, Kind: ExchangeTurn, Method: "POST", Path: "/v1/messages", Step: step, Body: []byte(body)})
+	}
+	return conformanceContinuationState{
+		turns: []continuedTurn{
+			{role: roleOrigin, prompt: "nonce-p1", answer: "nonce-a1", result: result(originID), events: started(originID)},
+			{role: roleOrigin, prompt: "nonce-p2", answer: "nonce-a2", result: result(originID)},
+			{role: roleControl, prompt: "nonce-p3", answer: "nonce-a3", result: result(controlID), events: started(controlID)},
+			{role: roleResumed, prompt: "nonce-p4", answer: "nonce-a4", result: result(originID), events: started(originID)},
+		},
+		resumed:   domain.Session{ID: originID},
+		exchanges: exchanges,
+	}
+}
+
 func TestConformanceTurnUsage(t *testing.T) {
 	t.Parallel()
 
@@ -334,7 +377,12 @@ func TestServerToolChoice(t *testing.T) {
 func TestConformanceClosingResponse(t *testing.T) {
 	t.Parallel()
 
-	finish := func([]Tool) (FunctionCall, error) { return FunctionCall{Name: "task_complete"}, nil }
+	const text = "Noted nonce-0123."
+	finish := func(text string) ToolChoice {
+		return func([]Tool) (FunctionCall, error) {
+			return FunctionCall{Name: "task_complete", Arguments: json.RawMessage(strconv.Quote(text))}, nil
+		}
+	}
 	tests := []struct {
 		name     string
 		binding  Binding
@@ -348,13 +396,22 @@ func TestConformanceClosingResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := closingResponse(tt.binding)
+			got := answerResponse(tt.binding, text)
 
 			if (got.Text != "") != tt.wantText || (got.Call == nil) != tt.wantText {
-				t.Errorf("closingResponse(%+v) = text %q, call set %t, want text %t", tt.binding, got.Text, got.Call != nil, tt.wantText)
+				t.Errorf("answerResponse(%+v) = text %q, call set %t, want text %t", tt.binding, got.Text, got.Call != nil, tt.wantText)
+			}
+			if tt.wantText && got.Text != text {
+				t.Errorf("answerResponse(%+v).Text = %q, want %q", tt.binding, got.Text, text)
+			}
+			if !tt.wantText {
+				call, err := got.Call(nil)
+				if err != nil || !strings.Contains(string(call.Arguments), text) {
+					t.Errorf("answerResponse(%+v).Call() = %s, %v, want arguments carrying %q", tt.binding, call.Arguments, err, text)
+				}
 			}
 			if got.Usage != conformanceSecondUsage {
-				t.Errorf("closingResponse(%+v).Usage = %+v, want %+v", tt.binding, got.Usage, conformanceSecondUsage)
+				t.Errorf("answerResponse(%+v).Usage = %+v, want %+v", tt.binding, got.Usage, conformanceSecondUsage)
 			}
 		})
 	}
@@ -421,7 +478,9 @@ func TestConformancePropertyCleanRuns(t *testing.T) {
 	exhaustion := conformanceNewExhaustion()
 	streams := []streamFile{{path: "client.log", content: []byte("traffic")}}
 	cancelled, stopped, gone := conformanceCancelledRun(), conformanceStoppedRun(), conformanceGoneRun()
+	continuation := conformanceContinuationRun()
 	got := map[string][]string{
+		"continuation":                   continuationViolations(continuation.turns, continuation.resumed, continuation.exchanges),
 		"interrupted turn, cancellation": interruptedTurnViolations(cancelled.run, cancelled.in),
 		"interrupted turn, stop":         interruptedTurnViolations(stopped.run, stopped.in),
 		"runtime gone":                   runtimeGoneViolations(gone.run, gone.probe, gone.td),
@@ -439,6 +498,91 @@ func TestConformancePropertyCleanRuns(t *testing.T) {
 			t.Errorf("%s violations over a clean run = %q, want none", property, violations)
 		}
 	}
+}
+
+func TestConformancePropertyContinuation(t *testing.T) {
+	t.Parallel()
+
+	cases := []conformanceCase[conformanceContinuationState]{
+		{name: "clean run"},
+		{
+			name: "resumed request without an origin answer marker",
+			mutate: func(s *conformanceContinuationState) {
+				s.exchanges[conformanceResumedAt].Body = []byte("nonce-p1 nonce-p2 nonce-a2 nonce-p4")
+			},
+			want: []string{"resumed script entry 3"},
+			also: []string{"lacks the origin turn 1 answer marker"},
+		},
+		{
+			name: "continued request without origin turn 1 prompt marker",
+			mutate: func(s *conformanceContinuationState) {
+				s.exchanges[conformanceContinuedAt].Body = []byte("nonce-a1 nonce-p2")
+			},
+			want: []string{"origin script entry 1"},
+			also: []string{"lacks the origin turn 1 prompt marker"},
+		},
+		{
+			name: "control request carrying an origin marker",
+			mutate: func(s *conformanceContinuationState) {
+				s.exchanges[conformanceControlAt].Body = []byte("nonce-p3 nonce-a1")
+			},
+			want: []string{"control script entry 2"},
+			also: []string{"carries the origin turn 1 answer marker"},
+		},
+		{
+			name:   "resumed session reporting another identifier",
+			mutate: func(s *conformanceContinuationState) { s.resumed.ID = "session-other" },
+			want:   []string{"resumed session"},
+		},
+		{
+			name: "resumed result reporting another identifier",
+			mutate: func(s *conformanceContinuationState) {
+				s.turns[conformanceResumedAt].result.SessionID = "session-other"
+			},
+			want: []string{"resumed turn: Result.SessionID"},
+		},
+		{
+			name: "resumed session_started event reporting another identifier",
+			mutate: func(s *conformanceContinuationState) {
+				s.turns[conformanceResumedAt].events[0].SessionID = "session-other"
+			},
+			want: []string{"resumed turn"},
+			also: []string{"carries session id"},
+		},
+		{
+			name:   "resumed turn without a session_started event carrying an identifier",
+			mutate: func(s *conformanceContinuationState) { s.turns[conformanceResumedAt].events = nil },
+			want:   []string{"resumed turn"},
+			also:   []string{"carried a session id"},
+		},
+		{
+			name: "control reporting the origin identifier",
+			mutate: func(s *conformanceContinuationState) {
+				s.turns[conformanceControlAt].result.SessionID = s.turns[conformanceContinuedAt].result.SessionID
+			},
+			want: []string{"control turn"},
+		},
+		{
+			name:   "no turn exchange for the resumed entry",
+			mutate: func(s *conformanceContinuationState) { s.exchanges = s.exchanges[:conformanceResumedAt] },
+			want:   []string{"resumed script entry 3: no turn exchange"},
+		},
+		{
+			name: "resumed result unmeasured with spend unaccounted",
+			mutate: func(s *conformanceContinuationState) {
+				s.turns[conformanceResumedAt].result.UsageMeasured = false
+				s.turns[conformanceResumedAt].result.SpendUnaccounted = true
+			},
+			want: []string{"resumed turn: Result.UsageMeasured is false"},
+		},
+	}
+
+	conformanceRunCases(t, "continuation", cases,
+		conformanceContinuationRun,
+		func(s conformanceContinuationState) []string {
+			return continuationViolations(s.turns, s.resumed, s.exchanges)
+		},
+	)
 }
 
 func TestConformancePropertyTurnOutcome(t *testing.T) {

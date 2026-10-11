@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/sortie-ai/sortie/internal/agent/agenttest/credentialtest"
 	"github.com/sortie-ai/sortie/internal/agent/agenttest/fakemodel"
@@ -124,8 +123,10 @@ func TestIntegration_ScriptedModel(t *testing.T) {
 	skipUnlessIntegration(t)
 
 	fakemodel.AssertConformance(t, fakemodel.Binding{
-		Kind:        "claude-code",
-		Passthrough: map[string]any{"model": "claude-haiku-4-5", "session_persistence": false},
+		Kind: "claude-code",
+		// Persistence stays on: the continuation scenario resumes a session the
+		// runtime stored, and the files stay in the test's temporary home.
+		Passthrough: map[string]any{"model": "claude-haiku-4-5"},
 		Read:        fakemodel.ReadFile,
 		Launch: func(t *testing.T, env fakemodel.Environment) fakemodel.Launch {
 			return fakemodel.Launch{
@@ -161,84 +162,6 @@ func TestIntegration_ScriptedModel(t *testing.T) {
 			}
 		},
 	})
-}
-
-func TestIntegration_SessionResume(t *testing.T) {
-	skipUnlessIntegration(t)
-
-	model := os.Getenv("SORTIE_CLAUDE_MODEL")
-	if model == "" {
-		model = "claude-haiku-4-5"
-	}
-	firstSettings := map[string]any{"model": model}
-	resumedSettings := map[string]any{"model": "claude-sonnet-4-5", "effort": "low"}
-
-	workspace := t.TempDir()
-	noopEvent := func(domain.AgentEvent) {}
-
-	adapter, err := NewClaudeCodeAdapter()
-	if err != nil {
-		t.Fatalf("NewClaudeCodeAdapter: %v", err)
-	}
-
-	session, err := adapter.StartSession(context.Background(), domain.StartSessionParams{
-		WorkspacePath: workspace,
-		AgentConfig:   domain.AgentConfig{Command: integrationCommand(t)},
-		Settings:      firstSettings,
-	})
-	if err != nil {
-		t.Fatalf("StartSession (first turn): %v", err)
-	}
-	t.Cleanup(func() { _ = adapter.StopSession(context.Background(), session) })
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	result1, err := adapter.RunTurn(ctx, session, domain.RunTurnParams{
-		Prompt:  "Say exactly: turn one",
-		OnEvent: noopEvent,
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (first turn): %v", err)
-	}
-	if result1.ExitReason != domain.EventTurnCompleted {
-		t.Fatalf("first turn ExitReason = %q, want %q", result1.ExitReason, domain.EventTurnCompleted)
-	}
-	if result1.SessionID == "" {
-		t.Fatal("first turn TurnResult.SessionID is empty")
-	}
-
-	session2, err := adapter.StartSession(context.Background(), domain.StartSessionParams{
-		WorkspacePath:   workspace,
-		AgentConfig:     domain.AgentConfig{Command: integrationCommand(t)},
-		ResumeSessionID: result1.SessionID,
-		Settings:        resumedSettings,
-	})
-	if err != nil {
-		t.Fatalf("StartSession (resumed turn): %v", err)
-	}
-	t.Cleanup(func() { _ = adapter.StopSession(context.Background(), session2) })
-
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel2()
-
-	result2, err := adapter.RunTurn(ctx2, session2, domain.RunTurnParams{
-		Prompt:  "What did I say in the previous message?",
-		OnEvent: noopEvent,
-	})
-	if err != nil {
-		t.Fatalf("RunTurn (resumed turn): %v", err)
-	}
-	if result2.ExitReason != domain.EventTurnCompleted {
-		t.Errorf("resumed turn ExitReason = %q, want %q", result2.ExitReason, domain.EventTurnCompleted)
-	}
-	// A fresh session would also complete. The CLI keeps the session
-	// identifier on resume unless --fork-session is passed, which this
-	// adapter never does, so a changed identifier means no resume happened.
-	if result2.SessionID != result1.SessionID {
-		t.Errorf("resumed turn SessionID = %q, want %q: the turn did not resume the first turn's session",
-			result2.SessionID, result1.SessionID)
-	}
 }
 
 func TestIntegration_CredentialVerification(t *testing.T) {

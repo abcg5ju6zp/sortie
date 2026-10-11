@@ -62,28 +62,22 @@ func mustNewAdapter(t *testing.T) domain.AgentAdapter {
 	return a
 }
 
-func mustStartIntegrationSessionWith(t *testing.T, a domain.AgentAdapter, settings map[string]any) domain.Session {
-	t.Helper()
-	return mustStartIntegrationSessionIn(t, a, "", t.TempDir(), settings)
-}
-
 // coldStartReadTimeoutMS absorbs the SQLite migration a first launch runs,
 // which can take over 30 seconds.
 const coldStartReadTimeoutMS = 3 * 60 * 1000
 
-func mustStartIntegrationSessionIn(t *testing.T, a domain.AgentAdapter, resumeID, workspacePath string, settings map[string]any) domain.Session {
+func mustStartIntegrationSessionWith(t *testing.T, a domain.AgentAdapter, settings map[string]any) domain.Session {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	session, err := a.StartSession(ctx, domain.StartSessionParams{
-		WorkspacePath: workspacePath,
+		WorkspacePath: t.TempDir(),
 		AgentConfig: domain.AgentConfig{
 			Command:       integrationCommand(),
 			ReadTimeoutMS: coldStartReadTimeoutMS,
 		},
-		ResumeSessionID: resumeID,
-		Settings:        settings,
+		Settings: settings,
 	})
 	if err != nil {
 		t.Fatalf("StartSession(): %v", err)
@@ -157,38 +151,6 @@ func TestIntegration_ScriptedModel(t *testing.T) {
 			}
 		},
 	})
-}
-
-func TestIntegration_SessionResume(t *testing.T) {
-	skipIfNotEnabled(t)
-
-	// opencode replays a --session only from the project directory the
-	// session was created in; under another --dir the resume exits cleanly
-	// with no events.
-	workspace := t.TempDir()
-
-	a := mustNewAdapter(t)
-	session := mustStartIntegrationSessionIn(t, a, "", workspace, integrationConfig())
-	t.Cleanup(func() { _ = a.StopSession(context.Background(), session) })
-
-	_, result1 := collectAllEvents(t, a, session, "Say: turn one")
-	if result1.ExitReason != domain.EventTurnCompleted {
-		t.Fatalf("turn 1 ExitReason = %q, want completed", result1.ExitReason)
-	}
-	sessionID := result1.SessionID
-	if sessionID == "" {
-		t.Fatal("turn 1 SessionID is empty")
-	}
-
-	resumedSettings := integrationConfig()
-	resumedSettings["disable_autocompact"] = false
-	session2 := mustStartIntegrationSessionIn(t, a, sessionID, workspace, resumedSettings)
-	t.Cleanup(func() { _ = a.StopSession(context.Background(), session2) })
-
-	_, result2 := collectAllEvents(t, a, session2, "What did I say in the previous message?")
-	if result2.ExitReason != domain.EventTurnCompleted {
-		t.Errorf("resumed turn ExitReason = %q, want completed", result2.ExitReason)
-	}
 }
 
 func TestIntegration_InvalidModelFailure(t *testing.T) {

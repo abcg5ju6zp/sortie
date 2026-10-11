@@ -301,14 +301,16 @@ func assertUsageReportingCase(t contractReporter, kind string, tc UsageReporting
 	assertResolvedUsageReporting(kindReporter{contractReporter: t, kind: kind}, tc, arrival, attribution)
 }
 
-// AssertLiveUsageCase fails t unless tc, the verification turn of a
-// suite's working-credential case, agrees with the pair kind resolves
-// for it. Under arrival none it asserts no measurement. Under a
-// figure-reporting arrival a measured turn must report positive input
-// and output tokens and satisfy the usage contract, and an unmeasured
-// turn must flag its spend unaccounted and carry no measurement. Unlike
-// [AssertUsageReportingCase] it does not require a tool result or a
-// second usage event, which a verification turn does not produce.
+// AssertLiveUsageCase fails t unless tc, any single text turn such as
+// the verification turn of a suite's working-credential case or the
+// resumed turn of the scripted continuation scenario, agrees with the
+// pair kind resolves for it. Under arrival none it asserts no
+// measurement. Under a figure-reporting arrival a measured turn must
+// report positive input and output tokens and satisfy the usage
+// contract, and an unmeasured turn must flag its spend unaccounted and
+// carry no measurement. Unlike [AssertUsageReportingCase] it does not
+// require a tool result or a second usage event, which a single text
+// turn does not produce.
 func AssertLiveUsageCase(t *testing.T, kind string, tc UsageReportingCase) {
 	t.Helper()
 	assertLiveUsageCase(t, kind, tc)

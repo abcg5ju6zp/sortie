@@ -50,6 +50,11 @@ const (
 	// ScenarioStop scripts one held answer; the driver stops the session
 	// once the endpoint holds the request.
 	ScenarioStop
+
+	// ScenarioContinuation scripts one answer per turn across sessions that
+	// share one home, one workspace and one adapter: an origin session of two
+	// turns, a fresh control session, and a session resuming the origin.
+	ScenarioContinuation
 )
 
 // Binding is one agent kind's fixture for [AssertConformance]: how to reach
@@ -60,8 +65,8 @@ type Binding struct {
 	Passthrough   map[string]any // the settings block handed to the session
 	CredentialEnv []string       // names given the sentinel beyond the kind's declared credential names
 	Read          func(path string) ToolChoice
-	SortieStatus  ToolChoice // the call that reaches sortie_status; nil calls the declared tool named for it
-	Finish        ToolChoice // the turn's last answer; nil answers with text
+	SortieStatus  ToolChoice                   // the call that reaches sortie_status; nil calls the declared tool named for it
+	Finish        func(text string) ToolChoice // the call ending a turn whose answer is text; nil answers with text
 	Launch        func(t *testing.T, env Environment) Launch
 	Inspect       func(t *testing.T, run Run) // optional adapter-only assertions
 
@@ -173,7 +178,9 @@ const serverCallStep = 1
 // model as one errored tool result with the notice and without the file's
 // content. A turn interrupted while the endpoint holds its model request ends
 // within a bound, and once the session's stop returns every process the
-// session reported is gone.
+// session reported is gone. A session resumed by its reported identifier sends
+// the earlier turns' prompts and answers back to the model, and a fresh session
+// in the same home and workspace sends none of them.
 //
 // It sets environment variables for the rest of the test, so it must not be
 // called from a test that uses t.Parallel.
@@ -189,6 +196,7 @@ func AssertConformance(t *testing.T, b Binding) {
 	}
 	t.Run("turn cancellation", func(t *testing.T) { runInterruption(t, b, ScenarioCancellation) })
 	t.Run("session stop", func(t *testing.T) { runInterruption(t, b, ScenarioStop) })
+	t.Run("session continuation", func(t *testing.T) { runContinuation(t, b) })
 }
 
 func requireValidBinding(t *testing.T, b Binding) {
@@ -575,6 +583,157 @@ func runInterruption(t *testing.T, b Binding, scenario Scenario) {
 	}
 }
 
+type sessionRole string
+
+const (
+	roleOrigin  sessionRole = "origin"
+	roleControl sessionRole = "control"
+	roleResumed sessionRole = "resumed"
+)
+
+// continuedTurn is one driven turn of the continuation scenario.
+type continuedTurn struct {
+	role   sessionRole
+	prompt string // the marker the turn's prompt carries
+	answer string // the marker the turn's scripted answer carries
+	result domain.TurnResult
+	events []domain.AgentEvent // the events RunTurn delivered for this turn
+}
+
+// The script entries of the continuation scenario that its checks single out.
+// The run order is the origin's two turns, the control's, then the resumed
+// session's.
+const (
+	continuedEntry = 1
+	controlEntry   = 2
+	resumedEntry   = 3
+)
+
+// continuation holds what every session of the continuation scenario shares.
+// A runtime keys the sessions it stores by home and working directory, and the
+// protocol adapter remembers the sessions its instance created, so a resumed
+// session needs the origin's adapter, home and workspace.
+type continuation struct {
+	binding   Binding
+	server    *Server
+	adapter   domain.AgentAdapter
+	workspace string
+	home      string
+	sentinel  string
+}
+
+func runContinuation(t *testing.T, b Binding) {
+	t.Helper()
+
+	roles := []sessionRole{roleOrigin, roleOrigin, roleControl, roleResumed}
+	turns := make([]continuedTurn, len(roles))
+	script := make([]Response, len(roles))
+	for i, role := range roles {
+		turns[i] = continuedTurn{role: role, prompt: "nonce-" + randomHex(t, 8), answer: "nonce-" + randomHex(t, 8)}
+		script[i] = answerResponse(b, "Noted "+turns[i].answer+".")
+	}
+
+	c := continuation{
+		binding:   b,
+		server:    Start(t, script),
+		workspace: newWorkspace(t),
+		home:      t.TempDir(),
+		sentinel:  "sortie-scripted-credential-" + randomHex(t, 16),
+	}
+	isolateEnvironment(t, b, c.home, c.sentinel)
+	newAdapter, err := registry.Agents.Get(b.Kind)
+	if err != nil {
+		t.Fatalf("registry.Agents.Get(%q) error = %v", b.Kind, err)
+	}
+	if c.adapter, err = newAdapter(); err != nil {
+		t.Fatalf("construct %q adapter error = %v", b.Kind, err)
+	}
+
+	_, originEvents := c.drive(t, roleOrigin, "", turns[:controlEntry])
+	originID := turns[continuedEntry].result.SessionID
+	_, controlEvents := c.drive(t, roleControl, "", turns[controlEntry:resumedEntry])
+	resumed, resumedEvents := c.drive(t, roleResumed, originID, turns[resumedEntry:])
+
+	run := Run{
+		Session:   resumed,
+		Result:    turns[resumedEntry].result,
+		Events:    slices.Concat(originEvents, controlEvents, resumedEvents),
+		Exchanges: c.server.Exchanges(),
+	}
+	t.Run("turn outcome", func(t *testing.T) {
+		reportViolations(t, turnOutcomeViolations(run, len(script)))
+	})
+	t.Run("continuation", func(t *testing.T) {
+		reportViolations(t, continuationViolations(turns, resumed, run.Exchanges))
+	})
+	t.Run("resumed usage", func(t *testing.T) {
+		agenttest.AssertLiveUsageCase(t, b.Kind, agenttest.UsageReportingCase{
+			Name:        "resumed turn",
+			Passthrough: b.Passthrough,
+			Events:      turns[resumedEntry].events,
+			Result:      turns[resumedEntry].result,
+		})
+	})
+}
+
+// drive runs turns in order on one session, recording each turn's result and
+// events in turns, and returns the session with every event it delivered.
+func (c continuation) drive(t *testing.T, role sessionRole, resumeID string, turns []continuedTurn) (domain.Session, []domain.AgentEvent) {
+	t.Helper()
+
+	events := &eventCollector{}
+	launch := c.binding.Launch(t, Environment{
+		Scenario:  ScenarioContinuation,
+		URL:       c.server.URL(),
+		Home:      c.home,
+		Workspace: c.workspace,
+		Sentinel:  c.sentinel,
+		Events:    events.snapshot,
+	})
+	for _, key := range slices.Sorted(maps.Keys(launch.Env)) {
+		t.Setenv(key, launch.Env[key])
+	}
+
+	// A persistent runtime exits when this context ends, so the deferred stop
+	// below must run before the cancel.
+	ctx, cancel := context.WithTimeout(context.Background(), turnBound)
+	defer cancel()
+	session, err := c.adapter.StartSession(ctx, domain.StartSessionParams{
+		WorkspacePath:   c.workspace,
+		AgentConfig:     launch.Config,
+		Settings:        c.binding.Passthrough,
+		ResumeSessionID: resumeID,
+	})
+	if err != nil {
+		t.Fatalf("%s session: StartSession() error = %v%s", role, err, exchangeLines(c.server.Exchanges()))
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), stopBound)
+		defer stopCancel()
+		if err := c.adapter.StopSession(stopCtx, session); err != nil {
+			t.Logf("%s session: StopSession() error = %v", role, err)
+		}
+	}()
+
+	for i := range turns {
+		before := len(events.snapshot())
+		// The prompt opens with a letter: a runtime may read a leading slash as a
+		// command, and one may leave a message opening with a slash or a question
+		// mark out of a loaded history.
+		result, runErr := c.adapter.RunTurn(ctx, session, domain.RunTurnParams{
+			Prompt:  "Note the code " + turns[i].prompt + " and reply with a short acknowledgment.",
+			OnEvent: events.collect,
+		})
+		turns[i].result = result
+		turns[i].events = events.snapshot()[before:]
+		if runErr != nil || result.ExitReason != domain.EventTurnCompleted {
+			t.Fatalf("%s session turn %d: RunTurn() error = %v, ExitReason = %q, want nil and %q%s",
+				role, i+1, runErr, result.ExitReason, domain.EventTurnCompleted, exchangeLines(c.server.Exchanges()))
+		}
+	}
+	return session, events.snapshot()
+}
+
 func receiveWithin[T any](ch <-chan T, bound time.Duration) (T, bool) {
 	timer := time.NewTimer(bound)
 	defer timer.Stop()
@@ -624,10 +783,14 @@ func sortieStatusCall(b Binding) ToolChoice {
 }
 
 func closingResponse(b Binding) Response {
+	return answerResponse(b, "The file holds the nonce.")
+}
+
+func answerResponse(b Binding, text string) Response {
 	if b.Finish != nil {
-		return Response{Call: b.Finish, Usage: secondTurnUsage}
+		return Response{Call: b.Finish(text), Usage: secondTurnUsage}
 	}
-	return Response{Text: "The file holds the nonce.", Usage: secondTurnUsage}
+	return Response{Text: text, Usage: secondTurnUsage}
 }
 
 // writeSortieState records the session state sortie_status reports, so its
@@ -1289,4 +1452,109 @@ func reportedProcessIDs(run Run) []string {
 		add(event.AgentPID)
 	}
 	return ids
+}
+
+// continuationViolations checks a continuation run whose turns[i] answered
+// script entry i, in run order: origin, origin, control, resumed.
+func continuationViolations(turns []continuedTurn, resumed domain.Session, exchanges []Exchange) []string {
+	v := &findings{property: "continuation"}
+
+	checkContinuationIdentifiers(v, turns, resumed)
+	for entry, turn := range turns {
+		ex, ok := turnExchangeOf(exchanges, entry)
+		if !ok {
+			v.add("%s script entry %d: no turn exchange reached the endpoint", turn.role, entry)
+			continue
+		}
+		wanted, forbidden := requestMarkers(turns, entry)
+		for _, m := range wanted {
+			if !strings.Contains(string(ex.Body), m.text) {
+				v.add("%s script entry %d, %s, lacks the %s", turn.role, entry, requestLabel(ex), m.label)
+			}
+		}
+		for _, m := range forbidden {
+			if strings.Contains(string(ex.Body), m.text) {
+				v.add("%s script entry %d, %s, carries the %s", turn.role, entry, requestLabel(ex), m.label)
+			}
+		}
+	}
+
+	if !turns[resumedEntry].result.UsageMeasured {
+		v.add("%s turn: Result.UsageMeasured is false, want a measured figure", roleResumed)
+	}
+	return v.items
+}
+
+func checkContinuationIdentifiers(v *findings, turns []continuedTurn, resumed domain.Session) {
+	id := turns[continuedEntry].result.SessionID
+	if id == "" {
+		v.add("%s turn 2: Result.SessionID is empty", roleOrigin)
+	}
+	if got := turns[0].result.SessionID; got != id {
+		v.add("%s turn 1: Result.SessionID = %q, want %q, the id of its last turn", roleOrigin, got, id)
+	}
+
+	resumedTurn := turns[resumedEntry]
+	if resumed.ID != id {
+		v.add("%s session: Session.ID = %q, want %q", roleResumed, resumed.ID, id)
+	}
+	if got := resumedTurn.result.SessionID; got != id {
+		v.add("%s turn: Result.SessionID = %q, want %q", roleResumed, got, id)
+	}
+	started := 0
+	for _, event := range resumedTurn.events {
+		if event.Type != domain.EventSessionStarted || event.SessionID == "" {
+			continue
+		}
+		started++
+		if event.SessionID != id {
+			v.add("%s turn: %q event carries session id %q, want %q", roleResumed, event.Type, event.SessionID, id)
+		}
+	}
+	if started == 0 {
+		v.add("%s turn: no %q event carried a session id", roleResumed, domain.EventSessionStarted)
+	}
+
+	controlID := turns[controlEntry].result.SessionID
+	if controlID == "" || controlID == id {
+		v.add("%s turn: Result.SessionID = %q, want a non-empty id other than the origin's %q", roleControl, controlID, id)
+	}
+}
+
+type marker struct {
+	label string
+	text  string
+}
+
+// requestMarkers lists the origin markers the request answering entry must
+// carry and those it must not: the continued and the resumed request replay
+// the origin's earlier turns, and the control request sees none of them.
+func requestMarkers(turns []continuedTurn, entry int) (wanted, forbidden []marker) {
+	switch entry {
+	case continuedEntry:
+		return originMarkers(turns[:continuedEntry]), nil
+	case controlEntry:
+		return nil, originMarkers(turns[:controlEntry])
+	case resumedEntry:
+		return originMarkers(turns[:controlEntry]), nil
+	}
+	return nil, nil
+}
+
+func originMarkers(turns []continuedTurn) []marker {
+	var markers []marker
+	for i, turn := range turns {
+		markers = append(markers,
+			marker{label: fmt.Sprintf("%s turn %d prompt marker", turn.role, i+1), text: turn.prompt},
+			marker{label: fmt.Sprintf("%s turn %d answer marker", turn.role, i+1), text: turn.answer})
+	}
+	return markers
+}
+
+func turnExchangeOf(exchanges []Exchange, entry int) (Exchange, bool) {
+	i := slices.IndexFunc(exchanges, func(ex Exchange) bool { return ex.Kind == ExchangeTurn && ex.Step == entry })
+	if i < 0 {
+		return Exchange{}, false
+	}
+	return exchanges[i], true
 }
