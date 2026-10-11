@@ -6,48 +6,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/agent/agenttest"
 	"github.com/sortie-ai/sortie/internal/domain"
 )
-
-type trapParams struct {
-	Marker       string
-	ExitOnSignal bool
-}
-
-func trapScenario(_ []string, p trapParams) int {
-	ch := make(chan os.Signal, 1)
-	// On Windows the graceful stop of [procutil.Group.SignalGraceful] arrives
-	// as a console control event that the runtime delivers as an interrupt
-	// rather than as SIGTERM.
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
-
-	if err := os.WriteFile(p.Marker, []byte("ready"), 0o600); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-
-	<-ch
-	if p.ExitOnSignal {
-		return 0
-	}
-	agenttest.Hang()
-	return 0
-}
-
-func init() {
-	scenarios["trap"] = agenttest.Typed(trapScenario)
-}
 
 // The marker exists because a fixed sleep cannot prove the trap is installed:
 // if the signal wins that race the process exits on the platform's default
@@ -57,18 +24,6 @@ func buildTrapAgent(t *testing.T, dir string, exitOnSignal bool) (path, marker s
 	marker = filepath.Join(dir, "trap-ready")
 	path = agenttest.FakeRuntime(t, dir, "agent", "trap", trapParams{Marker: marker, ExitOnSignal: exitOnSignal})
 	return path, marker
-}
-
-func waitForTrap(t *testing.T, marker string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(marker); err == nil {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("subprocess did not install its TERM trap within 5s (marker %q absent)", marker)
 }
 
 func TestForkPerTurnSession_GracefulSignal(t *testing.T) {
