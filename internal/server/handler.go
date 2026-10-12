@@ -21,6 +21,7 @@ type stateResponse struct {
 	BudgetExhausted        []budgetExhaustedResponse        `json:"budget_exhausted"`
 	Parked                 []parkedEntryResponse            `json:"parked"`
 	PendingReactions       []pendingReactionResponse        `json:"pending_reactions"`
+	BetweenStages          []stageHopResponse               `json:"between_stages"`
 	AgentTotals            orchestrator.SnapshotAgentTotals `json:"agent_totals"`
 	RateLimits             map[string]any                   `json:"rate_limits"`
 	ActiveEstimatedCostUSD *float64                         `json:"active_estimated_cost_usd,omitempty"`
@@ -40,39 +41,47 @@ type stateCounts struct {
 	BudgetExhausted  int `json:"budget_exhausted"`
 	Parked           int `json:"parked"`
 	PendingReactions int `json:"pending_reactions"`
+	BetweenStages    int `json:"between_stages"`
 }
 
 type runningEntryResponse struct {
-	IssueID             string         `json:"issue_id"`
-	IssueIdentifier     string         `json:"issue_identifier"`
-	DisplayIdentifier   string         `json:"display_identifier,omitempty"`
-	IssueTitle          string         `json:"issue_title,omitempty"`
-	IssueURL            string         `json:"issue_url,omitempty"`
-	IssueLabels         []string       `json:"issue_labels"`
-	IssueType           string         `json:"issue_type,omitempty"`
-	State               string         `json:"state"`
-	SessionID           string         `json:"session_id"`
-	TurnCount           int            `json:"turn_count"`
-	SelfReviewActive    bool           `json:"self_review_active"`
-	SelfReviewIteration int            `json:"self_review_iteration"`
-	LastEvent           string         `json:"last_event"`
-	LastMessage         string         `json:"last_message"`
-	StartedAt           time.Time      `json:"started_at"`
-	LastEventAt         time.Time      `json:"last_event_at"`
-	WorkspacePath       string         `json:"workspace_path"`
-	SSHHost             string         `json:"ssh_host,omitempty"`
-	Tokens              tokenInfo      `json:"tokens"`
-	ModelName           string         `json:"model_name,omitempty"`
-	RuleName            string         `json:"rule_name,omitempty"`
-	ConfiguredModel     string         `json:"configured_model,omitempty"`
-	ConfiguredEffort    string         `json:"configured_effort,omitempty"`
-	WorkflowFile        string         `json:"workflow_file,omitempty"`
-	AgentKind           string         `json:"agent_kind,omitempty"`
-	APIRequestCount     *int           `json:"api_request_count"`
-	RequestsByModel     map[string]int `json:"requests_by_model,omitempty"`
-	ToolTimePercent     *float64       `json:"tool_time_percent"`
-	APITimePercent      *float64       `json:"api_time_percent"`
-	TokensMeasured      bool           `json:"tokens_measured"`
+	IssueID             string                 `json:"issue_id"`
+	IssueIdentifier     string                 `json:"issue_identifier"`
+	DisplayIdentifier   string                 `json:"display_identifier,omitempty"`
+	IssueTitle          string                 `json:"issue_title,omitempty"`
+	IssueURL            string                 `json:"issue_url,omitempty"`
+	IssueLabels         []string               `json:"issue_labels"`
+	IssueType           string                 `json:"issue_type,omitempty"`
+	State               string                 `json:"state"`
+	SessionID           string                 `json:"session_id"`
+	TurnCount           int                    `json:"turn_count"`
+	SelfReviewActive    bool                   `json:"self_review_active"`
+	SelfReviewIteration int                    `json:"self_review_iteration"`
+	LastEvent           string                 `json:"last_event"`
+	LastMessage         string                 `json:"last_message"`
+	StartedAt           time.Time              `json:"started_at"`
+	DispatchedAt        *time.Time             `json:"dispatched_at"`
+	LastEventAt         time.Time              `json:"last_event_at"`
+	WorkspacePath       string                 `json:"workspace_path"`
+	SSHHost             string                 `json:"ssh_host,omitempty"`
+	Tokens              tokenInfo              `json:"tokens"`
+	ModelName           string                 `json:"model_name,omitempty"`
+	RuleName            string                 `json:"rule_name,omitempty"`
+	StageLineage        *stageLineageResponse  `json:"stage_lineage"`
+	StagePosition       *stagePositionResponse `json:"stage_position"`
+	ConfiguredModel     string                 `json:"configured_model,omitempty"`
+	ConfiguredEffort    string                 `json:"configured_effort,omitempty"`
+	WorkflowFile        string                 `json:"workflow_file,omitempty"`
+	AgentKind           string                 `json:"agent_kind,omitempty"`
+	ReactionKind        string                 `json:"reaction_kind,omitempty"`
+	ReactionConfigKey   string                 `json:"reaction_config_key,omitempty"`
+	ReactionAttempt     int                    `json:"reaction_attempt,omitempty"`
+	PullRequest         *pullRequestResponse   `json:"pull_request,omitempty"`
+	APIRequestCount     *int                   `json:"api_request_count"`
+	RequestsByModel     map[string]int         `json:"requests_by_model,omitempty"`
+	ToolTimePercent     *float64               `json:"tool_time_percent"`
+	APITimePercent      *float64               `json:"api_time_percent"`
+	TokensMeasured      bool                   `json:"tokens_measured"`
 
 	// UsageArrival and UsageAttribution mirror
 	// [orchestrator.SnapshotRunningEntry]'s frozen pair verbatim, as
@@ -114,32 +123,60 @@ type tokenInfo struct {
 }
 
 type retryEntryResponse struct {
-	IssueID           string    `json:"issue_id"`
-	IssueIdentifier   string    `json:"issue_identifier"`
-	DisplayIdentifier string    `json:"display_identifier,omitempty"`
-	IssueTitle        string    `json:"issue_title,omitempty"`
-	IssueURL          string    `json:"issue_url,omitempty"`
-	IssueType         string    `json:"issue_type,omitempty"`
-	IssueLabels       []string  `json:"issue_labels,omitzero"`
-	State             string    `json:"state,omitempty"`
-	Attempt           int       `json:"attempt"`
-	DueAt             time.Time `json:"due_at"`
-	Error             string    `json:"error"`
+	IssueID           string     `json:"issue_id"`
+	IssueIdentifier   string     `json:"issue_identifier"`
+	DisplayIdentifier string     `json:"display_identifier,omitempty"`
+	IssueTitle        string     `json:"issue_title,omitempty"`
+	IssueURL          string     `json:"issue_url,omitempty"`
+	IssueType         string     `json:"issue_type,omitempty"`
+	IssueLabels       []string   `json:"issue_labels,omitzero"`
+	State             string     `json:"state,omitempty"`
+	DispatchedAt      *time.Time `json:"dispatched_at"`
+	Attempt           int        `json:"attempt"`
+	DueAt             time.Time  `json:"due_at"`
+	Error             string     `json:"error"`
 
-	Trigger           string                `json:"trigger,omitempty"`
-	ReactionKind      string                `json:"reaction_kind,omitempty"`
-	ReactionConfigKey string                `json:"reaction_config_key,omitempty"`
-	RuleName          string                `json:"rule_name,omitempty"`
-	StageLineage      *stageLineageResponse `json:"stage_lineage"`
-	Paused            bool                  `json:"paused"`
+	Trigger           string                 `json:"trigger,omitempty"`
+	ReactionKind      string                 `json:"reaction_kind,omitempty"`
+	ReactionConfigKey string                 `json:"reaction_config_key,omitempty"`
+	RuleName          string                 `json:"rule_name,omitempty"`
+	AgentKind         string                 `json:"agent_kind,omitempty"`
+	ConfiguredModel   string                 `json:"configured_model,omitempty"`
+	StageLineage      *stageLineageResponse  `json:"stage_lineage"`
+	StagePosition     *stagePositionResponse `json:"stage_position"`
+	Paused            bool                   `json:"paused"`
 }
 
-// stageLineageResponse is the stage hop that reached the run a retry
-// follows. It is nil in the wire format unless a hop reached that run.
+// stageLineageResponse is the stage hop that reached the run a row
+// describes. It is nil in the wire format unless a hop reached that run.
 type stageLineageResponse struct {
 	ChainID         string `json:"chain_id,omitempty"`
 	Previous        string `json:"previous,omitempty"`
 	PreviousOutcome string `json:"previous_outcome,omitempty"`
+}
+
+// stagePositionResponse is where a row's rule stands on its stage chain. It
+// is nil in the wire format when the rule is on no chain.
+type stagePositionResponse struct {
+	Chain      []string `json:"chain"`
+	Current    string   `json:"current"`
+	HopCount   int      `json:"hop_count"`
+	HopCeiling int      `json:"hop_ceiling"`
+}
+
+// stageHopResponse is the JSON wire format for one issue between stages.
+// Used by GET /api/v1/state and GET /api/v1/{identifier}.
+type stageHopResponse struct {
+	IssueID           string     `json:"issue_id"`
+	IssueIdentifier   string     `json:"issue_identifier"`
+	DisplayIdentifier string     `json:"display_identifier,omitempty"`
+	IssueTitle        string     `json:"issue_title,omitempty"`
+	IssueURL          string     `json:"issue_url,omitempty"`
+	SourceRule        string     `json:"source_rule"`
+	TargetRule        string     `json:"target_rule"`
+	TargetLabel       string     `json:"target_label"`
+	HoppedAt          *time.Time `json:"hopped_at"`
+	DispatchedAt      *time.Time `json:"dispatched_at"`
 }
 
 // parkedEntryResponse is the JSON wire format for one issue held out of
@@ -170,6 +207,7 @@ type pendingReactionResponse struct {
 	ConfigKey         string                 `json:"config_key"`
 	PullRequest       pullRequestResponse    `json:"pull_request"`
 	CreatedAt         time.Time              `json:"created_at"`
+	DispatchedAt      *time.Time             `json:"dispatched_at"`
 	NextPollAt        time.Time              `json:"next_poll_at"`
 	Wait              string                 `json:"wait,omitempty"`
 	UsedAttempts      *int                   `json:"used_attempts"`
@@ -238,22 +276,28 @@ func (c reactionCheckResponse) MarshalJSON() ([]byte, error) {
 // of dispatch by a budget ceiling. Used by GET /api/v1/state and
 // GET /api/v1/{identifier}.
 type budgetExhaustedResponse struct {
-	IssueID            string    `json:"issue_id"`
-	IssueIdentifier    string    `json:"issue_identifier"`
-	DisplayIdentifier  string    `json:"display_identifier,omitempty"`
-	IssueTitle         string    `json:"issue_title,omitempty"`
-	IssueURL           string    `json:"issue_url,omitempty"`
-	IssueType          string    `json:"issue_type,omitempty"`
-	IssueLabels        []string  `json:"issue_labels,omitzero"`
-	State              string    `json:"state,omitempty"`
-	Reason             string    `json:"reason"`
-	UsedSessions       int       `json:"used_sessions"`
-	BudgetSessions     int       `json:"budget_sessions"`
-	UsedTokens         *int64    `json:"used_tokens"`
-	BudgetTokens       int64     `json:"budget_tokens"`
-	UnmeasuredSessions *int      `json:"unmeasured_sessions"`
-	StoppedInFlight    *int      `json:"stopped_in_flight"`
-	ExhaustedAt        time.Time `json:"exhausted_at"`
+	IssueID            string                 `json:"issue_id"`
+	IssueIdentifier    string                 `json:"issue_identifier"`
+	DisplayIdentifier  string                 `json:"display_identifier,omitempty"`
+	IssueTitle         string                 `json:"issue_title,omitempty"`
+	IssueURL           string                 `json:"issue_url,omitempty"`
+	IssueType          string                 `json:"issue_type,omitempty"`
+	IssueLabels        []string               `json:"issue_labels,omitzero"`
+	State              string                 `json:"state,omitempty"`
+	DispatchedAt       *time.Time             `json:"dispatched_at"`
+	Reason             string                 `json:"reason"`
+	UsedSessions       int                    `json:"used_sessions"`
+	BudgetSessions     int                    `json:"budget_sessions"`
+	UsedTokens         *int64                 `json:"used_tokens"`
+	BudgetTokens       int64                  `json:"budget_tokens"`
+	UnmeasuredSessions *int                   `json:"unmeasured_sessions"`
+	StoppedInFlight    *int                   `json:"stopped_in_flight"`
+	ExhaustedAt        time.Time              `json:"exhausted_at"`
+	RuleName           string                 `json:"rule_name,omitempty"`
+	StageLineage       *stageLineageResponse  `json:"stage_lineage"`
+	StagePosition      *stagePositionResponse `json:"stage_position"`
+	AgentKind          string                 `json:"agent_kind,omitempty"`
+	ConfiguredModel    string                 `json:"configured_model,omitempty"`
 }
 
 // issueResponse is the tracker's view of one issue, under the names the
@@ -279,6 +323,7 @@ type issueDetailResponse struct {
 	BudgetExhausted  *budgetExhaustedResponse  `json:"budget_exhausted"`
 	Parked           *parkedEntryResponse      `json:"parked"`
 	PendingReactions []pendingReactionResponse `json:"pending_reactions"`
+	BetweenStages    *stageHopResponse         `json:"between_stages"`
 	RecentEvents     []any                     `json:"recent_events"`
 	LastError        *string                   `json:"last_error"`
 	Tracked          map[string]any            `json:"tracked"`
@@ -326,15 +371,20 @@ func toRunningEntryResponse(e orchestrator.SnapshotRunningEntry, nowArgs ...time
 		LastEvent:           string(e.LastAgentEvent),
 		LastMessage:         e.LastAgentMessage,
 		StartedAt:           e.StartedAt.UTC(),
+		DispatchedAt:        utcOrNil(e.StageLineage.DispatchedAt),
 		LastEventAt:         e.LastAgentTimestamp.UTC(),
 		WorkspacePath:       e.WorkspacePath,
 		SSHHost:             e.SSHHost,
 		ModelName:           e.ModelName,
 		RuleName:            e.RuleName,
+		StageLineage:        toStageLineageResponse(e.StageLineage),
+		StagePosition:       toStagePositionResponse(e.StagePosition),
 		ConfiguredModel:     e.ConfiguredModel,
 		ConfiguredEffort:    e.ConfiguredEffort,
 		WorkflowFile:        e.WorkflowFile,
 		AgentKind:           e.AgentKind,
+		ReactionKind:        e.ReactionKind,
+		ReactionConfigKey:   e.ReactionConfigKey,
 		RequestsByModel:     e.RequestsByModel,
 		TokensMeasured:      e.UsageMeasured,
 		UsageArrival:        string(e.UsageArrival),
@@ -357,6 +407,13 @@ func toRunningEntryResponse(e orchestrator.SnapshotRunningEntry, nowArgs ...time
 	}
 	if e.APIRequestsMeasured {
 		resp.APIRequestCount = &e.APIRequestCount
+	}
+	if e.Continuation != nil {
+		resp.ReactionAttempt = e.Continuation.Attempt
+		resp.PullRequest = &pullRequestResponse{
+			Number:     e.Continuation.Number,
+			Repository: e.Continuation.Repository,
+		}
 	}
 
 	if len(nowArgs) > 0 && !e.StartedAt.IsZero() {
@@ -420,15 +477,56 @@ func issueSpendIncomplete(usage *orchestrator.SnapshotIssueUsage) bool {
 	return usage.UnmeasuredSessions > 0 || usage.UnaccountedTurns > 0
 }
 
-func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse {
-	var lineage *stageLineageResponse
-	if e.StageLineage.PreviousRule != "" {
-		lineage = &stageLineageResponse{
-			ChainID:         e.StageLineage.ChainID,
-			Previous:        e.StageLineage.PreviousRule,
-			PreviousOutcome: e.StageLineage.PreviousOutcome,
-		}
+// utcOrNil returns the UTC value of at, or nil for the zero time, so a time
+// no record could date serializes as null.
+func utcOrNil(at time.Time) *time.Time {
+	if at.IsZero() {
+		return nil
 	}
+	return new(at.UTC())
+}
+
+// toStageLineageResponse returns nil unless a stage hop reached the run, so
+// a chain identifier alone never makes a row claim a lineage.
+func toStageLineageResponse(l orchestrator.StageLineage) *stageLineageResponse {
+	if l.PreviousRule == "" {
+		return nil
+	}
+	return &stageLineageResponse{
+		ChainID:         l.ChainID,
+		Previous:        l.PreviousRule,
+		PreviousOutcome: l.PreviousOutcome,
+	}
+}
+
+func toStagePositionResponse(p *orchestrator.SnapshotStagePosition) *stagePositionResponse {
+	if p == nil {
+		return nil
+	}
+	return &stagePositionResponse{
+		Chain:      p.Chain,
+		Current:    p.Current,
+		HopCount:   p.HopCount,
+		HopCeiling: p.HopCeiling,
+	}
+}
+
+func toStageHopResponse(e orchestrator.SnapshotStageHop) stageHopResponse {
+	return stageHopResponse{
+		IssueID:           e.IssueID,
+		IssueIdentifier:   e.Identifier,
+		DisplayIdentifier: e.DisplayID,
+		IssueTitle:        e.IssueTitle,
+		IssueURL:          e.IssueURL,
+		SourceRule:        e.SourceRule,
+		TargetRule:        e.TargetRule,
+		TargetLabel:       e.TargetLabel,
+		HoppedAt:          utcOrNil(e.HoppedAt),
+		DispatchedAt:      utcOrNil(e.DispatchedAt),
+	}
+}
+
+func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse {
 	return retryEntryResponse{
 		IssueID:           e.IssueID,
 		IssueIdentifier:   e.Identifier,
@@ -438,6 +536,7 @@ func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse 
 		IssueType:         e.IssueType,
 		IssueLabels:       e.IssueLabels,
 		State:             e.State,
+		DispatchedAt:      utcOrNil(e.StageLineage.DispatchedAt),
 		Attempt:           e.Attempt,
 		DueAt:             time.UnixMilli(e.DueAtMS).UTC(),
 		Error:             e.Error,
@@ -446,7 +545,10 @@ func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse 
 		ReactionKind:      e.ReactionKind,
 		ReactionConfigKey: e.ReactionConfigKey,
 		RuleName:          e.RuleName,
-		StageLineage:      lineage,
+		AgentKind:         e.AgentKind,
+		ConfiguredModel:   e.ConfiguredModel,
+		StageLineage:      toStageLineageResponse(e.StageLineage),
+		StagePosition:     toStagePositionResponse(e.StagePosition),
 		Paused:            e.Paused,
 	}
 }
@@ -483,6 +585,7 @@ func toPendingReactionResponse(e orchestrator.SnapshotPendingReaction) pendingRe
 			HeadSHA:    e.PullRequest.HeadSHA,
 		},
 		CreatedAt:    e.CreatedAt.UTC(),
+		DispatchedAt: utcOrNil(e.DispatchedAt),
 		NextPollAt:   e.NextPollAt.UTC(),
 		Wait:         e.Wait,
 		UsedAttempts: e.UsedAttempts,
@@ -513,6 +616,7 @@ func toBudgetExhaustedResponse(e orchestrator.SnapshotBudgetEntry) budgetExhaust
 		IssueType:          e.IssueType,
 		IssueLabels:        e.IssueLabels,
 		State:              e.State,
+		DispatchedAt:       utcOrNil(e.StageLineage.DispatchedAt),
 		Reason:             e.Reason,
 		UsedSessions:       e.UsedSessions,
 		BudgetSessions:     e.BudgetSessions,
@@ -521,6 +625,11 @@ func toBudgetExhaustedResponse(e orchestrator.SnapshotBudgetEntry) budgetExhaust
 		UnmeasuredSessions: e.UnmeasuredSessions,
 		StoppedInFlight:    e.StoppedInFlight,
 		ExhaustedAt:        e.ExhaustedAt,
+		RuleName:           e.RuleName,
+		StageLineage:       toStageLineageResponse(e.StageLineage),
+		StagePosition:      toStagePositionResponse(e.StagePosition),
+		AgentKind:          e.AgentKind,
+		ConfiguredModel:    e.ConfiguredModel,
 	}
 }
 
@@ -547,6 +656,11 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, tokenRates TokenRa
 
 	pendingReactions := toPendingReactionResponses(snap.PendingReactions)
 
+	betweenStages := make([]stageHopResponse, 0, len(snap.BetweenStages))
+	for _, e := range snap.BetweenStages {
+		betweenStages = append(betweenStages, toStageHopResponse(e))
+	}
+
 	rateLimits := snap.RateLimits
 	if rateLimits == nil {
 		rateLimits = map[string]any{}
@@ -560,12 +674,14 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, tokenRates TokenRa
 			BudgetExhausted:  len(budgetExhausted),
 			Parked:           len(parked),
 			PendingReactions: len(pendingReactions),
+			BetweenStages:    len(betweenStages),
 		},
 		Running:          running,
 		Retrying:         retrying,
 		BudgetExhausted:  budgetExhausted,
 		Parked:           parked,
 		PendingReactions: pendingReactions,
+		BetweenStages:    betweenStages,
 		AgentTotals:      snap.AgentTotals,
 		RateLimits:       rateLimits,
 	}
@@ -757,6 +873,7 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 	var retryEntry *retryEntryResponse
 	var budgetEntry *budgetExhaustedResponse
 	var parkedEntry *parkedEntryResponse
+	var hopEntry *stageHopResponse
 
 	for _, e := range snap.Running {
 		if e.Identifier == identifier {
@@ -786,6 +903,13 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 		}
 	}
 
+	for _, e := range snap.BetweenStages {
+		if e.Identifier == identifier {
+			hopEntry = new(toStageHopResponse(e))
+			break
+		}
+	}
+
 	var pendingRows []orchestrator.SnapshotPendingReaction
 	for _, e := range snap.PendingReactions {
 		if e.Identifier == identifier {
@@ -793,7 +917,7 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 		}
 	}
 
-	if runEntry == nil && retryEntry == nil && budgetEntry == nil && parkedEntry == nil && len(pendingRows) == 0 {
+	if runEntry == nil && retryEntry == nil && budgetEntry == nil && parkedEntry == nil && len(pendingRows) == 0 && hopEntry == nil {
 		return nil
 	}
 
@@ -847,6 +971,13 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 			Title: pendingRows[0].IssueTitle,
 			URL:   pendingRows[0].IssueURL,
 		}
+	case hopEntry != nil:
+		status = "between_stages"
+		issueID = hopEntry.IssueID
+		issue = issueResponse{
+			Title: hopEntry.IssueTitle,
+			URL:   hopEntry.IssueURL,
+		}
 	default:
 		status = "unknown"
 	}
@@ -887,6 +1018,7 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 		BudgetExhausted:  budgetEntry,
 		Parked:           parkedEntry,
 		PendingReactions: toPendingReactionResponses(pendingRows),
+		BetweenStages:    hopEntry,
 		RecentEvents:     []any{},
 		LastError:        lastError,
 		Tracked:          map[string]any{},

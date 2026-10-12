@@ -298,9 +298,9 @@ function dispatch_issue(issue, state, attempt):
     issue, state.dispatch_cfg, hop_route_of(state, issue.id),
     state.default_agent_kind, state.default_template_id
   )
-  // The lineage holds the stage.previous pair and the chain identifier. A
-  // dispatch no hop reached starts a chain; a retry passes the lineage it
-  // froze instead (Section 16.6).
+  // The lineage holds the stage.previous pair, the chain identifier, and the
+  // pass dispatch time. A dispatch no hop reached starts a chain; a retry
+  // passes the lineage it froze instead (Section 16.6).
   stage_lineage = with_chain_id(fresh_lineage(state, issue.id, rule_name))
 
   // The selection is frozen per claim; the settings are resolved for every attempt.
@@ -346,6 +346,10 @@ function dispatch_issue(issue, state, attempt):
     retry_attempt: normalize_attempt(attempt),
     started_at: now_utc()
   }
+  entry = state.running[issue.id]
+  if entry.stage_lineage.dispatched_at is zero:
+    entry.stage_lineage.dispatched_at = entry.started_at   // the first run of a pass dates the pass
+  mark_stage_hop_dispatched(state, issue.id)
 
   state.claimed.add(issue.id)
   state.retry_attempts.remove(issue.id)
@@ -422,7 +426,18 @@ function mark_observed(state, issue_id):
   persist_stage_hop_observed(issue_id)                   // a failure is logged; the runtime value stands
 ```
 
-The hold reads at most once per hop and only when the listing lacks the target label. A held issue the listing omits is never read here; reconciliation reads it every tick (§16.3). The retry lane needs no hold, because a made hop leaves the issue with no queued retry. The dispatch records the frozen stage lineage the render reads: `fresh_lineage(state, issue_id, rule_name)` returns the hop's source rule, outcome, and chain identifier when the issue holds a hop record whose target is `rule_name`, and an empty lineage otherwise, and `with_chain_id(lineage)` fills an empty chain identifier with a fresh random value that is never a dispatch or session identifier. A retry that keeps its frozen rule reuses the lineage it froze, an empty chain from a row written before chains were recorded included; a retry routed afresh computes it as a poll tick does. Every worker prompt render passes the pair with `stage.current`, which is the rule name when the rule carries a stage label and empty otherwise (§12.1).
+The hold reads at most once per hop and only when the listing lacks the target label. A held issue the listing omits is never read here; reconciliation reads it every tick (§16.3). The retry lane needs no hold, because a made hop leaves the issue with no queued retry. The dispatch records the frozen stage lineage the render reads: `fresh_lineage(state, issue_id, rule_name)` returns the hop's source rule, outcome, chain identifier, and pass dispatch time when the issue holds a hop record whose target is `rule_name`, and an empty lineage otherwise, and `with_chain_id(lineage)` fills an empty chain identifier with a fresh random value that is never a dispatch or session identifier. A retry that keeps its frozen rule reuses the lineage it froze, an empty chain from a row written before chains were recorded included, and with it the pass dispatch time; a retry routed afresh computes it as a poll tick does. Every worker prompt render passes the pair with `stage.current`, which is the rule name when the rule carries a stage label and empty otherwise (§12.1).
+
+The dispatch records the pass dispatch time on the lineage as its own start when the lineage holds none, so the first run of a pass dates the pass and every later run of it keeps that time. It then marks the issue's hop record dispatched, which ends the issue's listing between stages, the interval from the hop until a run of the issue is dispatched (§13.7.2). Poll-tick dispatches and retry dispatches both pass through this step:
+
+```text
+function mark_stage_hop_dispatched(state, issue_id):
+  hop = state.stage_hops[issue_id]
+  if hop is absent or hop.run_dispatched:
+    return
+  hop.run_dispatched = true
+  persist_stage_hop_dispatched(issue_id)                 // a failure is logged; the runtime value stands
+```
 
 ### 16.5 Worker Attempt (Workspace + Prompt + Agent)
 
@@ -975,8 +990,11 @@ function advance_stage(state, entry, result, declared) -> decision:
     count: count + 1, source_rule: source.name, target_rule: target.name,
     target_label: target.stage,
     previous_outcome: "no_change" if declared else "succeeded",
-    source_dispatch_id: entry.dispatch_id, target_observed: false,
-    chain_id: entry.stage_lineage.chain_id
+    source_dispatch_id: entry.dispatch_id, target_observed: false, run_dispatched: false,
+    chain_id: entry.stage_lineage.chain_id,
+    dispatched_at: entry.stage_lineage.dispatched_at,
+    display_identifier: entry.issue.display_id,
+    issue_title: entry.issue.title, issue_url: entry.issue.url
   }
   persist_stage_hop(state.stage_hops[issue_id])        // a failure is logged; the runtime record stands
 

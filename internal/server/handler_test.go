@@ -94,7 +94,7 @@ const wantPendingReactionsJSON = `[
    "issue_url": "https://tracker.example.com/browse/MT-653", "kind": "ci", "config_key": "ci_failure",
    "pull_request": {"number": 931, "repository": "acme/web", "url": "https://github.com/acme/web/pull/931",
                     "branch": "sortie/MT-653", "head_sha": "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b"},
-   "created_at": "2026-02-24T20:09:30Z", "next_poll_at": "2026-02-24T20:17:40Z", "wait": "poll_interval",
+   "created_at": "2026-02-24T20:09:30Z", "dispatched_at": "2026-02-24T20:05:00Z", "next_poll_at": "2026-02-24T20:17:40Z", "wait": "poll_interval",
    "used_attempts": 2, "max_attempts": 2, "escalated_at": "2026-02-24T20:12:40Z",
    "last_check": {"observed_at": "2026-02-24T20:12:40Z", "head_sha": "9b7e3d1c0a2f4e6b8d0c1a3e5f7b9d2c4e6a8f0b",
                   "status": "failing", "failing_checks": ["Test"], "failing": 1, "pending": 0, "passing": 4}},
@@ -102,7 +102,7 @@ const wantPendingReactionsJSON = `[
    "issue_url": "https://tracker.example.com/browse/MT-653", "kind": "review", "config_key": "review_comments",
    "pull_request": {"number": 931, "repository": "acme/web", "url": "https://github.com/acme/web/pull/931",
                     "branch": "sortie/MT-653", "head_sha": "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b"},
-   "created_at": "2026-02-24T20:09:30Z", "next_poll_at": "2026-02-24T20:16:05Z", "wait": "debounce",
+   "created_at": "2026-02-24T20:09:30Z", "dispatched_at": null, "next_poll_at": "2026-02-24T20:16:05Z", "wait": "debounce",
    "used_attempts": 1, "max_attempts": 3, "escalated_at": null,
    "last_check": {"observed_at": "2026-02-24T20:15:10Z", "actionable_comments": 3, "new_comments": 1}}
 ]`
@@ -120,6 +120,7 @@ func pendingReactionRows() []orchestrator.SnapshotPendingReaction {
 	ci := base
 	ci.Kind, ci.ConfigKey, ci.Wait = "ci", "ci_failure", "poll_interval"
 	ci.CreatedAt = time.Date(2026, 2, 24, 15, 9, 30, 0, time.FixedZone("EST", -5*60*60))
+	ci.DispatchedAt = time.Date(2026, 2, 24, 15, 5, 0, 0, time.FixedZone("EST", -5*60*60))
 	ci.NextPollAt = time.Date(2026, 2, 24, 20, 17, 40, 0, time.UTC)
 	ci.UsedAttempts, ci.MaxAttempts = new(2), new(2)
 	ci.EscalatedAt = new(time.Date(2026, 2, 24, 20, 12, 40, 0, time.UTC))
@@ -145,17 +146,11 @@ func pendingReactionRows() []orchestrator.SnapshotPendingReaction {
 func TestToRunningEntryResponse(t *testing.T) {
 	t.Parallel()
 
-	// Use a non-UTC time to verify UTC normalization.
 	est := time.FixedZone("EST", -5*60*60)
 	startedAt := time.Date(2026, 3, 24, 12, 0, 0, 0, est)
 	lastEventAt := time.Date(2026, 3, 24, 12, 5, 0, 0, est)
 
 	entry := orchestrator.SnapshotRunningEntry{
-		IssueID:            "issue-1",
-		Identifier:         "MT-100",
-		State:              "In Progress",
-		SessionID:          "sess-abc",
-		TurnCount:          5,
 		LastAgentEvent:     domain.EventTurnCompleted,
 		LastAgentTimestamp: lastEventAt,
 		LastAgentMessage:   "Implementing feature",
@@ -163,38 +158,18 @@ func TestToRunningEntryResponse(t *testing.T) {
 		AgentInputTokens:   1000,
 		AgentOutputTokens:  500,
 		AgentTotalTokens:   1500,
-		WorkspacePath:      "/tmp/ws/MT-100",
 		UsageMeasured:      true,
 	}
 
 	got := toRunningEntryResponse(entry)
 
-	if got.IssueID != "issue-1" {
-		t.Errorf("IssueID = %q, want %q", got.IssueID, "issue-1")
-	}
-	if got.IssueIdentifier != "MT-100" {
-		t.Errorf("IssueIdentifier = %q, want %q", got.IssueIdentifier, "MT-100")
-	}
-	if got.State != "In Progress" {
-		t.Errorf("State = %q, want %q", got.State, "In Progress")
-	}
-	if got.SessionID != "sess-abc" {
-		t.Errorf("SessionID = %q, want %q", got.SessionID, "sess-abc")
-	}
-	if got.TurnCount != 5 {
-		t.Errorf("TurnCount = %d, want %d", got.TurnCount, 5)
-	}
 	if got.LastEvent != string(domain.EventTurnCompleted) {
 		t.Errorf("LastEvent = %q, want %q", got.LastEvent, domain.EventTurnCompleted)
 	}
 	if got.LastMessage != "Implementing feature" {
 		t.Errorf("LastMessage = %q, want %q", got.LastMessage, "Implementing feature")
 	}
-	if got.WorkspacePath != "/tmp/ws/MT-100" {
-		t.Errorf("WorkspacePath = %q, want %q", got.WorkspacePath, "/tmp/ws/MT-100")
-	}
 
-	// UTC normalization
 	if got.StartedAt.Location() != time.UTC {
 		t.Errorf("StartedAt location = %v, want UTC", got.StartedAt.Location())
 	}
@@ -205,7 +180,6 @@ func TestToRunningEntryResponse(t *testing.T) {
 		t.Errorf("LastEventAt location = %v, want UTC", got.LastEventAt.Location())
 	}
 
-	// Token info: a measured entry carries its figures rather than nulls.
 	if got.Tokens.InputTokens == nil || got.Tokens.OutputTokens == nil || got.Tokens.TotalTokens == nil {
 		t.Fatalf("Tokens = %+v, want three non-nil members on a measured entry", got.Tokens)
 	}
@@ -850,6 +824,11 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 	t.Parallel()
 
 	startedAt := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
+	passAt := time.Date(2026, 3, 24, 4, 0, 0, 0, time.FixedZone("EST", -5*60*60))
+	lineage := orchestrator.StageLineage{ChainID: "chain-1", PreviousRule: "specify", PreviousOutcome: "succeeded", DispatchedAt: passAt}
+	position := &orchestrator.SnapshotStagePosition{Chain: []string{"specify", "implement"}, Current: "implement", HopCount: 1, HopCeiling: 3}
+	wantLineage := map[string]any{"chain_id": "chain-1", "previous": "specify", "previous_outcome": "succeeded"}
+	wantPosition := map[string]any{"chain": []any{"specify", "implement"}, "current": "implement", "hop_count": float64(1), "hop_ceiling": float64(3)}
 	tests := []struct {
 		name   string
 		body   any
@@ -857,7 +836,7 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 		absent []string
 	}{
 		{
-			name: "running",
+			name: "running ci continuation",
 			body: toRunningEntryResponse(orchestrator.SnapshotRunningEntry{
 				IssueID:             "id-1",
 				Identifier:          "PROJ-1",
@@ -877,6 +856,11 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				AgentKind:           "claude-code",
 				TokensAwaited:       true,
 				StartedAt:           startedAt,
+				StageLineage:        lineage,
+				StagePosition:       position,
+				ReactionKind:        "ci",
+				ReactionConfigKey:   "ci_failure",
+				Continuation:        &orchestrator.SnapshotContinuation{Number: 931, Repository: "acme/web", Attempt: 1},
 			}),
 			want: map[string]any{
 				"issue_id":              "id-1",
@@ -896,18 +880,46 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				"self_review_active":    true,
 				"self_review_iteration": float64(2),
 				"tokens_awaited":        true,
+				"dispatched_at":         "2026-03-24T09:00:00Z",
+				"stage_lineage":         wantLineage,
+				"stage_position":        wantPosition,
+				"reaction_kind":         "ci",
+				"reaction_config_key":   "ci_failure",
+				"reaction_attempt":      float64(1),
+				"pull_request":          map[string]any{"number": float64(931), "repository": "acme/web"},
 			},
+		},
+		{
+			name: "running on a chain's first stage has no lineage and no continuation",
+			body: toRunningEntryResponse(orchestrator.SnapshotRunningEntry{
+				StageLineage:  orchestrator.StageLineage{ChainID: "chain-1", DispatchedAt: passAt},
+				StagePosition: &orchestrator.SnapshotStagePosition{Chain: []string{"specify", "implement"}, Current: "specify", HopCeiling: 3},
+			}),
+			want: map[string]any{
+				"dispatched_at":  "2026-03-24T09:00:00Z",
+				"stage_lineage":  nil,
+				"stage_position": map[string]any{"chain": []any{"specify", "implement"}, "current": "specify", "hop_count": float64(0), "hop_ceiling": float64(3)},
+			},
+			absent: []string{"reaction_kind", "reaction_config_key", "reaction_attempt", "pull_request"},
 		},
 		{
 			name: "retry",
 			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{
-				IssueID:    "id-2",
-				Identifier: "PROJ-2",
-				DisplayID:  "acme/web#2",
-				IssueTitle: "Retry me",
-				IssueURL:   "https://acme.atlassian.net/browse/PROJ-2",
-				Attempt:    3,
-				Error:      "agent timeout",
+				IssueID:         "id-2",
+				Identifier:      "PROJ-2",
+				DisplayID:       "acme/web#2",
+				IssueTitle:      "Retry me",
+				IssueURL:        "https://acme.atlassian.net/browse/PROJ-2",
+				IssueType:       "Task",
+				IssueLabels:     []string{"backend", "urgent"},
+				State:           "To Do",
+				Attempt:         3,
+				DueAtMS:         startedAt.UnixMilli(),
+				Error:           "agent timeout",
+				AgentKind:       "claude-code",
+				ConfiguredModel: "opus",
+				StageLineage:    lineage,
+				StagePosition:   position,
 			}),
 			want: map[string]any{
 				"issue_id":           "id-2",
@@ -915,20 +927,24 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				"display_identifier": "acme/web#2",
 				"issue_title":        "Retry me",
 				"issue_url":          "https://acme.atlassian.net/browse/PROJ-2",
+				"issue_type":         "Task",
+				"issue_labels":       []any{"backend", "urgent"},
+				"state":              "To Do",
 				"attempt":            float64(3),
+				"due_at":             "2026-03-24T12:00:00Z",
 				"error":              "agent timeout",
+				"dispatched_at":      "2026-03-24T09:00:00Z",
+				"agent_kind":         "claude-code",
+				"configured_model":   "opus",
+				"stage_lineage":      wantLineage,
+				"stage_position":     wantPosition,
 			},
 		},
 		{
-			name: "retry carries the issue facts and a UTC due time",
-			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{IssueType: "Task", IssueLabels: []string{"backend", "urgent"}, State: "To Do", DueAtMS: startedAt.UnixMilli()}),
-			want: map[string]any{"issue_type": "Task", "issue_labels": []any{"backend", "urgent"}, "state": "To Do", "due_at": "2026-03-24T12:00:00Z"},
-		},
-		{
-			name:   "retry without a read of labels omits the issue facts",
+			name:   "retry without a read or a dated pass omits the facts and serves null",
 			body:   toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Attempt: 1}),
-			want:   map[string]any{"attempt": float64(1)},
-			absent: []string{"issue_type", "issue_labels", "state"},
+			want:   map[string]any{"attempt": float64(1), "dispatched_at": nil, "stage_position": nil},
+			absent: []string{"issue_type", "issue_labels", "state", "agent_kind", "configured_model"},
 		},
 		{
 			name: "retry whose issue carries no labels serves an empty list",
@@ -994,14 +1010,22 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 		{
 			name: "budget exhausted",
 			body: toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{
-				IssueID:        "id-3",
-				Identifier:     "PROJ-3",
-				DisplayID:      "acme/web#3",
-				IssueTitle:     "Held by budget",
-				IssueURL:       "https://acme.atlassian.net/browse/PROJ-3",
-				Reason:         "session_budget",
-				UsedSessions:   3,
-				BudgetSessions: 3,
+				IssueID:         "id-3",
+				Identifier:      "PROJ-3",
+				DisplayID:       "acme/web#3",
+				IssueTitle:      "Held by budget",
+				IssueURL:        "https://acme.atlassian.net/browse/PROJ-3",
+				IssueType:       "Story",
+				IssueLabels:     []string{"billing"},
+				State:           "Backlog",
+				Reason:          "session_budget",
+				UsedSessions:    3,
+				BudgetSessions:  3,
+				RuleName:        "implement",
+				StageLineage:    lineage,
+				StagePosition:   position,
+				AgentKind:       "claude-code",
+				ConfiguredModel: "opus",
 			}),
 			want: map[string]any{
 				"issue_id":           "id-3",
@@ -1009,15 +1033,58 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				"display_identifier": "acme/web#3",
 				"issue_title":        "Held by budget",
 				"issue_url":          "https://acme.atlassian.net/browse/PROJ-3",
+				"issue_type":         "Story",
+				"issue_labels":       []any{"billing"},
+				"state":              "Backlog",
 				"reason":             "session_budget",
 				"used_sessions":      float64(3),
 				"budget_sessions":    float64(3),
+				"dispatched_at":      "2026-03-24T09:00:00Z",
+				"rule_name":          "implement",
+				"stage_lineage":      wantLineage,
+				"stage_position":     wantPosition,
+				"agent_kind":         "claude-code",
+				"configured_model":   "opus",
 			},
 		},
 		{
-			name: "budget exhausted carries the issue facts",
-			body: toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{IssueType: "Story", IssueLabels: []string{"billing"}, State: "Backlog"}),
-			want: map[string]any{"issue_type": "Story", "issue_labels": []any{"billing"}, "state": "Backlog"},
+			name:   "budget exhausted without a dispatch context serves null and omits the rest",
+			body:   toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{}),
+			want:   map[string]any{"dispatched_at": nil, "stage_lineage": nil, "stage_position": nil},
+			absent: []string{"rule_name", "agent_kind", "configured_model"},
+		},
+		{
+			name: "between stages",
+			body: toStageHopResponse(orchestrator.SnapshotStageHop{
+				IssueID:      "id-5",
+				Identifier:   "PROJ-5",
+				DisplayID:    "acme/web#5",
+				IssueTitle:   "Hop me",
+				IssueURL:     "https://acme.atlassian.net/browse/PROJ-5",
+				SourceRule:   "specify",
+				TargetRule:   "implement",
+				TargetLabel:  "stage:implement",
+				HoppedAt:     time.Date(2026, 3, 24, 5, 0, 0, 0, time.FixedZone("EST", -5*60*60)),
+				DispatchedAt: passAt,
+			}),
+			want: map[string]any{
+				"issue_id":           "id-5",
+				"issue_identifier":   "PROJ-5",
+				"display_identifier": "acme/web#5",
+				"issue_title":        "Hop me",
+				"issue_url":          "https://acme.atlassian.net/browse/PROJ-5",
+				"source_rule":        "specify",
+				"target_rule":        "implement",
+				"target_label":       "stage:implement",
+				"hopped_at":          "2026-03-24T10:00:00Z",
+				"dispatched_at":      "2026-03-24T09:00:00Z",
+			},
+		},
+		{
+			name:   "between stages without times or identity serves null times",
+			body:   toStageHopResponse(orchestrator.SnapshotStageHop{IssueID: "id-6", Identifier: "PROJ-6"}),
+			want:   map[string]any{"hopped_at": nil, "dispatched_at": nil},
+			absent: []string{"display_identifier", "issue_title", "issue_url"},
 		},
 		{
 			name: "budget exhausted with sessions stopped in flight",
@@ -1157,6 +1224,9 @@ func TestToStateResponse(t *testing.T) {
 		if got.PendingReactions == nil {
 			t.Fatal("PendingReactions = nil, want non-nil empty slice")
 		}
+		if got.BetweenStages == nil {
+			t.Fatal("BetweenStages = nil, want non-nil empty slice")
+		}
 		if len(got.Retrying) != 0 {
 			t.Errorf("len(Retrying) = %d, want 0", len(got.Retrying))
 		}
@@ -1256,9 +1326,27 @@ func TestToStateResponse(t *testing.T) {
 
 		assertJSONKeys(t, got, map[string]any{
 			"counts": map[string]any{
-				"running": 0, "retrying": 0, "budget_exhausted": 0, "parked": 0, "pending_reactions": 2,
+				"running": 0, "retrying": 0, "budget_exhausted": 0, "parked": 0, "pending_reactions": 2, "between_stages": 0,
 			},
 			"pending_reactions": json.RawMessage(wantPendingReactionsJSON),
+		})
+	})
+
+	t.Run("between stages serve the list and count", func(t *testing.T) {
+		t.Parallel()
+
+		snap := orchestrator.RuntimeSnapshotResult{BetweenStages: []orchestrator.SnapshotStageHop{
+			{IssueID: "id-1", Identifier: "MT-1", SourceRule: "specify", TargetRule: "implement", TargetLabel: "stage:implement"},
+		}}
+
+		got := toStateResponse(snap, nil)
+
+		assertJSONKeys(t, got, map[string]any{
+			"counts": map[string]any{
+				"running": 0, "retrying": 0, "budget_exhausted": 0, "parked": 0, "pending_reactions": 0, "between_stages": 1,
+			},
+			"between_stages": json.RawMessage(`[{"issue_id": "id-1", "issue_identifier": "MT-1", "source_rule": "specify",
+				"target_rule": "implement", "target_label": "stage:implement", "hopped_at": null, "dispatched_at": null}]`),
 		})
 	})
 
@@ -1940,14 +2028,20 @@ func TestBuildIssueDetail(t *testing.T) {
 			Running:         []orchestrator.SnapshotRunningEntry{{Identifier: "MT-1", IssueTitle: "Run", IssueURL: "https://t.example/MT-1", IssueType: "Bug", IssueLabels: []string{"a"}, State: "In Progress"}},
 			Retrying:        []orchestrator.SnapshotRetryEntry{{Identifier: "MT-2", IssueTitle: "Retry", IssueURL: "https://t.example/MT-2", IssueType: "Task", IssueLabels: []string{"b"}, State: "To Do"}},
 			BudgetExhausted: []orchestrator.SnapshotBudgetEntry{{Identifier: "MT-3", IssueTitle: "Held", IssueURL: "https://t.example/MT-3", IssueType: "Story", IssueLabels: []string{"c"}, State: "Backlog"}},
+			BetweenStages: []orchestrator.SnapshotStageHop{
+				{IssueID: "id-3", Identifier: "MT-3", IssueTitle: "Hopped", IssueURL: "https://t.example/hop-3"},
+				{IssueID: "id-4", Identifier: "MT-4", IssueTitle: "Between", IssueURL: "https://t.example/MT-4", SourceRule: "specify", TargetRule: "implement"},
+			},
 		}
 		tests := []struct {
 			identifier string
+			wantStatus string
 			want       issueResponse
 		}{
-			{"MT-1", issueResponse{Title: "Run", URL: "https://t.example/MT-1", IssueType: "Bug", Labels: []string{"a"}, State: "In Progress"}},
-			{"MT-2", issueResponse{Title: "Retry", URL: "https://t.example/MT-2", IssueType: "Task", Labels: []string{"b"}, State: "To Do"}},
-			{"MT-3", issueResponse{Title: "Held", URL: "https://t.example/MT-3", IssueType: "Story", Labels: []string{"c"}, State: "Backlog"}},
+			{"MT-1", "running", issueResponse{Title: "Run", URL: "https://t.example/MT-1", IssueType: "Bug", Labels: []string{"a"}, State: "In Progress"}},
+			{"MT-2", "retrying", issueResponse{Title: "Retry", URL: "https://t.example/MT-2", IssueType: "Task", Labels: []string{"b"}, State: "To Do"}},
+			{"MT-3", "budget_exhausted", issueResponse{Title: "Held", URL: "https://t.example/MT-3", IssueType: "Story", Labels: []string{"c"}, State: "Backlog"}},
+			{"MT-4", "between_stages", issueResponse{Title: "Between", URL: "https://t.example/MT-4"}},
 		}
 
 		for _, tt := range tests {
@@ -1955,9 +2049,30 @@ func TestBuildIssueDetail(t *testing.T) {
 			if got == nil {
 				t.Fatalf("buildIssueDetail(%q) = nil, want non-nil", tt.identifier)
 			}
+			if got.Status != tt.wantStatus {
+				t.Errorf("buildIssueDetail(%q).Status = %q, want %q", tt.identifier, got.Status, tt.wantStatus)
+			}
 			if !reflect.DeepEqual(got.Issue, tt.want) {
 				t.Errorf("buildIssueDetail(%q).Issue = %+v, want %+v", tt.identifier, got.Issue, tt.want)
 			}
+		}
+	})
+
+	t.Run("issue only between stages answers as one only parked does", func(t *testing.T) {
+		t.Parallel()
+		hop := orchestrator.SnapshotStageHop{IssueID: "id-4", Identifier: "MT-4", SourceRule: "specify", TargetRule: "implement", TargetLabel: "stage:implement"}
+
+		got := buildIssueDetail("MT-4", orchestrator.RuntimeSnapshotResult{BetweenStages: []orchestrator.SnapshotStageHop{hop}}, nil)
+
+		if got == nil {
+			t.Fatal("buildIssueDetail(MT-4) = nil, want non-nil")
+		}
+		if want := new(toStageHopResponse(hop)); !reflect.DeepEqual(got.BetweenStages, want) {
+			t.Errorf("buildIssueDetail(MT-4).BetweenStages = %+v, want %+v", got.BetweenStages, want)
+		}
+		if got.IssueID != "id-4" || got.Workspace != nil || got.LastError != nil || *got.Attempts != (attemptsInfo{}) {
+			t.Errorf("buildIssueDetail(MT-4) IssueID, Workspace, LastError, Attempts = %q, %v, %v, %+v, want %q, nil, nil, zeroed",
+				got.IssueID, got.Workspace, got.LastError, got.Attempts, "id-4")
 		}
 	})
 
