@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -104,43 +105,48 @@ func TestOpen_BasicCRUD(t *testing.T) {
 func TestSaveAndLoadRetryEntry(t *testing.T) {
 	t.Parallel()
 
-	s := openTestStore(t)
-	migrateOrFatal(t, s)
-	ctx := context.Background()
-
-	entry := RetryEntry{
-		IssueID:    "ISS-1",
-		Identifier: "PROJ-1",
-		Attempt:    1,
-		DueAtMs:    1000,
-		Error:      nil,
+	sessionID := "sess-abc"
+	base := RetryEntry{
+		IssueID: "ISS-1", Identifier: "PROJ-1", Attempt: 1, DueAtMs: 1000,
+		ConfiguredModel: "provider/cheap", IssueType: "Bug", IssueState: "In Progress", DispatchedAt: "2026-03-19T10:00:00Z",
 	}
-	if err := s.SaveRetryEntry(ctx, entry); err != nil {
-		t.Fatalf("SaveRetryEntry: %v", err)
+	withLabels := func(labels []string) RetryEntry { e := base; e.IssueLabels = labels; return e }
+	withSession := base
+	withSession.SessionID = &sessionID
+	stale := RetryEntry{
+		IssueID: "ISS-1", Identifier: "stale", ConfiguredModel: "stale", IssueType: "stale",
+		IssueLabels: []string{"stale"}, IssueState: "stale", DispatchedAt: "stale",
 	}
 
-	entries, err := s.LoadRetryEntries(ctx)
-	if err != nil {
-		t.Fatalf("LoadRetryEntries: %v", err)
+	tests := []struct {
+		name  string
+		entry RetryEntry
+	}{
+		{"nil labels", withLabels(nil)},
+		{"empty labels", withLabels([]string{})},
+		{"two labels", withLabels([]string{"backend", "needs-review"})},
+		{"session id", withSession},
 	}
-	if len(entries) != 1 {
-		t.Fatalf("got %d entries, want 1", len(entries))
-	}
-	got := entries[0]
-	if got.IssueID != "ISS-1" {
-		t.Errorf("IssueID = %q, want %q", got.IssueID, "ISS-1")
-	}
-	if got.Identifier != "PROJ-1" {
-		t.Errorf("Identifier = %q, want %q", got.Identifier, "PROJ-1")
-	}
-	if got.Attempt != 1 {
-		t.Errorf("Attempt = %d, want 1", got.Attempt)
-	}
-	if got.DueAtMs != 1000 {
-		t.Errorf("DueAtMs = %d, want 1000", got.DueAtMs)
-	}
-	if got.Error != nil {
-		t.Errorf("Error = %v, want nil", got.Error)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := openTestStore(t)
+			migrateOrFatal(t, s)
+			ctx := context.Background()
+			for _, entry := range []RetryEntry{stale, tt.entry} {
+				if err := s.SaveRetryEntry(ctx, entry); err != nil {
+					t.Fatalf("SaveRetryEntry(%+v): %v", entry, err)
+				}
+			}
+
+			got, err := s.LoadRetryEntries(ctx)
+
+			if err != nil || len(got) != 1 || !reflect.DeepEqual(got[0], tt.entry) {
+				t.Errorf("LoadRetryEntries = %+v, %v, want [%+v], nil", got, err, tt.entry)
+			}
+		})
 	}
 }
 
@@ -206,17 +212,23 @@ func TestRecordStageHop_ChainFollowsLatestHop(t *testing.T) {
 	s := openTestStore(t)
 	migrateOrFatal(t, s)
 	ctx := context.Background()
-	hop := StageHop{IssueID: "ISS-1", Identifier: "PROJ-1", HopCount: 1, SourceRule: "specify", TargetRule: "plan", SourceDispatchID: "d1", ChainID: "chain-1"}
-	for _, next := range []struct{ dispatchID, chainID string }{{"d1", "chain-1"}, {"d2", "chain-2"}} {
-		hop.SourceDispatchID, hop.ChainID = next.dispatchID, next.chainID
+	first := StageHop{
+		IssueID: "ISS-1", Identifier: "PROJ-1", HopCount: 1, SourceRule: "specify", TargetRule: "plan", SourceDispatchID: "d1", ChainID: "chain-1",
+		DisplayID: "owner/repo#1", IssueTitle: "Old title", IssueURL: "https://example.test/old", DispatchedAt: "2026-03-19T10:00:00Z",
+	}
+	latest := first
+	latest.SourceDispatchID, latest.ChainID = "d2", "chain-2"
+	latest.DisplayID, latest.IssueTitle, latest.IssueURL = "owner/repo#2", "New title", "https://example.test/new"
+	latest.DispatchedAt, latest.RunDispatched = "2026-03-19T11:00:00Z", true
+	for _, hop := range []StageHop{first, latest} {
 		if err := s.RecordStageHop(ctx, hop); err != nil {
-			t.Fatalf("RecordStageHop(%+v): %v", next, err)
+			t.Fatalf("RecordStageHop(%+v): %v", hop, err)
 		}
 	}
 
 	hops, err := s.ListStageHops(ctx)
-	if err != nil || len(hops) != 1 || hops[0].ChainID != "chain-2" {
-		t.Errorf("ListStageHops = %+v, %v, want one record with ChainID %q", hops, err, "chain-2")
+	if err != nil || !reflect.DeepEqual(hops, []StageHop{latest}) {
+		t.Errorf("ListStageHops = %+v, %v, want [%+v], nil", hops, err, latest)
 	}
 }
 
@@ -473,71 +485,6 @@ func TestLoadRetryEntries_DeterministicTieBreak(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadRetryEntry_SessionID(t *testing.T) {
-	t.Parallel()
-
-	s := openTestStore(t)
-	migrateOrFatal(t, s)
-	ctx := context.Background()
-
-	sessID := "sess-abc"
-	entry := RetryEntry{
-		IssueID:    "ISS-1",
-		Identifier: "PROJ-1",
-		Attempt:    1,
-		DueAtMs:    1000,
-		SessionID:  &sessID,
-	}
-	if err := s.SaveRetryEntry(ctx, entry); err != nil {
-		t.Fatalf("SaveRetryEntry: %v", err)
-	}
-
-	entries, err := s.LoadRetryEntries(ctx)
-	if err != nil {
-		t.Fatalf("LoadRetryEntries: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("LoadRetryEntries count = %d, want 1", len(entries))
-	}
-	got := entries[0]
-	if got.SessionID == nil {
-		t.Fatal("SessionID = nil, want non-nil")
-	}
-	if *got.SessionID != sessID {
-		t.Errorf("SaveAndLoadRetryEntry_SessionID: SessionID = %q, want %q", *got.SessionID, sessID)
-	}
-}
-
-func TestSaveAndLoadRetryEntry_SessionID_Nil(t *testing.T) {
-	t.Parallel()
-
-	s := openTestStore(t)
-	migrateOrFatal(t, s)
-	ctx := context.Background()
-
-	entry := RetryEntry{
-		IssueID:    "ISS-NIL",
-		Identifier: "PROJ-NIL",
-		Attempt:    1,
-		DueAtMs:    2000,
-		SessionID:  nil,
-	}
-	if err := s.SaveRetryEntry(ctx, entry); err != nil {
-		t.Fatalf("SaveRetryEntry: %v", err)
-	}
-
-	entries, err := s.LoadRetryEntries(ctx)
-	if err != nil {
-		t.Fatalf("LoadRetryEntries: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("LoadRetryEntries count = %d, want 1", len(entries))
-	}
-	if entries[0].SessionID != nil {
-		t.Errorf("SaveAndLoadRetryEntry_SessionID_Nil: SessionID = %q, want nil", *entries[0].SessionID)
-	}
-}
-
 func TestSaveRetryEntry_Upsert_SessionID(t *testing.T) {
 	t.Parallel()
 
@@ -545,7 +492,6 @@ func TestSaveRetryEntry_Upsert_SessionID(t *testing.T) {
 	migrateOrFatal(t, s)
 	ctx := context.Background()
 
-	// First upsert: SessionID nil.
 	entry1 := RetryEntry{
 		IssueID:    "ISS-UPS",
 		Identifier: "PROJ-UPS",
@@ -557,7 +503,6 @@ func TestSaveRetryEntry_Upsert_SessionID(t *testing.T) {
 		t.Fatalf("SaveRetryEntry (first): %v", err)
 	}
 
-	// Second upsert: same IssueID, now with a non-nil SessionID.
 	sessID := "sess-updated"
 	entry2 := RetryEntry{
 		IssueID:    "ISS-UPS",

@@ -42,6 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Add `trigger` to `retry_entries`, and `issue_title` and `issue_url` to `parked_issues`. A retry stored before the upgrade shows no trigger until it next comes due, and an issue parked before the upgrade gets its title and link from the tracker on the first poll after the upgrade. ([#1287](https://github.com/sortie-ai/sortie/issues/1287))
 
+- Add `configured_model`, `issue_type`, `issue_labels`, `issue_state`, and `dispatched_at` to `retry_entries`, `dispatched_at` to `run_history`, and `display_identifier`, `issue_title`, `issue_url`, `dispatched_at`, and `run_dispatched` to `stage_hops`, and fill them from run history for work already under way. Work Sortie picked up before 1.27.0 shows no pick-up time, and a retry queued before the upgrade shows its issue type, labels, and state from the next poll or when it next fires. ([#1311](https://github.com/sortie-ai/sortie/issues/1311))
+
 ## [1.27.0] - 2026-10-11
 
 ### Added

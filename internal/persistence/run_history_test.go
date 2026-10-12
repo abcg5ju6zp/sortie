@@ -109,6 +109,7 @@ func TestRunHistoryConfiguredSettingsColumns_RoundTrip(t *testing.T) {
 	run.ConfiguredModel, run.ConfiguredEffort, run.ReportedModel = "provider/cheap", "low", "provider/cheap-20260101"
 	run.ChainID, run.StagePrevious, run.StageTarget, run.StageResult = "chain-1", "specify", "plan", "advanced"
 	run.IssueTitle, run.IssueURL = "Fix the login redirect", "https://example.atlassian.net/browse/PROJ-1"
+	run.DispatchedAt = "2026-03-19T09:00:00Z"
 	inserted := appendOrFatal(t, s, run)
 
 	readers := map[string]func() ([]RunHistory, error){
@@ -149,8 +150,8 @@ func TestRunHistoryConfiguredSettingsColumns_RoundTrip(t *testing.T) {
 		}
 	}
 
-	if r := got["LoadLatestSuccessfulRunsForReactionRecovery"][0]; r.IssueTitle != run.IssueTitle || r.IssueURL != run.IssueURL {
-		t.Errorf("LoadLatestSuccessfulRunsForReactionRecovery title, url = %q, %q, want %q, %q", r.IssueTitle, r.IssueURL, run.IssueTitle, run.IssueURL)
+	if r := got["LoadLatestSuccessfulRunsForReactionRecovery"][0]; r.IssueTitle != run.IssueTitle || r.IssueURL != run.IssueURL || r.DispatchedAt != run.DispatchedAt {
+		t.Errorf("LoadLatestSuccessfulRunsForReactionRecovery title, url, dispatched_at = %q, %q, %q, want %q, %q, %q", r.IssueTitle, r.IssueURL, r.DispatchedAt, run.IssueTitle, run.IssueURL, run.DispatchedAt)
 	}
 }
 
@@ -267,9 +268,6 @@ func TestRunHistoryErrorAndReviewMetadata_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestRunHistoryTokenColumns_LegacyRowsReadZero verifies rows written
-// without token values scan as zero, relying on the NOT NULL DEFAULT 0
-// column definition.
 func TestRunHistoryTokenColumns_LegacyRowsReadZero(t *testing.T) {
 	t.Parallel()
 
