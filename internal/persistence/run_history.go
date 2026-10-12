@@ -501,7 +501,8 @@ func (s *Store) QueryBudgetExhaustedIssues(ctx context.Context, candidateIDs []s
 }
 
 // IssueTokenUsage is the per-issue token spend read by the token ceiling
-// and the cost_budget tool.
+// and the cost_budget tool. The ByKind map makes the struct incomparable
+// with ==; compare the scalar fields instead.
 type IssueTokenUsage struct {
 	TotalTokens        int64
 	Sessions           int
@@ -515,6 +516,23 @@ type IssueTokenUsage struct {
 	// figure was proven to cover, so a non-zero value makes TotalTokens a
 	// lower bound even when every row is measured.
 	UnaccountedTurns int
+
+	// ByKind holds the measured spend per agent kind in the classes cost
+	// estimation prices. Only [Store.TokenUsageByIssue] fills it, and it is
+	// nil when no kind spent anything.
+	ByKind map[string]KindTokenUsage
+}
+
+// KindTokenUsage is one agent kind's measured run_history rows for an
+// issue, in the token classes cost estimation prices.
+type KindTokenUsage struct {
+	// FreshInputTokens sums, per row, input_tokens less the cache counters
+	// floored at zero. Flooring each row rather than the sum keeps the
+	// figure equal to what pricing the rows one by one gives.
+	FreshInputTokens int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	OutputTokens     int64
 }
 
 // SpendIncomplete reports whether TotalTokens is a lower bound rather than
@@ -525,24 +543,58 @@ func (u IssueTokenUsage) SpendIncomplete() bool {
 }
 
 // TokenUsageByIssue returns the summed total_tokens, row count, unmeasured
-// row count, and in-flight-stopped count across all rows for the issue, or
-// the zero [IssueTokenUsage] when the issue has no rows. An unmeasured row's
-// token columns are zero, so a non-zero UnmeasuredSessions makes the total a
-// lower bound.
+// row count, and in-flight-stopped count across all rows for the issue, plus
+// the measured spend per agent kind, or the zero [IssueTokenUsage] when the
+// issue has no rows. An unmeasured row's token columns are zero, so a
+// non-zero UnmeasuredSessions makes the total a lower bound. The totals and
+// the per-kind breakdown come from one statement and describe the same rows.
+// A kind whose measured rows spent nothing gets no ByKind entry.
 func (s *Store) TokenUsageByIssue(ctx context.Context, issueID string) (IssueTokenUsage, error) {
-	var usage IssueTokenUsage
-	row := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(total_tokens), 0), COUNT(*), SUM(CASE WHEN tokens_measured = 0 THEN 1 ELSE 0 END),
-		SUM(CASE WHEN status = 'budget_stopped' THEN 1 ELSE 0 END), COALESCE(SUM(unaccounted_turns), 0)
-		FROM run_history WHERE issue_id = ?`, issueID,
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT agent_adapter,
+			COALESCE(SUM(total_tokens), 0),
+			COUNT(*),
+			SUM(CASE WHEN tokens_measured = 0 THEN 1 ELSE 0 END),
+			SUM(CASE WHEN status = 'budget_stopped' THEN 1 ELSE 0 END),
+			COALESCE(SUM(unaccounted_turns), 0),
+			COALESCE(SUM(CASE WHEN tokens_measured = 1 THEN MAX(input_tokens - cache_read_tokens - cache_write_tokens, 0) ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN tokens_measured = 1 THEN cache_read_tokens ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN tokens_measured = 1 THEN cache_write_tokens ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN tokens_measured = 1 THEN output_tokens ELSE 0 END), 0)
+		FROM run_history WHERE issue_id = ? GROUP BY agent_adapter`, issueID,
 	)
-	var unmeasured, stoppedInFlight, unaccounted sql.NullInt64
-	if err := row.Scan(&usage.TotalTokens, &usage.Sessions, &unmeasured, &stoppedInFlight, &unaccounted); err != nil {
+	if err != nil {
 		return IssueTokenUsage{}, fmt.Errorf("token usage by issue %q: %w", issueID, err)
 	}
-	usage.UnmeasuredSessions = int(unmeasured.Int64)
-	usage.StoppedInFlight = int(stoppedInFlight.Int64)
-	usage.UnaccountedTurns = int(unaccounted.Int64)
+	defer rows.Close() //nolint:errcheck // read-only query; close error is non-actionable
+
+	var usage IssueTokenUsage
+	for rows.Next() {
+		var kind string
+		var total int64
+		var count int
+		var unmeasured, stoppedInFlight, unaccounted sql.NullInt64
+		var spent KindTokenUsage
+		if err := rows.Scan(&kind, &total, &count, &unmeasured, &stoppedInFlight, &unaccounted,
+			&spent.FreshInputTokens, &spent.CacheReadTokens, &spent.CacheWriteTokens, &spent.OutputTokens); err != nil {
+			return IssueTokenUsage{}, fmt.Errorf("token usage by issue %q: %w", issueID, err)
+		}
+		usage.TotalTokens += total
+		usage.Sessions += count
+		usage.UnmeasuredSessions += int(unmeasured.Int64)
+		usage.StoppedInFlight += int(stoppedInFlight.Int64)
+		usage.UnaccountedTurns += int(unaccounted.Int64)
+		if spent == (KindTokenUsage{}) {
+			continue
+		}
+		if usage.ByKind == nil {
+			usage.ByKind = map[string]KindTokenUsage{}
+		}
+		usage.ByKind[kind] = spent
+	}
+	if err := rows.Err(); err != nil {
+		return IssueTokenUsage{}, fmt.Errorf("token usage by issue %q: %w", issueID, err)
+	}
 	return usage, nil
 }
 
@@ -606,7 +658,8 @@ func (s *Store) LatestRunCompletionByIdentifier(ctx context.Context, identifiers
 // QueryTokenBudgetUsage returns one [IssueTokenUsage] per candidate with at
 // least one row; a candidate with no rows is absent, which the caller reads
 // as zero on every count. An empty candidateIDs returns an empty non-nil map
-// without querying. Comparing against a ceiling is the caller's job.
+// without querying. ByKind stays nil because no caller prices the result.
+// Comparing against a ceiling is the caller's job.
 func (s *Store) QueryTokenBudgetUsage(ctx context.Context, candidateIDs []string) (map[string]IssueTokenUsage, error) {
 	usage := map[string]IssueTokenUsage{}
 	if len(candidateIDs) == 0 {

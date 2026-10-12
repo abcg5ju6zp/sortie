@@ -1021,8 +1021,8 @@ func TestHandleRetryTimer(t *testing.T) {
 			},
 			check: func(t *testing.T, id string, state *State, store *mockRetryStore, tracker *mockRetryTracker, workerCalled bool) {
 				t.Helper()
-				if len(store.summedTokenIssueIDs) != 1 || store.summedTokenIssueIDs[0] != id {
-					t.Errorf("SumTotalTokensByIssue calls = %v, want [%s]", store.summedTokenIssueIDs, id)
+				if want := []string{id, id}; !slices.Equal(store.summedTokenIssueIDs, want) {
+					t.Errorf("TokenUsageByIssue calls = %v, want %v (gate read, then freeze read)", store.summedTokenIssueIDs, want)
 				}
 				if tracker.fetchCount != 1 {
 					t.Errorf("FetchIssueByID call count = %d, want 1", tracker.fetchCount)
@@ -1060,8 +1060,8 @@ func TestHandleRetryTimer(t *testing.T) {
 			},
 			check: func(t *testing.T, id string, state *State, store *mockRetryStore, tracker *mockRetryTracker, workerCalled bool) {
 				t.Helper()
-				if len(store.summedTokenIssueIDs) != 0 {
-					t.Errorf("SumTotalTokensByIssue calls = %v, want empty (MaxTokens=0)", store.summedTokenIssueIDs)
+				if entry, ok := state.BudgetExhausted[id]; ok {
+					t.Errorf("BudgetExhausted[%s] = %+v, want absent: no ceiling is set, so the token gate must not run", id, entry)
 				}
 				if tracker.fetchCount != 1 {
 					t.Errorf("FetchIssueByID call count = %d, want 1", tracker.fetchCount)
@@ -1100,8 +1100,8 @@ func TestHandleRetryTimer(t *testing.T) {
 			},
 			check: func(t *testing.T, id string, state *State, store *mockRetryStore, tracker *mockRetryTracker, workerCalled bool) {
 				t.Helper()
-				if len(store.summedTokenIssueIDs) != 1 || store.summedTokenIssueIDs[0] != id {
-					t.Errorf("SumTotalTokensByIssue calls = %v, want [%s]", store.summedTokenIssueIDs, id)
+				if want := []string{id, id}; !slices.Equal(store.summedTokenIssueIDs, want) {
+					t.Errorf("TokenUsageByIssue calls = %v, want %v (gate read, then freeze read)", store.summedTokenIssueIDs, want)
 				}
 				if tracker.fetchCount != 1 {
 					t.Errorf("FetchIssueByID call count = %d, want 1 (fail-open)", tracker.fetchCount)

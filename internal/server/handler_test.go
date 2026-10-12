@@ -61,6 +61,33 @@ func decodeJSON[T any](t *testing.T, resp *http.Response) T {
 	return v
 }
 
+func jsonObject(t *testing.T, v any) map[string]any {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json.Marshal(%T): %v", v, err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(%T): %v", v, err)
+	}
+	return decoded
+}
+
+func assertJSONKeys(t *testing.T, body any, want map[string]any) {
+	t.Helper()
+	got := jsonObject(t, body)
+	for key, wantValue := range jsonObject(t, want) {
+		gotValue, present := got[key]
+		gotNum, gotIsNum := gotValue.(float64)
+		wantNum, wantIsNum := wantValue.(float64)
+		near := gotIsNum && wantIsNum && math.Abs(gotNum-wantNum) <= 1e-9
+		if !present || !near && !reflect.DeepEqual(gotValue, wantValue) {
+			t.Errorf("JSON %q = %v (present=%t), want %v", key, gotValue, present, wantValue)
+		}
+	}
+}
+
 func TestToRunningEntryResponse(t *testing.T) {
 	t.Parallel()
 
@@ -899,7 +926,7 @@ func TestToRetryEntryResponse(t *testing.T) {
 	}
 }
 
-func TestEntryResponses_IdentityKeysJSON(t *testing.T) {
+func TestEntryResponses_KeysJSON(t *testing.T) {
 	t.Parallel()
 
 	startedAt := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
@@ -992,26 +1019,23 @@ func TestEntryResponses_IdentityKeysJSON(t *testing.T) {
 				"budget_sessions":    float64(3),
 			},
 		},
+		{
+			name: "budget exhausted with sessions stopped in flight",
+			body: toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{StoppedInFlight: new(1)}),
+			want: map[string]any{"stopped_in_flight": 1},
+		},
+		{
+			name: "budget exhausted without a token ceiling evaluation",
+			body: toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{}),
+			want: map[string]any{"stopped_in_flight": nil},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			data, err := json.Marshal(tt.body)
-			if err != nil {
-				t.Fatalf("json.Marshal(%s row): %v", tt.name, err)
-			}
-			var decoded map[string]any
-			if err := json.Unmarshal(data, &decoded); err != nil {
-				t.Fatalf("json.Unmarshal(%s row): %v", tt.name, err)
-			}
-
-			for key, want := range tt.want {
-				if got := decoded[key]; !reflect.DeepEqual(got, want) {
-					t.Errorf("%s row JSON %q = %v, want %v", tt.name, key, got, want)
-				}
-			}
+			assertJSONKeys(t, tt.body, tt.want)
 		})
 	}
 }
@@ -1419,7 +1443,6 @@ func TestToStateResponse_AgentTotalsExclusionFieldsJSON(t *testing.T) {
 	}
 }
 
-// requireCostUnpricedRunning fails unless got is non-nil and dereferences to want.
 func requireCostUnpricedRunning(t *testing.T, got *int, want int) {
 	t.Helper()
 	if got == nil {
@@ -1430,9 +1453,6 @@ func requireCostUnpricedRunning(t *testing.T, got *int, want int) {
 	}
 }
 
-// TestToStateResponse_CostUnpricedRunning verifies the count includes only
-// running, measured sessions with no configured token rate, and is omitted
-// from JSON when zero.
 func TestToStateResponse_CostUnpricedRunning(t *testing.T) {
 	t.Parallel()
 
@@ -1514,6 +1534,7 @@ func TestToStateResponse_CostUnpricedRunning(t *testing.T) {
 			GeneratedAt: time.Now().UTC(),
 			Running: []orchestrator.SnapshotRunningEntry{
 				{IssueID: "priced", Identifier: "MT-PRICED", AgentKind: "claude", UsageMeasured: true, AgentInputTokens: 1000},
+				{IssueID: "priced-2", Identifier: "MT-PRICED2", AgentKind: "claude", UsageMeasured: true, AgentInputTokens: 2000, AgentOutputTokens: 500},
 				{IssueID: "unpriced-1", Identifier: "MT-UNP1", AgentKind: "unpriced-kind", UsageMeasured: true, AgentInputTokens: 1000},
 				{IssueID: "unpriced-2", Identifier: "MT-UNP2", AgentKind: "other-unpriced", UsageMeasured: true, AgentInputTokens: 1000},
 				{IssueID: "unmeasured", Identifier: "MT-UNM", AgentKind: "unpriced-kind", UsageMeasured: false},
@@ -1523,6 +1544,23 @@ func TestToStateResponse_CostUnpricedRunning(t *testing.T) {
 		got := toStateResponse(snap, rates)
 
 		requireCostUnpricedRunning(t, got.CostUnpricedRunning, 2)
+		var rowCostSum float64
+		var unpricedRows int
+		for _, row := range got.Running {
+			switch row.CostStatus {
+			case "estimated":
+				rowCostSum += *row.EstimatedCostUSD
+			case "unpriced":
+				unpricedRows++
+			}
+		}
+		if got.ActiveEstimatedCostUSD == nil {
+			t.Fatalf("ActiveEstimatedCostUSD = nil, want sum of row estimates %v", rowCostSum)
+		}
+		if math.Abs(*got.ActiveEstimatedCostUSD-rowCostSum) > 1e-9 {
+			t.Errorf("ActiveEstimatedCostUSD = %v, want sum of row estimates %v", *got.ActiveEstimatedCostUSD, rowCostSum)
+		}
+		requireCostUnpricedRunning(t, got.CostUnpricedRunning, unpricedRows)
 	})
 
 	t.Run("zero count with rates configured is present as zero", func(t *testing.T) {
@@ -1536,17 +1574,8 @@ func TestToStateResponse_CostUnpricedRunning(t *testing.T) {
 		}
 
 		got := toStateResponse(snap, rates)
-		data, err := json.Marshal(got)
-		if err != nil {
-			t.Fatalf("json.Marshal: %v", err)
-		}
-		var decoded map[string]any
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("json.Unmarshal: %v", err)
-		}
-		if v, ok := decoded["cost_unpriced_running"]; !ok || v != float64(0) {
-			t.Errorf(`JSON cost_unpriced_running = %v (present=%v), want 0`, v, ok)
-		}
+
+		assertJSONKeys(t, got, map[string]any{"cost_unpriced_running": 0})
 	})
 
 	t.Run("no rates configured omits the field from JSON", func(t *testing.T) {
@@ -1580,18 +1609,133 @@ func TestToStateResponse_CostUnpricedRunning(t *testing.T) {
 		}
 
 		got := toStateResponse(snap, rates)
-		data, err := json.Marshal(got)
-		if err != nil {
-			t.Fatalf("json.Marshal: %v", err)
-		}
-		var decoded map[string]any
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("json.Unmarshal: %v", err)
-		}
-		if v, ok := decoded["cost_unpriced_running"]; !ok || v != float64(1) {
-			t.Errorf(`JSON cost_unpriced_running = %v (present=%v), want 1`, v, ok)
-		}
+
+		assertJSONKeys(t, got, map[string]any{"cost_unpriced_running": 1})
 	})
+}
+
+func TestToServedRunningEntry(t *testing.T) {
+	t.Parallel()
+
+	type entry = orchestrator.SnapshotRunningEntry
+	workedExample := func() entry {
+		byKind := map[string]domain.TokenUsage{"claude-code": {InputTokens: 400000, CacheReadTokens: 300000, OutputTokens: 20000}}
+		return entry{
+			AgentKind: "claude-code", UsageMeasured: true,
+			AgentInputTokens: 60000, CacheReadTokens: 40000, AgentOutputTokens: 5000, AgentTotalTokens: 65000,
+			IssueUsage: &orchestrator.SnapshotIssueUsage{Sessions: 3, TotalTokens: 420000, ByKind: byKind},
+		}
+	}
+	workedRates := TokenRates{"claude-code": {
+		InputPerMtok: new(3.0), OutputPerMtok: new(15.0), CacheReadPerMtok: new(0.3), CacheWritePerMtok: new(3.75),
+	}}
+	noFigure := func(usage orchestrator.SnapshotIssueUsage) func(*entry) {
+		return func(e *entry) { e.UsageMeasured, e.IssueUsage = false, &usage }
+	}
+	unknownSpend := func(completed any) map[string]any {
+		return map[string]any{
+			"issue_tokens_completed": completed, "used_tokens": nil, "used_tokens_complete": false,
+			"cost_status": "unmeasured", "estimated_cost_usd": nil, "issue_cost_status": "unmeasured", "issue_estimated_cost_usd": nil,
+		}
+	}
+	partialWorked := map[string]any{"used_tokens": 485000, "used_tokens_complete": false, "issue_cost_status": "partial", "issue_estimated_cost_usd": 0.837}
+
+	tests := []struct {
+		name                   string
+		maxTokens, maxSessions int
+		rates                  *TokenRates
+		edit                   func(*entry)
+		want                   map[string]any
+	}{
+		{
+			name: "worked example", maxTokens: 1_000_000, maxSessions: 5,
+			want: map[string]any{
+				"used_sessions": 3, "budget_sessions": 5, "issue_tokens_completed": 420000, "unmeasured_sessions": 0,
+				"used_tokens": 485000, "used_tokens_complete": true, "budget_tokens": 1_000_000,
+				"estimated_cost_usd": 0.147, "cost_status": "estimated", "issue_estimated_cost_usd": 0.837, "issue_cost_status": "estimated",
+			},
+		},
+		{
+			name: "larger live total with no ceilings", edit: func(e *entry) { e.AgentTotalTokens = 75000 },
+			want: map[string]any{"used_tokens": 495000, "issue_tokens_completed": 420000, "budget_tokens": nil, "budget_sessions": nil},
+		},
+		{
+			name: "session budget served, token ceiling null", maxSessions: 3,
+			want: map[string]any{"budget_tokens": nil, "budget_sessions": 3},
+		},
+		{
+			name: "unmeasured completed session and no figure",
+			edit: noFigure(orchestrator.SnapshotIssueUsage{Sessions: 2, UnmeasuredSessions: 1}), want: unknownSpend(nil),
+		},
+		{
+			name: "completed run that never entered a turn and no figure",
+			edit: noFigure(orchestrator.SnapshotIssueUsage{Sessions: 1}), want: unknownSpend(0),
+		},
+		{
+			name: "unmeasured completed session beside a measured one",
+			edit: func(e *entry) { e.IssueUsage = &orchestrator.SnapshotIssueUsage{Sessions: 1, UnmeasuredSessions: 1} },
+			want: map[string]any{"issue_tokens_completed": nil, "used_tokens": 65000, "used_tokens_complete": false, "issue_cost_status": "partial", "issue_estimated_cost_usd": 0.147},
+		},
+		{
+			name: "unaccounted turn of the running session", edit: func(e *entry) { e.UnaccountedTurns = 1 },
+			want: partialWorked,
+		},
+		{
+			name: "unaccounted turn of a completed session", edit: func(e *entry) { e.IssueUsage.UnaccountedTurns = 1 },
+			want: partialWorked,
+		},
+		{
+			name: "no usage read and a priced session", edit: func(e *entry) { e.IssueUsage = nil },
+			want: map[string]any{"used_sessions": nil, "unmeasured_sessions": nil, "issue_tokens_completed": nil, "used_tokens": 65000, "used_tokens_complete": false, "issue_cost_status": "partial", "issue_estimated_cost_usd": 0.147},
+		},
+		{
+			name: "session kind without a rate entry", edit: func(e *entry) { e.AgentKind = "other" },
+			want: map[string]any{"cost_status": "unpriced", "estimated_cost_usd": nil, "issue_cost_status": "partial", "issue_estimated_cost_usd": 0.69},
+		},
+		{
+			name: "token_rates absent", rates: new(TokenRates),
+			want: map[string]any{"cost_status": "unpriced", "estimated_cost_usd": nil, "issue_cost_status": "unpriced", "issue_estimated_cost_usd": nil},
+		},
+		{
+			name: "completed kind without a rate entry",
+			edit: func(e *entry) { e.IssueUsage.ByKind["codex"] = domain.TokenUsage{InputTokens: 1000} },
+			want: map[string]any{"issue_cost_status": "partial", "issue_estimated_cost_usd": 0.837},
+		},
+		{
+			name: "unpriced completed kind beside a priced session at zero tokens",
+			edit: func(e *entry) {
+				e.AgentInputTokens, e.CacheReadTokens, e.AgentOutputTokens, e.AgentTotalTokens = 0, 0, 0, 0
+				e.IssueUsage.ByKind = map[string]domain.TokenUsage{"codex": {InputTokens: 420000}}
+			},
+			want: map[string]any{"cost_status": "estimated", "estimated_cost_usd": 0, "issue_cost_status": "unpriced", "issue_estimated_cost_usd": nil},
+		},
+		{
+			name: "priced complete issue beside an unrated session at zero tokens",
+			edit: func(e *entry) {
+				e.AgentInputTokens, e.CacheReadTokens, e.AgentOutputTokens, e.AgentTotalTokens = 0, 0, 0, 0
+				e.AgentKind = "unrated"
+			},
+			want: map[string]any{"cost_status": "unpriced", "used_tokens": 420000, "used_tokens_complete": true, "issue_cost_status": "estimated", "issue_estimated_cost_usd": 0.69},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := workedExample()
+			if tt.edit != nil {
+				tt.edit(&e)
+			}
+			rates := workedRates
+			if tt.rates != nil {
+				rates = *tt.rates
+			}
+			snap := orchestrator.RuntimeSnapshotResult{MaxTokens: tt.maxTokens, MaxSessions: tt.maxSessions}
+
+			assertJSONKeys(t, toServedRunningEntry(e, snap, rates), tt.want)
+		})
+	}
 }
 
 func TestBuildIssueDetail(t *testing.T) {
@@ -1623,7 +1767,7 @@ func TestBuildIssueDetail(t *testing.T) {
 
 	t.Run("running issue", func(t *testing.T) {
 		t.Parallel()
-		got := buildIssueDetail("MT-100", snap)
+		got := buildIssueDetail("MT-100", snap, nil)
 		if got == nil {
 			t.Fatal("buildIssueDetail(MT-100) = nil, want non-nil")
 			return
@@ -1662,7 +1806,7 @@ func TestBuildIssueDetail(t *testing.T) {
 
 	t.Run("retrying issue", func(t *testing.T) {
 		t.Parallel()
-		got := buildIssueDetail("MT-200", snap)
+		got := buildIssueDetail("MT-200", snap, nil)
 		if got == nil {
 			t.Fatal("buildIssueDetail(MT-200) = nil, want non-nil")
 			return
@@ -1695,7 +1839,7 @@ func TestBuildIssueDetail(t *testing.T) {
 
 	t.Run("not found", func(t *testing.T) {
 		t.Parallel()
-		got := buildIssueDetail("NONEXISTENT", snap)
+		got := buildIssueDetail("NONEXISTENT", snap, nil)
 		if got != nil {
 			t.Errorf("buildIssueDetail(NONEXISTENT) = %v, want nil", got)
 		}
@@ -1708,7 +1852,7 @@ func TestBuildIssueDetail(t *testing.T) {
 				{IssueID: "id-3", Identifier: "MT-300", State: "To Do"},
 			},
 		}
-		got := buildIssueDetail("MT-300", noWSSnap)
+		got := buildIssueDetail("MT-300", noWSSnap, nil)
 		if got == nil {
 			t.Fatal("buildIssueDetail(MT-300) = nil, want non-nil")
 			return
@@ -1725,7 +1869,7 @@ func TestBuildIssueDetail(t *testing.T) {
 				{IssueID: "id-4", Identifier: "MT-400", Attempt: 1, Error: ""},
 			},
 		}
-		got := buildIssueDetail("MT-400", noErrSnap)
+		got := buildIssueDetail("MT-400", noErrSnap, nil)
 		if got == nil {
 			t.Fatal("buildIssueDetail(MT-400) = nil, want non-nil")
 			return

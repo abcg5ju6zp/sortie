@@ -3,12 +3,11 @@ package persistence
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
 
-// tokenRun returns a run_history row for the given issue carrying the
-// given total_tokens, with the remaining fields from newTestRun.
 func tokenRun(i int, issueID string, totalTokens int64) RunHistory {
 	run := newTestRun(i)
 	run.IssueID = issueID
@@ -16,8 +15,11 @@ func tokenRun(i int, issueID string, totalTokens int64) RunHistory {
 	return run
 }
 
-// assertTokenFields verifies the four token counters and the measurement
-// flag of a RunHistory row.
+func sameScalars(a, b IssueTokenUsage) bool {
+	a.ByKind, b.ByKind = nil, nil
+	return reflect.DeepEqual(a, b)
+}
+
 func assertTokenFields(t *testing.T, reader string, got RunHistory, wantIn, wantOut, wantTotal, wantCache int64, wantMeasured bool) {
 	t.Helper()
 	if got.InputTokens != wantIn {
@@ -303,7 +305,7 @@ func TestTokenUsageByIssue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TokenUsageByIssue(ISS-NONE) unexpected error: %v", err)
 		}
-		if usage != (IssueTokenUsage{}) {
+		if !sameScalars(usage, IssueTokenUsage{}) || usage.ByKind != nil {
 			t.Errorf("TokenUsageByIssue(ISS-NONE) = %+v, want zero value", usage)
 		}
 	})
@@ -359,6 +361,44 @@ func TestTokenUsageByIssue(t *testing.T) {
 		}
 		if usage.UnmeasuredSessions != 2 {
 			t.Errorf("TokenUsageByIssue(ISS-MIXED).UnmeasuredSessions = %d, want 2", usage.UnmeasuredSessions)
+		}
+	})
+
+	t.Run("per-kind spend floors each row and skips unmeasured and all-zero kinds", func(t *testing.T) {
+		t.Parallel()
+		s := openTestStore(t)
+		migrateOrFatal(t, s)
+
+		const issueID = "ISS-KINDS"
+		rows := []RunHistory{
+			{AgentAdapter: "claude", InputTokens: 100, CacheReadTokens: 30, CacheWriteTokens: 20, OutputTokens: 10, TotalTokens: 160, TokensMeasured: true},
+			{AgentAdapter: "claude", InputTokens: 10, CacheReadTokens: 40, OutputTokens: 5, TotalTokens: 55, TokensMeasured: true},
+			{AgentAdapter: "codex", InputTokens: 500, OutputTokens: 50},
+			{AgentAdapter: "", TokensMeasured: true},
+		}
+		for i, row := range rows {
+			run := tokenRun(i+1, issueID, row.TotalTokens)
+			run.AgentAdapter = row.AgentAdapter
+			run.InputTokens, run.OutputTokens = row.InputTokens, row.OutputTokens
+			run.CacheReadTokens, run.CacheWriteTokens = row.CacheReadTokens, row.CacheWriteTokens
+			run.TokensMeasured = row.TokensMeasured
+			appendOrFatal(t, s, run)
+		}
+
+		usage, err := s.TokenUsageByIssue(context.Background(), issueID)
+		if err != nil {
+			t.Fatalf("TokenUsageByIssue(%s) unexpected error: %v", issueID, err)
+		}
+
+		wantByKind := map[string]KindTokenUsage{
+			"claude": {FreshInputTokens: 50, CacheReadTokens: 70, CacheWriteTokens: 20, OutputTokens: 15},
+		}
+		if !reflect.DeepEqual(usage.ByKind, wantByKind) {
+			t.Errorf("TokenUsageByIssue(%s).ByKind = %+v, want %+v", issueID, usage.ByKind, wantByKind)
+		}
+		wantTotals := IssueTokenUsage{TotalTokens: 215, Sessions: 4, UnmeasuredSessions: 1}
+		if !sameScalars(usage, wantTotals) {
+			t.Errorf("TokenUsageByIssue(%s) = %+v, want totals %+v", issueID, usage, wantTotals)
 		}
 	})
 }
@@ -512,8 +552,6 @@ func TestQueryTokenBudgetUsage(t *testing.T) {
 		}
 	})
 
-	// The advisory tool reads TokenUsageByIssue while enforcement reads
-	// QueryTokenBudgetUsage; both must agree on the same ledger value.
 	t.Run("completed-session sum matches across both queries", func(t *testing.T) {
 		t.Parallel()
 		s := openTestStore(t)
@@ -540,10 +578,6 @@ func TestQueryTokenBudgetUsage(t *testing.T) {
 	})
 }
 
-// TestTokenUsageByIssue_QueryTokenBudgetUsage_StoppedInFlightParity seeds a
-// mix of statuses, including a plain "cancelled" row the StoppedInFlight
-// count must ignore, and asserts both queries report the identical
-// IssueTokenUsage.
 func TestTokenUsageByIssue_QueryTokenBudgetUsage_StoppedInFlightParity(t *testing.T) {
 	t.Parallel()
 	s := openTestStore(t)
@@ -562,7 +596,6 @@ func TestTokenUsageByIssue_QueryTokenBudgetUsage_StoppedInFlightParity(t *testin
 	stopped2.TokensMeasured = true
 	appendOrFatal(t, s, stopped2)
 
-	// A plain cancellation, not a ceiling stop.
 	cancelled := tokenRun(3, issueID, 200)
 	cancelled.Status = "cancelled"
 	cancelled.TokensMeasured = true
@@ -597,13 +630,13 @@ func TestTokenUsageByIssue_QueryTokenBudgetUsage_StoppedInFlightParity(t *testin
 		UnmeasuredSessions: 1,
 		StoppedInFlight:    2,
 	}
-	if byIssue != want {
+	if !sameScalars(byIssue, want) {
 		t.Errorf("TokenUsageByIssue(%s) = %+v, want %+v", issueID, byIssue, want)
 	}
-	if budgetUsage != want {
+	if !sameScalars(budgetUsage, want) {
 		t.Errorf("QueryTokenBudgetUsage()[%s] = %+v, want %+v", issueID, budgetUsage, want)
 	}
-	if byIssue != budgetUsage {
+	if !sameScalars(byIssue, budgetUsage) {
 		t.Errorf("TokenUsageByIssue = %+v, QueryTokenBudgetUsage = %+v, want identical", byIssue, budgetUsage)
 	}
 }

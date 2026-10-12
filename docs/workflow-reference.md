@@ -1982,7 +1982,18 @@ Returns the system-wide runtime state including running sessions, retry queue, a
       "usage_attribution": "per_model",
       "tokens_pending": false,
       "tokens_awaited": false,
-      "api_requests_measured": true
+      "api_requests_measured": true,
+      "used_sessions": 2,
+      "budget_sessions": 5,
+      "issue_tokens_completed": 105000,
+      "unmeasured_sessions": 0,
+      "used_tokens": 107000,
+      "used_tokens_complete": true,
+      "budget_tokens": 500000,
+      "estimated_cost_usd": 0.014595,
+      "cost_status": "estimated",
+      "issue_estimated_cost_usd": 0.235095,
+      "issue_cost_status": "estimated"
     }
   ],
   "retrying": [
@@ -2008,6 +2019,7 @@ Returns the system-wide runtime state including running sessions, retry queue, a
       "used_tokens": null,
       "budget_tokens": 0,
       "unmeasured_sessions": null,
+      "stopped_in_flight": null,
       "exhausted_at": "2026-02-24T20:12:00Z"
     }
   ],
@@ -2055,6 +2067,19 @@ Returns the system-wide runtime state including running sessions, retry queue, a
 | `tokens_pending`     | boolean           | True only when `usage_arrival` is `turn_end`, the session is measured, and the turn that figure would settle for is still in flight.      |
 | `tokens_awaited`     | boolean           | True only when the session has recorded no figure and the moment its `usage_arrival` names for one has not passed. A session whose `usage_arrival` reports figures and whose `tokens_awaited` is `false` recorded nothing and will record nothing. |
 | `api_requests_measured` | boolean        | True when `api_request_count` is a measurement of model API requests: `usage_arrival` is `incremental` and either a figure has arrived or no turn has begun. False for every other arrival, and for an `incremental` session past its first turn that has reported nothing. |
+| `used_sessions`           | integer or `null` | The issue's completed sessions: the run-history count that `agent.max_sessions` is compared with. The running session is not counted, and a recorded CI result counts as a session. `null` when no read of the issue's run history has succeeded for this run. |
+| `budget_sessions`         | integer or `null` | `agent.max_sessions` as of the latest poll tick. `null` means no session budget (`agent.max_sessions` is `0`), never `0`. The sessions left are `budget_sessions` minus `used_sessions`; there is no value when either is `null`. |
+| `issue_tokens_completed`  | integer or `null` | The summed `total_tokens` of the issue's completed sessions, the baseline the token ceiling adds this session's spend to. `0` when the issue has no completed session or its completed sessions spent exactly nothing. `null` when no read of the issue's run history has succeeded for this run, and when the sum is `0` while a completed session is unmeasured or recorded an unaccounted turn. |
+| `unmeasured_sessions`     | integer or `null` | Completed sessions whose token usage was never recorded, which `issue_tokens_completed` and `used_tokens` leave out. `null` exactly when `used_sessions` is. |
+| `used_tokens`             | integer or `null` | `issue_tokens_completed` plus `tokens.total_tokens`, each counted as `0` when `null`: the figure the token ceiling compares with `agent.max_tokens`, advancing with each usage figure of the session. `null` when that sum is `0` and `used_tokens_complete` is `false`, so unknown spend never reads as zero. |
+| `used_tokens_complete`    | boolean           | True exactly when `used_tokens` is the issue's whole spend: the completed sessions were read, none is unmeasured, none recorded an unaccounted turn, this session is measured, and it has recorded no unaccounted turn. When `false`, `used_tokens` is a lower bound. It ignores `tokens_pending`, which keeps telling a consumer that the figure excludes a turn in flight. |
+| `budget_tokens`           | integer or `null` | `agent.max_tokens` as of the latest poll tick. `null` means no token ceiling (`agent.max_tokens` is `0`), never `0`. The token headroom is `budget_tokens` minus `used_tokens`; there is no value when either is `null`, and it turns negative when a run overshoots, because the ceiling stops a run at the first usage figure at or past it. |
+| `estimated_cost_usd`      | number or `null` | The estimated USD cost of this session, from `tokens` and the `token_rates` entry of `agent_kind`. Unrounded. Non-`null` exactly when `cost_status` is `estimated`. |
+| `cost_status`             | string            | `estimated`, which a zero rate also gives; `unpriced` when the session is measured and `token_rates` holds no entry with both `input_per_mtok` and `output_per_mtok` for `agent_kind`, an absent `token_rates` included; `unmeasured` when `tokens_measured` is `false`. |
+| `issue_estimated_cost_usd` | number or `null` | The estimated USD cost of the whole issue: the sum of the estimates of its priced parts, completed sessions and this session alike, at the rates the process started with. Non-`null` exactly when `issue_cost_status` is `estimated` or `partial`. |
+| `issue_cost_status`       | string            | `estimated` when the estimate covers the issue's whole spend; `partial` when it is a lower bound, because a part that spent tokens is left out; `unpriced` when no priced part spent tokens and a part that did has no rate; `unmeasured` when `used_tokens` is `null`, and when no part is priced or unpriced. A session measured at zero tokens leaves nothing out, so a missing rate for its kind does not make a complete, otherwise priced issue `partial`. |
+
+A limit key (`budget_tokens`, `budget_sessions`) is always present: `null` means no limit is configured. A usage key (`used_tokens`, `issue_tokens_completed`, `used_sessions`, `unmeasured_sessions`) set to `null` means unknown. `used_tokens` is `null` only when `issue_cost_status` is `unmeasured`, and `issue_cost_status` is `estimated` only when `used_tokens_complete` is `true`. While `token_rates` holds an entry for any agent kind, the top-level `active_estimated_cost_usd` equals the sum of `estimated_cost_usd` over the running rows whose `cost_status` is `estimated`, and `cost_unpriced_running` counts the rows whose `cost_status` is `unpriced`.
 
 **Retry and budget-exhausted identity fields:**
 
@@ -2066,6 +2091,8 @@ Each row of `retrying` and each record of `budget_exhausted` carries these flat 
 | `issue_url`   | string or absent | The tracker's web link of the issue. Omitted when empty, under the same rule as `issue_title`. |
 
 A retry row carries the read of the issue the retry was scheduled with. Sortie stores the read with the retry and restores it at startup, so a restart serves the title, link, and display identifier it served before. A retry restored from a row stored by an earlier release holds no read; it takes one from the next poll tick whose candidates list its issue, or from its next fire, and a read already held is never replaced. A `budget_exhausted` record carries the read of the poll tick that last rebuilt the set, or of the retry the hold was found on until the next tick.
+
+Each record of `budget_exhausted` also carries `stopped_in_flight`, an integer or `null`: the number of the issue's completed sessions that the token ceiling stopped mid-run. It is `null` exactly when the record's `used_tokens` is `null`, that is when the token ceiling was not evaluated for the issue. The record's own `budget_tokens` and `budget_sessions` serve `0` when the ceiling is not set, unlike the same keys on a running row.
 
 **Aggregate totals:**
 
@@ -2132,7 +2159,18 @@ Returns issue-specific runtime and debug details for a single issue. Returns `40
     "usage_arrival": "incremental",
     "usage_attribution": "per_model",
     "tokens_pending": false,
-    "api_requests_measured": true
+    "api_requests_measured": true,
+    "used_sessions": 2,
+    "budget_sessions": 5,
+    "issue_tokens_completed": 105000,
+    "unmeasured_sessions": 0,
+    "used_tokens": 107000,
+    "used_tokens_complete": true,
+    "budget_tokens": 500000,
+    "estimated_cost_usd": 0.014595,
+    "cost_status": "estimated",
+    "issue_estimated_cost_usd": 0.235095,
+    "issue_cost_status": "estimated"
   },
   "retry": null,
   "budget_exhausted": null,
@@ -2358,13 +2396,13 @@ token_rates:
     cache_read_per_mtok: 0.25
 ```
 
-When `token_rates` is configured, the dashboard displays estimated USD cost for currently running sessions, and the `sortie stats` subcommand prices the runs it aggregates from run history. Keys are agent adapter kind strings (e.g., `"claude-code"`, `"copilot-cli"`, `"codex"`, `"opencode"`). All rates are in USD per 1 million tokens.
+When `token_rates` is configured, the dashboard displays estimated USD cost for currently running sessions, the JSON API serves each running row's session estimate and the estimate of its whole issue (`estimated_cost_usd` and `issue_estimated_cost_usd`, each with a status), and the `sortie stats` subcommand prices the runs it aggregates from run history. Keys are agent adapter kind strings (e.g., `"claude-code"`, `"copilot-cli"`, `"codex"`, `"opencode"`). All rates are in USD per 1 million tokens.
 
 Every figure Sortie prices is a fresh-input token, a cache-read token, a cache-write token, or an output token, priced once each at its own rate. An unset `cache_read_per_mtok` or `cache_write_per_mtok` prices that class at `input_per_mtok`, so a configuration that sets neither keeps pricing every input token, cached or not, at the input rate. `claude-code`, `copilot-cli`, and `opencode` report a cache-write count; an operator of one of those kinds sets `cache_write_per_mtok` to that provider's cache-write rate to price it separately.
 
 One rate set prices every model of a kind alike: two models of one kind run under different dispatch rules are priced at the same rates, so the savings from routing show in token counts before they show in money.
 
-When `token_rates` is absent or empty, the dashboard shows raw token counts without cost estimates and `sortie stats` reports no cost figures.
+When `token_rates` is absent or empty, the dashboard shows raw token counts without cost estimates, every measured running row of the JSON API carries `cost_status` `unpriced`, and `sortie stats` reports no cost figures.
 
 An entry keyed to a kind whose usage-reporting declaration resolves to no token usage for the sessions a configuration produces has no effect: no cost can be estimated for it. `sortie validate` reports this under the check `agent.kind.no_cost_estimate`, naming the kind, so an operator who prices a non-reporting kind learns why the dashboard's Est. Cost column stays blank rather than discovering it by reading source.
 

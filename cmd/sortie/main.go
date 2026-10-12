@@ -363,6 +363,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		totals,
 	)
 	state.TokenWarningThreshold = br.cfg.Agent.TokenWarningThreshold()
+	state.MaxSessions = br.cfg.Agent.MaxSessions
 	orchestrator.PopulateRetries(state, pendingRetries, br.logger)
 
 	parkedRows, err := store.ListParkedIssues(ctx)

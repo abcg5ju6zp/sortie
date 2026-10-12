@@ -102,6 +102,14 @@ type turnStartedMsg struct {
 	TurnsStarted int
 }
 
+// unaccountedTurnsMsg pairs an issue ID with its worker's cumulative
+// unaccounted-turn count for delivery through unaccountedTurnsCh. The count
+// is cumulative, so a later message supersedes an earlier one.
+type unaccountedTurnsMsg struct {
+	IssueID          string
+	UnaccountedTurns int
+}
+
 // OrchestratorParams holds the construction-time dependencies for
 // [NewOrchestrator]. All fields are required unless documented otherwise.
 type OrchestratorParams struct {
@@ -231,13 +239,14 @@ type Orchestrator struct {
 	blockerResolver    BlockerResolver
 	abandonCh          <-chan struct{}
 
-	workerExitCh  chan WorkerResult
-	retryTimerCh  chan string
-	agentEventCh  chan agentEventMsg
-	selfReviewCh  chan selfReviewProgressMsg
-	turnStartedCh chan turnStartedMsg
-	snapshotCh    chan snapshotRequest
-	refreshCh     chan struct{}
+	workerExitCh       chan WorkerResult
+	retryTimerCh       chan string
+	agentEventCh       chan agentEventMsg
+	selfReviewCh       chan selfReviewProgressMsg
+	turnStartedCh      chan turnStartedMsg
+	unaccountedTurnsCh chan unaccountedTurnsMsg
+	snapshotCh         chan snapshotRequest
+	refreshCh          chan struct{}
 
 	preflightParams PreflightParams
 	observers       []Observer
@@ -390,6 +399,7 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		agentEventCh:                      make(chan agentEventMsg, eventBuf),
 		selfReviewCh:                      make(chan selfReviewProgressMsg, eventBuf),
 		turnStartedCh:                     make(chan turnStartedMsg, eventBuf),
+		unaccountedTurnsCh:                make(chan unaccountedTurnsMsg, eventBuf),
 		snapshotCh:                        make(chan snapshotRequest, 4),
 		refreshCh:                         make(chan struct{}, 1),
 		preflightParams:                   params.PreflightParams,
@@ -479,6 +489,14 @@ func (o *Orchestrator) applyTurnStarted(msg turnStartedMsg) {
 	entry.TurnCount = msg.TurnsStarted
 }
 
+func (o *Orchestrator) applyUnaccountedTurns(msg unaccountedTurnsMsg) {
+	entry, ok := o.state.Running[msg.IssueID]
+	if !ok {
+		return
+	}
+	entry.UnaccountedTurns = msg.UnaccountedTurns
+}
+
 // applyQueuedAheadOfExit applies the messages queued ahead of the
 // WorkerResults of exitingIssueIDs, evaluating the token ceiling for every
 // applied event except those of an exiting issue: that run has ended, so a
@@ -490,6 +508,7 @@ func (o *Orchestrator) applyQueuedAheadOfExit(ctx context.Context, exitingIssueI
 	})
 	applyQueued(o.selfReviewCh, o.applySelfReviewProgress)
 	applyQueued(o.turnStartedCh, o.applyTurnStarted)
+	applyQueued(o.unaccountedTurnsCh, o.applyUnaccountedTurns)
 }
 
 // handleWorkerExit takes workerExit and every WorkerResult already waiting
@@ -707,6 +726,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.state.PollIntervalMS = cfg.Polling.IntervalMS
 	o.state.MaxConcurrentAgents = cfg.Agent.MaxConcurrentAgents
 	o.state.MaxTokens = cfg.Agent.MaxTokens
+	o.state.MaxSessions = cfg.Agent.MaxSessions
 	o.state.TokenWarningThreshold = cfg.Agent.TokenWarningThreshold()
 	o.state.MaxConcurrentByState = cfg.Agent.MaxConcurrentByState
 
@@ -1062,6 +1082,21 @@ func (o *Orchestrator) makeWorkerFn(resumeSessionID, sshHost, agentKind, templat
 				select {
 				case o.turnStartedCh <- turnStartedMsg{IssueID: issueID, TurnsStarted: turnsStarted}:
 				case <-ctx.Done():
+				}
+			},
+			OnUnaccountedTurns: func(issueID string, unaccountedTurns int) {
+				msg := unaccountedTurnsMsg{IssueID: issueID, UnaccountedTurns: unaccountedTurns}
+				select {
+				case o.unaccountedTurnsCh <- msg:
+					return
+				default:
+				}
+				// The run context outlives a ceiling stop, which cancels only
+				// the worker context, so a stopped run's final count still
+				// lands while the channel is full.
+				select {
+				case o.unaccountedTurnsCh <- msg:
+				case <-runContextFrom(ctx).Done():
 				}
 			},
 			OnProgress: func(msg selfReviewProgressMsg) {
@@ -1608,6 +1643,7 @@ func (o *Orchestrator) drainRunningWorkers() {
 			})
 			applyQueued(o.selfReviewCh, o.applySelfReviewProgress)
 			applyQueued(o.turnStartedCh, o.applyTurnStarted)
+			applyQueued(o.unaccountedTurnsCh, o.applyUnaccountedTurns)
 			cfg := o.workflowManager.Config()
 			o.updateRouter(cfg)
 			HandleWorkerExit(o.state, workerExit, HandleWorkerExitParams{
@@ -1648,6 +1684,9 @@ func (o *Orchestrator) drainRunningWorkers() {
 
 		case msg := <-o.turnStartedCh:
 			o.applyTurnStarted(msg)
+
+		case msg := <-o.unaccountedTurnsCh:
+			o.applyUnaccountedTurns(msg)
 
 		case req := <-o.snapshotCh:
 			snap := RuntimeSnapshot(o.state, time.Now())

@@ -958,7 +958,7 @@ func TestRunWorkerAttempt(t *testing.T) {
 		cfg.Agent.MaxTurns = 2
 		ec := newExitCapture()
 
-		var turns atomic.Int64
+		var turns, relayed atomic.Int64
 		deps := WorkerDeps{
 			TrackerAdapter: &mockTrackerAdapter{},
 			AgentAdapter: &mockAgentAdapter{
@@ -983,6 +983,7 @@ func TestRunWorkerAttempt(t *testing.T) {
 			ConfigFunc:             func() config.ServiceConfig { return cfg },
 			PromptTemplateByIDFunc: func(_ string) *prompt.Template { return mustParseTemplate(t, "do work on {{ .issue.title }}") },
 			OnEvent:                func(_ string, _ domain.AgentEvent) {},
+			OnUnaccountedTurns:     func(_ string, count int) { relayed.Store(int64(count)) },
 			OnExit:                 ec.onExit,
 			Logger:                 discardLogger(),
 		}
@@ -993,6 +994,10 @@ func TestRunWorkerAttempt(t *testing.T) {
 		if result.UnaccountedTurns != 1 {
 			t.Errorf("WorkerResult.UnaccountedTurns = %d, want 1: one turn reported spend of an unknown amount",
 				result.UnaccountedTurns)
+		}
+		if got := relayed.Load(); got != int64(result.UnaccountedTurns) {
+			t.Errorf("last count relayed through OnUnaccountedTurns = %d, want %d (WorkerResult.UnaccountedTurns)",
+				got, result.UnaccountedTurns)
 		}
 		if !result.UsageMeasured {
 			t.Error("WorkerResult.UsageMeasured = false, want true: an unaccounted turn does not deny a measurement " +
