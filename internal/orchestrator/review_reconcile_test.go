@@ -3844,6 +3844,8 @@ func TestSettleHandedOffCommentSet(t *testing.T) {
 
 func (s *reviewReconcileStore) DeleteStageHop(context.Context, string) error { return nil }
 
+func (s *reviewReconcileStore) MarkStageHopDispatched(context.Context, string) error { return nil }
+
 func (s *reviewReconcileStore) RecordStageHop(context.Context, persistence.StageHop) error {
 	return nil
 }

@@ -523,7 +523,6 @@ func TestReconcileCIStatus_EarlierPassingLaterFailing_DispatchesOneContinuation(
 		t.Fatalf("AppendRunHistory called %d times after a passing head; want 0", len(store.runHistories))
 	}
 
-	// The head advances and now fails.
 	entry := state.PendingReactions[ReactionKey(issueID, ReactionKindCI)]
 	entry.PendingRetryAt = time.Time{}
 	scm.result = domain.PRMergeStatus{HeadSHA: "head-B"}
@@ -555,10 +554,6 @@ func TestReconcileCIStatus_EarlierPassingLaterFailing_DispatchesOneContinuation(
 	}
 }
 
-// TestReconcileCIStatus_KeepsPassing_NoDispatchNoAttemptNoRunHistory
-// covers the case where a pull request whose head keeps passing across several
-// passes dispatches nothing, spends no attempt, writes no run_history
-// row, and makes no tracker call.
 func TestReconcileCIStatus_KeepsPassing_NoDispatchNoAttemptNoRunHistory(t *testing.T) {
 	t.Parallel()
 
@@ -745,7 +740,6 @@ func TestReconcileCIStatus_CancelledWithFailure_StillSpendsRetry(t *testing.T) {
 func TestReconcileCIStatus_Failing_UnderMaxRetries(t *testing.T) {
 	t.Parallel()
 
-	// ReactionAttempts starts at 0; maxRetries=2 -> no escalation after increment to 1.
 	state := stateWithPendingReaction(t, "ISS-CI-5", "feature/break", 1)
 	store := &ciReconcileStore{getFingerprintResult: ciDefaultHead}
 	metrics := newCIMetricsSpy()
@@ -764,7 +758,6 @@ func TestReconcileCIStatus_Failing_UnderMaxRetries(t *testing.T) {
 		t.Error("PendingReactions entry re-enqueued on CI failure; want consumed")
 	}
 
-	// RunHistory appended with "ci_failed".
 	if len(store.runHistories) != 1 {
 		t.Fatalf("AppendRunHistory call count = %d, want 1", len(store.runHistories))
 	}
@@ -778,12 +771,10 @@ func TestReconcileCIStatus_Failing_UnderMaxRetries(t *testing.T) {
 		t.Error("RunHistory.TokensMeasured = false, want true (no agent session ran, so zero spend is exact)")
 	}
 
-	// SaveRetryEntry NOT called: CI fix retries are in-memory until HandleRetryTimer.
 	if len(store.savedEntries) != 0 {
 		t.Errorf("SaveRetryEntry called %d times; want 0 (in-memory retry only)", len(store.savedEntries))
 	}
 
-	// In-memory retry scheduled with CI failure context.
 	entry, ok := state.RetryAttempts["ISS-CI-5"]
 	if !ok {
 		t.Fatal("retry not scheduled after CI failure; want scheduled")
@@ -796,7 +787,6 @@ func TestReconcileCIStatus_Failing_UnderMaxRetries(t *testing.T) {
 		t.Errorf("ReactionAttempts[ISS-CI-5] = %d, want 1", state.ReactionAttempts[ReactionKey("ISS-CI-5", ReactionKindCI)])
 	}
 
-	// Metrics.
 	if metrics.ciStatusChecks["failing"] != 1 {
 		t.Errorf(`IncCIStatusChecks("failing") = %d, want 1`, metrics.ciStatusChecks["failing"])
 	}
@@ -818,9 +808,45 @@ func TestReconcileCIStatus_Failing_UnderMaxRetries(t *testing.T) {
 	}
 }
 
-// TestReconcileCIStatus_Failing_RunHistoryCompletedAtIsUTC verifies that the
-// CI-failure writer formats a UTC time with time.RFC3339, so the
-// persisted value ends in "Z" and parses back as RFC3339.
+func TestReconcileCIStatus_FailingHeadServesTheContinuationOnTheRunningRow(t *testing.T) {
+	t.Parallel()
+
+	const issueID = "ISS-CI-CONT"
+	passAt := ciBaseTime.Add(-3 * time.Hour)
+	state := stateWithPendingReaction(t, issueID, "feature/break", 1)
+	state.PendingReactions[ReactionKey(issueID, ReactionKindCI)].StageLineage = StageLineage{ChainID: "chain-ci", DispatchedAt: passAt}
+	store := &ciReconcileStore{getFingerprintResult: ciDefaultHead}
+	ci := &mockCIProvider{result: domain.CIResult{Status: domain.CIStatusFailing, FailingCount: 1}}
+	reconcileCIStatus(state, ciParams(t, store, ci, nil, defaultCISCM()), discardLogger(), context.Background(), newCIMetricsSpy())
+	retry := state.RetryAttempts[issueID]
+	if retry == nil {
+		t.Fatal("RetryAttempts missing after the failing head, want the scheduled fix")
+	}
+	retry.scheduledAt = time.Time{}
+	t.Cleanup(func() { stopRetryTimer(state, issueID) })
+	tracker := &mockRetryTracker{fetchedIssue: candidateIssue(issueID, issueID+"-ident", "In Progress")}
+
+	HandleRetryTimer(state, issueID, defaultRetryParams(t, &mockRetryStore{}, tracker))
+
+	running := RuntimeSnapshot(state, ciBaseTime).Running
+	if len(running) != 1 {
+		t.Fatalf("len(Running) = %d after the fix dispatched, want 1", len(running))
+	}
+	row := running[0]
+	if row.ReactionKind != ReactionKindCI || row.ReactionConfigKey != "ci_failure" {
+		t.Errorf("Running[0] reaction kind, config key = %q, %q, want %q, %q", row.ReactionKind, row.ReactionConfigKey, ReactionKindCI, "ci_failure")
+	}
+	if want := (SnapshotContinuation{Number: 99, Repository: "acme/widgets", Attempt: 1}); row.Continuation == nil || *row.Continuation != want {
+		t.Errorf("Running[0].Continuation = %+v, want %+v", row.Continuation, want)
+	}
+	if !row.StageLineage.DispatchedAt.Equal(passAt) {
+		t.Errorf("Running[0].StageLineage.DispatchedAt = %v, want the pending reaction's %v", row.StageLineage.DispatchedAt, passAt)
+	}
+	if got, want := store.runHistories[0].DispatchedAt, "2026-04-01T06:00:00Z"; got != want {
+		t.Errorf("ci_failed run history DispatchedAt = %q, want %q", got, want)
+	}
+}
+
 func TestReconcileCIStatus_Failing_RunHistoryCompletedAtIsUTC(t *testing.T) {
 	t.Parallel()
 

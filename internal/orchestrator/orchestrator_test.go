@@ -141,6 +141,13 @@ type stubStore struct {
 	listParkedIssues   []persistence.ParkedIssue
 	listParkedIssueErr error
 
+	latestRuns      map[string]persistence.RunHistory
+	latestRunsErr   error
+	latestRunsCalls [][]string
+
+	dispatchMarked    []string
+	markDispatchedErr error
+
 	budgetHoldNotices         []persistence.BudgetHoldNotice
 	upsertBudgetHoldNoticeErr error
 	deletedBudgetHoldIDs      []string
@@ -5481,6 +5488,97 @@ func TestHandleTick_BudgetExhaustionRebuildsState(t *testing.T) {
 			t.Errorf("BudgetExhausted[%s] retained on empty candidate list, want cleared", issue.ID)
 		}
 	})
+
+	t.Run("dispatch context of a hold", func(t *testing.T) {
+		t.Parallel()
+
+		type holdContext struct {
+			rule, kind, model string
+			lineage           StageLineage
+		}
+		passAt := time.Date(2026, 3, 19, 9, 0, 0, 0, time.UTC)
+		fromRun := holdContext{"plan", "kind-b", "model-run", StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: "chain-run", DispatchedAt: passAt}}
+		fromHop := holdContext{"plan", "kind-b", "model-plan", StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: "chain-hop", DispatchedAt: passAt}}
+		held := holdContext{"implement", "kind-c", "model-held", StageLineage{ChainID: "chain-held", DispatchedAt: passAt.Add(-time.Hour)}}
+		latest := map[string]persistence.RunHistory{issue.ID: {
+			RuleName: "plan", AgentAdapter: "kind-b", ConfiguredModel: "model-run", StagePrevious: "specify", StagePreviousOutcome: "succeeded",
+			ChainID: "chain-run", DispatchedAt: "2026-03-19T09:00:00Z",
+		}}
+		waiting := persistence.StageHop{
+			IssueID: issue.ID, Identifier: issue.Identifier, HopCount: 1, SourceRule: "specify", TargetRule: "plan", TargetLabel: "Stage-Plan",
+			PreviousOutcome: "succeeded", ChainID: "chain-hop", HoppedAt: "2026-03-19T10:00:00Z", DispatchedAt: "2026-03-19T09:00:00Z",
+		}
+		dispatched := waiting
+		dispatched.RunDispatched = true
+		cfg := runConfig(t, map[string]any{
+			"agent":  map[string]any{"kind": "kind-a", "command": "a-cmd"},
+			"kind-b": map[string]any{},
+			"kind-c": map[string]any{},
+			"dispatch": map[string]any{"rules": []any{
+				map[string]any{"name": "plan", "stage": "Stage-Plan", "agent": "kind-b", "kind-b": map[string]any{"model": "model-plan"}},
+				map[string]any{"name": "implement", "stage": "stage-implement", "agent": "kind-c"},
+			}},
+		})
+		cfg.Agent.MaxSessions = 3
+		labeled := issue
+		labeled.Labels = []string{"Stage-Plan"}
+
+		tests := []struct {
+			name      string
+			prior     *BudgetExhaustedEntry
+			hop       *persistence.StageHop
+			runsErr   error
+			ticks     int
+			want      holdContext
+			wantReads int
+		}{
+			{name: "no prior record reads the latest agent run", ticks: 1, want: fromRun, wantReads: 1},
+			{name: "a waiting hop describes its target with no run history read", hop: &waiting, ticks: 1, want: fromHop},
+			{name: "a hop already followed by a run reads the latest agent run", hop: &dispatched, ticks: 1, want: fromRun, wantReads: 1},
+			{
+				name:  "a record the retry lane described keeps its context with no read",
+				prior: &BudgetExhaustedEntry{RuleName: held.rule, AgentKind: held.kind, ConfiguredModel: held.model, StageLineage: held.lineage},
+				ticks: 2, want: held,
+			},
+			{name: "a failed read leaves no context and the next tick reads again", runsErr: errors.New("db error"), ticks: 2, wantReads: 2},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 1}, latestRuns: latest, latestRunsErr: tt.runsErr}
+				state := NewState(60000, 10, 0, nil, AgentTotals{})
+				if tt.prior != nil {
+					state.BudgetExhausted[issue.ID] = tt.prior
+				}
+				if tt.hop != nil {
+					PopulateStageHops(state, []persistence.StageHop{*tt.hop}, nil)
+				}
+				tracker := &candidateTrackerAdapter{
+					mockTrackerAdapter: &mockTrackerAdapter{},
+					fetchCandidatesFn:  func(context.Context) ([]domain.Issue, error) { return []domain.Issue{labeled}, nil },
+				}
+				orch := budgetOrchestrator(state, &stubWorkflowManager{config: cfg}, store, tracker)
+
+				for range tt.ticks {
+					orch.handleTick(context.Background())
+				}
+
+				entry := state.BudgetExhausted[issue.ID]
+				if entry == nil {
+					t.Fatalf("BudgetExhausted[%s] missing after %d ticks", issue.ID, tt.ticks)
+				}
+				got := holdContext{entry.RuleName, entry.AgentKind, entry.ConfiguredModel, entry.StageLineage}
+				if got != tt.want {
+					t.Errorf("BudgetExhausted[%s] rule, kind, model, lineage = %+v, want %+v", issue.ID, got, tt.want)
+				}
+				if reads := len(store.latestRunsCalls); reads != tt.wantReads {
+					t.Errorf("LatestAgentRuns calls = %d over %d ticks, want %d", reads, tt.ticks, tt.wantReads)
+				}
+			})
+		}
+	})
 }
 
 func budgetTickConfigTokens(maxSessions, maxTokens int) *stubWorkflowManager {
@@ -8738,18 +8836,32 @@ func TestHandleTick_StageLineageChain(t *testing.T) {
 	t.Parallel()
 
 	const fresh = "<fresh>"
+	passAt := time.Date(2026, 3, 19, 9, 0, 0, 500_000_000, time.UTC)
 	hopReachedPlan := persistence.StageHop{
 		IssueID: "id-1", Identifier: "S-1", HopCount: 1, SourceRule: "specify", TargetRule: "plan", TargetLabel: "Stage-Plan",
 		PreviousOutcome: "succeeded", SourceDispatchID: "d0", HoppedAt: "2026-03-19T10:00:00Z", ChainID: "chain-hop",
+		DispatchedAt: "2026-03-19T09:00:00.5Z",
 	}
+	followedByRun := hopReachedPlan
+	followedByRun.RunDispatched = true
+	reachedPlan := StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: "chain-hop", DispatchedAt: passAt}
 	tests := []struct {
-		name string
-		hops []persistence.StageHop
-		want map[string]StageLineage
+		name       string
+		hops       []persistence.StageHop
+		want       map[string]StageLineage
+		wantBefore int
+		wantMarked []string
 	}{
-		{"dispatches no hop reached each start a chain", nil, map[string]StageLineage{"id-1": {ChainID: fresh}, "id-2": {ChainID: fresh}}},
-		{"a restored hop record hands its chain to the dispatch it reached and to no other", []persistence.StageHop{hopReachedPlan},
-			map[string]StageLineage{"id-1": {PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: "chain-hop"}, "id-2": {ChainID: fresh}}},
+		{name: "dispatches no hop reached each start a chain", want: map[string]StageLineage{"id-1": {ChainID: fresh}, "id-2": {ChainID: fresh}}},
+		{
+			name: "a restored hop record hands its chain and pass time to the dispatch it reached and to no other",
+			hops: []persistence.StageHop{hopReachedPlan}, want: map[string]StageLineage{"id-1": reachedPlan, "id-2": {ChainID: fresh}},
+			wantBefore: 1, wantMarked: []string{"id-1"},
+		},
+		{
+			name: "a restored hop record already followed by a run is neither listed nor marked again",
+			hops: []persistence.StageHop{followedByRun}, want: map[string]StageLineage{"id-1": reachedPlan, "id-2": {ChainID: fresh}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -8760,6 +8872,9 @@ func TestHandleTick_StageLineageChain(t *testing.T) {
 			PopulateStageHops(h.state, tt.hops, nil)
 			h.tracker.candidates = []domain.Issue{candidate("id-1", "S-1", "Stage-Plan"), candidate("id-2", "S-2", "Stage-Plan")}
 			h.build()
+			if before := len(RuntimeSnapshot(h.state, time.Now()).BetweenStages); before != tt.wantBefore {
+				t.Fatalf("len(BetweenStages) before the tick = %d, want %d", before, tt.wantBefore)
+			}
 
 			h.o.handleTick(context.Background())
 			h.o.state.WorkerWg.Wait()
@@ -8769,6 +8884,12 @@ func TestHandleTick_StageLineageChain(t *testing.T) {
 				entry := h.o.state.Running[id]
 				if entry == nil {
 					t.Fatalf("Running[%q] missing after handleTick", id)
+				}
+				if entry.StartedAt.IsZero() {
+					t.Fatalf("Running[%q].StartedAt is zero after handleTick", id)
+				}
+				if want.DispatchedAt.IsZero() {
+					want.DispatchedAt = entry.StartedAt
 				}
 				got := entry.StageLineage
 				if want.ChainID == fresh {
@@ -8783,6 +8904,17 @@ func TestHandleTick_StageLineageChain(t *testing.T) {
 				if got != want {
 					t.Errorf("Running[%q].StageLineage = %+v, want %+v", id, got, want)
 				}
+			}
+			if after := RuntimeSnapshot(h.state, time.Now()).BetweenStages; len(after) != 0 {
+				t.Errorf("BetweenStages after the dispatch = %+v, want none", after)
+			}
+			for _, hop := range tt.hops {
+				if !h.state.StageHops[hop.IssueID].RunDispatched {
+					t.Errorf("StageHops[%q].RunDispatched = false after the dispatch, want true", hop.IssueID)
+				}
+			}
+			if !slices.Equal(h.store.dispatchMarked, tt.wantMarked) {
+				t.Errorf("MarkStageHopDispatched calls = %q, want %q", h.store.dispatchMarked, tt.wantMarked)
 			}
 		})
 	}
@@ -10836,6 +10968,29 @@ func (s *stubStore) RecordStageHop(context.Context, persistence.StageHop) error 
 func (s *stubStore) RecordRunStageResult(context.Context, int64, string, string) error { return nil }
 
 func (s *stubStore) MarkStageHopObserved(context.Context, string) error { return nil }
+
+func (s *stubStore) MarkStageHopDispatched(_ context.Context, issueID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dispatchMarked = append(s.dispatchMarked, issueID)
+	return s.markDispatchedErr
+}
+
+func (s *stubStore) LatestAgentRuns(_ context.Context, issueIDs []string) (map[string]persistence.RunHistory, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.latestRunsCalls = append(s.latestRunsCalls, slices.Clone(issueIDs))
+	if s.latestRunsErr != nil {
+		return nil, s.latestRunsErr
+	}
+	runs := make(map[string]persistence.RunHistory)
+	for _, id := range issueIDs {
+		if run, ok := s.latestRuns[id]; ok {
+			runs[id] = run
+		}
+	}
+	return runs, nil
+}
 
 func (s *stubStore) ListStageHops(context.Context) ([]persistence.StageHop, error) {
 	return nil, nil

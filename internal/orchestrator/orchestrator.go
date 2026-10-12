@@ -43,6 +43,7 @@ type OrchestratorStore interface {
 	TokenUsageByIssue(ctx context.Context, issueID string) (persistence.IssueTokenUsage, error)
 	QueryBudgetExhaustedIssues(ctx context.Context, candidateIDs []string, maxSessions int) (map[string]int, error)
 	QueryTokenBudgetUsage(ctx context.Context, candidateIDs []string) (map[string]persistence.IssueTokenUsage, error)
+	LatestAgentRuns(ctx context.Context, issueIDs []string) (map[string]persistence.RunHistory, error)
 	UpsertReactionFingerprint(ctx context.Context, issueID, kind, fingerprint string) error
 	GetReactionFingerprint(ctx context.Context, issueID, kind string) (fingerprint string, dispatched bool, err error)
 	MarkReactionDispatched(ctx context.Context, issueID, kind string) error
@@ -67,6 +68,7 @@ type OrchestratorStore interface {
 	ListBudgetHoldNotices(ctx context.Context) ([]persistence.BudgetHoldNotice, error)
 	RecordStageHop(ctx context.Context, hop persistence.StageHop) error
 	MarkStageHopObserved(ctx context.Context, issueID string) error
+	MarkStageHopDispatched(ctx context.Context, issueID string) error
 	DeleteStageHop(ctx context.Context, issueID string) error
 	ListStageHops(ctx context.Context) ([]persistence.StageHop, error)
 	RecordRunStageResult(ctx context.Context, runID int64, targetRule, result string) error
@@ -575,6 +577,8 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	startCfg := o.workflowManager.Config()
 	o.applyWorkerConfig(startCfg)
 	o.state.ReactionMaxAttempts = o.reactionMaxAttempts(startCfg)
+	o.state.StageChains = startCfg.Dispatch.Chains()
+	o.state.HopCeiling = startCfg.Dispatch.HopCeiling()
 	o.activateReconstructedRetries()
 
 	tickTimer := time.NewTimer(0)
@@ -746,6 +750,8 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.state.MaxConcurrentAgents = cfg.Agent.MaxConcurrentAgents
 	o.state.MaxTokens = cfg.Agent.MaxTokens
 	o.state.MaxSessions = cfg.Agent.MaxSessions
+	o.state.StageChains = cfg.Dispatch.Chains()
+	o.state.HopCeiling = cfg.Dispatch.HopCeiling()
 	o.state.ReactionMaxAttempts = o.reactionMaxAttempts(cfg)
 	o.state.TokenWarningThreshold = cfg.Agent.TokenWarningThreshold()
 	o.state.MaxConcurrentByState = cfg.Agent.MaxConcurrentByState
@@ -952,6 +958,8 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 			entry.AgentKind = resolution.AgentKind
 			entry.RuleName = resolution.RuleName
 			entry.StageLineage = lineage
+			startPass(entry)
+			markStageHopDispatched(ctx, o.state, o.store, issue.ID, logging.WithIssue(o.logger, issue.ID, issue.Identifier))
 			entry.RuleSettingsApplied = attemptSettings.Settings.RuleName != ""
 			entry.ConfiguredModel = attemptSettings.Settings.Model
 			entry.ConfiguredEffort = attemptSettings.Settings.Effort
@@ -1588,6 +1596,8 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 	}
 	o.state.TokenBudgetIncomplete = freshIncomplete
 
+	o.describeBudgetHolds(ctx, cfg, prior, fresh)
+
 	for id, entry := range fresh {
 		told, wasTold := o.state.BudgetAnnounced[id]
 		if wasTold && told.Reason == entry.Reason {
@@ -1661,6 +1671,66 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 	}
 
 	o.state.BudgetExhausted = fresh
+}
+
+// describeBudgetHolds gives each record in fresh the context of the dispatch
+// its hold blocks. A record keeps the context of its prior record; one still
+// without takes a waiting hop's target, resolved from cfg, and otherwise the
+// issue's latest agent run, read for all such issues in one call. A failed
+// read leaves those records without a context until the next tick.
+func (o *Orchestrator) describeBudgetHolds(ctx context.Context, cfg config.ServiceConfig, prior, fresh map[string]*BudgetExhaustedEntry) {
+	var needRun []string
+	for id, entry := range fresh {
+		if entry.AgentKind != "" {
+			continue
+		}
+		if held := prior[id]; held != nil && held.AgentKind != "" {
+			entry.RuleName, entry.StageLineage, entry.AgentKind, entry.ConfiguredModel =
+				held.RuleName, held.StageLineage, held.AgentKind, held.ConfiguredModel
+			continue
+		}
+		if o.describeFromWaitingHop(cfg, id, entry) {
+			continue
+		}
+		needRun = append(needRun, id)
+	}
+	if len(needRun) == 0 {
+		return
+	}
+
+	slices.Sort(needRun)
+	runs, err := o.store.LatestAgentRuns(ctx, needRun)
+	if err != nil {
+		o.logger.Warn("budget hold dispatch context read failed", slog.Any("error", err))
+		return
+	}
+	for id, run := range runs {
+		entry := fresh[id]
+		entry.RuleName = run.RuleName
+		entry.StageLineage = stageLineageOf(run)
+		entry.AgentKind = run.AgentAdapter
+		entry.ConfiguredModel = run.ConfiguredModel
+	}
+}
+
+// describeFromWaitingHop sets entry's dispatch context from the target of the
+// issue's hop when no run was dispatched since and cfg still names the target
+// rule. It reports whether it did.
+func (o *Orchestrator) describeFromWaitingHop(cfg config.ServiceConfig, issueID string, entry *BudgetExhaustedEntry) bool {
+	hop := o.state.StageHops[issueID]
+	if hop == nil || hop.RunDispatched {
+		return false
+	}
+	rule, ok := cfg.Dispatch.RuleByName(hop.TargetRule)
+	if !ok {
+		return false
+	}
+	resolution := ruleResolution(rule, cfg.Dispatch, cfg.Agent.Kind, "")
+	entry.RuleName = rule.Name
+	entry.StageLineage = freshLineage(o.state, issueID, rule.Name)
+	entry.AgentKind = resolution.AgentKind
+	entry.ConfiguredModel = o.resolveAttemptSettings(cfg, resolution, "").Settings.Model
+	return true
 }
 
 // drainRunningWorkers cancels all running worker contexts and waits for

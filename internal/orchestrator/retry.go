@@ -35,6 +35,7 @@ type RetryTimerStore interface {
 	DeleteParkedIssue(ctx context.Context, issueID string) error
 	ResetHandoffAbsenceSequence(ctx context.Context, issueID string) error
 	UpsertBudgetHoldNotice(ctx context.Context, notice persistence.BudgetHoldNotice) error
+	MarkStageHopDispatched(ctx context.Context, issueID string) error
 	DeleteStageHop(ctx context.Context, issueID string) error
 }
 
@@ -185,7 +186,9 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			SessionID:           popped.SessionID,
 			ContinuationContext: popped.ContinuationContext,
 			ReactionKind:        popped.ReactionKind,
+			Continuation:        popped.Continuation,
 			AgentKind:           popped.AgentKind,
+			ConfiguredModel:     popped.ConfiguredModel,
 			RuleName:            popped.RuleName,
 			StageLineage:        popped.StageLineage,
 			RuleSettingsApplied: popped.RuleSettingsApplied,
@@ -301,6 +304,10 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			UnmeasuredSessions: unmeasuredSessions,
 			StoppedInFlight:    stoppedInFlight,
 			ExhaustedAt:        at,
+			RuleName:           popped.RuleName,
+			StageLineage:       popped.StageLineage,
+			AgentKind:          popped.AgentKind,
+			ConfiguredModel:    popped.ConfiguredModel,
 		}
 		delete(state.Claimed, issueID)
 		if !blocked {
@@ -737,12 +744,15 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		entry.AgentKind = agentKind
 		entry.RuleName = ruleName
 		entry.StageLineage = lineage
+		startPass(entry)
+		markStageHopDispatched(ctx, state, params.Store, issueID, log)
 		entry.RuleSettingsApplied = attemptSettings.Settings.RuleName != ""
 		entry.ConfiguredModel = attemptSettings.Settings.Model
 		entry.ConfiguredEffort = attemptSettings.Settings.Effort
 		entry.TemplateID = templateID
 		entry.ContinuationContext = popped.ContinuationContext
 		entry.ReactionKind = popped.ReactionKind
+		entry.Continuation = popped.Continuation
 		entry.UsageArrival, entry.UsageAttribution = attemptSettings.UsageArrival, attemptSettings.UsageAttribution
 		freezeIssueTokenBaseline(ctx, state, issueID, params.Store, params.Logger)
 	}
@@ -809,9 +819,11 @@ func retryEntryRow(entry *RetryEntry) persistence.RetryEntry {
 		AgentKind:   entry.AgentKind,
 		Trigger:     entry.Trigger,
 
+		ConfiguredModel:      entry.ConfiguredModel,
 		StagePrevious:        entry.StageLineage.PreviousRule,
 		StagePreviousOutcome: entry.StageLineage.PreviousOutcome,
 		ChainID:              entry.StageLineage.ChainID,
+		DispatchedAt:         formatDispatchedAt(entry.StageLineage.DispatchedAt),
 	}
 }
 

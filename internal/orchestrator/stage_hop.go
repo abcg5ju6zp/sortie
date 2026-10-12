@@ -63,6 +63,12 @@ type stageHopDeleter interface {
 	DeleteStageHop(ctx context.Context, issueID string) error
 }
 
+// stageHopDispatchMarker is the one store method [markStageHopDispatched]
+// needs.
+type stageHopDispatchMarker interface {
+	MarkStageHopDispatched(ctx context.Context, issueID string) error
+}
+
 // hopRouteOf returns the rule and stage label of the issue's latest hop,
 // or the zero [HopRoute] when it has no hop record.
 func hopRouteOf(state *State, id string) HopRoute {
@@ -74,14 +80,14 @@ func hopRouteOf(state *State, id string) HopRoute {
 }
 
 // freshLineage returns the lineage a dispatch of ruleName inherits when it
-// selects the target of the issue's latest hop, and the zero lineage for
-// any other rule or an issue without a hop record.
+// selects the target of the issue's latest hop, pass dispatch time included,
+// and the zero lineage for any other rule or an issue without a hop record.
 func freshLineage(state *State, id, ruleName string) StageLineage {
 	hop := state.StageHops[id]
 	if hop == nil || hop.TargetRule != ruleName {
 		return StageLineage{}
 	}
-	return StageLineage{PreviousRule: hop.SourceRule, PreviousOutcome: hop.PreviousOutcome, ChainID: hop.ChainID}
+	return StageLineage{PreviousRule: hop.SourceRule, PreviousOutcome: hop.PreviousOutcome, ChainID: hop.ChainID, DispatchedAt: hop.DispatchedAt}
 }
 
 // withChainID starts a chain for a lineage that carries none.
@@ -92,6 +98,14 @@ func withChainID(lineage StageLineage) StageLineage {
 		lineage.ChainID = rand.Text()
 	}
 	return lineage
+}
+
+// startPass dates the pass of a freshly dispatched entry by the entry's own
+// start when no earlier run of the pass did.
+func startPass(entry *RunningEntry) {
+	if entry.StageLineage.DispatchedAt.IsZero() {
+		entry.StageLineage.DispatchedAt = entry.StartedAt
+	}
 }
 
 // stageCurrent returns ruleName when the rule carries a stage label, and
@@ -121,6 +135,21 @@ func resetStageHop(ctx context.Context, state *State, store stageHopDeleter, iss
 		slog.String("trigger", trigger),
 		slog.Int("hop_count", hop.Count),
 	)
+}
+
+// markStageHopDispatched records that a run of the issue was dispatched after
+// its hop, in memory and in the store, and does nothing when the issue has no
+// record or the record already says so. A failed write leaves the runtime
+// value standing. log must already carry issue_id and issue_identifier.
+func markStageHopDispatched(ctx context.Context, state *State, store stageHopDispatchMarker, issueID string, log *slog.Logger) {
+	hop := state.StageHops[issueID]
+	if hop == nil || hop.RunDispatched {
+		return
+	}
+	hop.RunDispatched = true
+	if err := store.MarkStageHopDispatched(ctx, issueID); err != nil {
+		log.Error("failed to persist stage hop dispatch", slog.Any("error", err))
+	}
 }
 
 // advanceStage makes the automatic hop of a successful run: it adds the
@@ -204,6 +233,9 @@ func advanceStage(ctx context.Context, state *State, entry *RunningEntry, result
 		SourceDispatchID: entry.DispatchID,
 		HoppedAt:         now,
 		ChainID:          entry.StageLineage.ChainID,
+		DisplayID:        entry.Issue.DisplayID,
+		IssueIdentity:    IssueIdentity{Title: entry.Issue.Title, URL: entry.Issue.URL},
+		DispatchedAt:     entry.StageLineage.DispatchedAt,
 	}
 	row := persistence.StageHop{
 		IssueID:          issueID,
@@ -216,6 +248,10 @@ func advanceStage(ctx context.Context, state *State, entry *RunningEntry, result
 		SourceDispatchID: entry.DispatchID,
 		HoppedAt:         now.Format(time.RFC3339),
 		ChainID:          entry.StageLineage.ChainID,
+		DisplayID:        entry.Issue.DisplayID,
+		IssueTitle:       entry.Issue.Title,
+		IssueURL:         entry.Issue.URL,
+		DispatchedAt:     formatDispatchedAt(entry.StageLineage.DispatchedAt),
 	}
 	if err := params.Store.RecordStageHop(ctx, row); err != nil {
 		log.Error("failed to persist stage hop", slog.Any("error", err))
@@ -443,6 +479,10 @@ func PopulateStageHops(state *State, rows []persistence.StageHop, log *slog.Logg
 			TargetObserved:   row.TargetObserved,
 			HoppedAt:         hoppedAt,
 			ChainID:          row.ChainID,
+			DisplayID:        row.DisplayID,
+			IssueIdentity:    IssueIdentity{Title: row.IssueTitle, URL: row.IssueURL},
+			DispatchedAt:     parseDispatchedAt(row.DispatchedAt),
+			RunDispatched:    row.RunDispatched,
 		}
 	}
 }

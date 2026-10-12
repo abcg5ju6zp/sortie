@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -989,6 +990,63 @@ func TestRuntimeSnapshot_ConfiguredSettingsBesideTheReportedModel(t *testing.T) 
 	}
 }
 
+func TestRuntimeSnapshot_StagePosition(t *testing.T) {
+	t.Parallel()
+
+	chains := [][]string{{"specify", "implement"}, {"triage", "implement"}}
+	tests := []struct {
+		name     string
+		chains   [][]string
+		rule     string
+		previous string
+		hops     int
+		want     *SnapshotStagePosition
+	}{
+		{"no chains configured", nil, "specify", "", 0, nil},
+		{"first stage of the first chain", chains, "specify", "", 0,
+			&SnapshotStagePosition{Chain: chains[0], Current: "specify", HopCeiling: 4}},
+		{"previous rule selects the chain that lists it before the rule", chains, "implement", "triage", 2,
+			&SnapshotStagePosition{Chain: chains[1], Current: "implement", HopCount: 2, HopCeiling: 4}},
+		{"previous rule on no chain falls back to the first chain holding the rule", chains, "implement", "gone", 1,
+			&SnapshotStagePosition{Chain: chains[0], Current: "implement", HopCount: 1, HopCeiling: 4}},
+		{"rule on no chain", chains, "review", "", 0, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := NewState(5000, 4, 0, nil, AgentTotals{})
+			state.StageChains, state.HopCeiling = tt.chains, 4
+			lineage := StageLineage{PreviousRule: tt.previous}
+			state.Running["run"] = &RunningEntry{Issue: domain.Issue{ID: "run"}, RuleName: tt.rule, StageLineage: lineage}
+			state.RetryAttempts["retry"] = &RetryEntry{IssueID: "retry", RuleName: tt.rule, StageLineage: lineage}
+			state.BudgetExhausted["budget"] = &BudgetExhaustedEntry{RuleName: tt.rule, StageLineage: lineage}
+			if tt.hops > 0 {
+				for _, id := range []string{"run", "retry", "budget"} {
+					state.StageHops[id] = &StageHopEntry{Count: tt.hops}
+				}
+			}
+
+			result := RuntimeSnapshot(state, time.Time{})
+
+			if len(result.Running) != 1 || len(result.Retrying) != 1 || len(result.BudgetExhausted) != 1 {
+				t.Fatalf("RuntimeSnapshot rows = %d running, %d retrying, %d budget, want 1, 1, 1",
+					len(result.Running), len(result.Retrying), len(result.BudgetExhausted))
+			}
+			for kind, got := range map[string]*SnapshotStagePosition{
+				"Running":         result.Running[0].StagePosition,
+				"Retrying":        result.Retrying[0].StagePosition,
+				"BudgetExhausted": result.BudgetExhausted[0].StagePosition,
+			} {
+				if !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("%s[0].StagePosition (chains %v, rule %q, previous %q) = %+v, want %+v", kind, tt.chains, tt.rule, tt.previous, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
 func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -1001,6 +1059,7 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 			ID: "ISS-1", Title: "rotate " + value, Labels: []string{"ops", "leak-" + value},
 			IssueType: "type-" + value, State: "state-" + value,
 		},
+		Continuation: ContinuationTarget{PRNumber: 7, Owner: "acme", Repo: "repo-" + value, Attempt: 1},
 	}
 	state.RetryAttempts["ISS-2"] = &RetryEntry{
 		IssueID: "ISS-2",
@@ -1014,6 +1073,9 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	}
 	state.Parked["ISS-3"] = &ParkedEntry{
 		Identifier: "PROJ-3", IssueIdentity: IssueIdentity{Title: "rotate " + value},
+	}
+	state.StageHops["ISS-6"] = &StageHopEntry{
+		Identifier: "PROJ-6", IssueIdentity: IssueIdentity{Title: "rotate " + value, URL: "https://forge.example.com/" + value},
 	}
 	state.PendingReactions[ReactionKey("ISS-4", ReactionKindCI)] = &PendingReaction{
 		IssueID:        "ISS-4",
@@ -1043,6 +1105,9 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	if want := "state-" + redact.Marker; running.State != want {
 		t.Errorf("Running[0].State = %q, want %q", running.State, want)
 	}
+	if want := "acme/repo-" + redact.Marker; running.Continuation == nil || running.Continuation.Repository != want {
+		t.Errorf("Running[0].Continuation = %+v, want repository %q", running.Continuation, want)
+	}
 	if want := "rotate " + redact.Marker; retrying.IssueTitle != want {
 		t.Errorf("Retrying[0].IssueTitle = %q, want %q", retrying.IssueTitle, want)
 	}
@@ -1060,6 +1125,12 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	}
 	if want := "rotate " + redact.Marker; result.Parked[0].IssueTitle != want {
 		t.Errorf("Parked[0].IssueTitle = %q, want %q", result.Parked[0].IssueTitle, want)
+	}
+	if len(result.BetweenStages) != 1 {
+		t.Fatalf("len(BetweenStages) = %d, want 1", len(result.BetweenStages))
+	}
+	if hop, wantTitle, wantURL := result.BetweenStages[0], "rotate "+redact.Marker, "https://forge.example.com/"+redact.Marker; hop.IssueTitle != wantTitle || hop.IssueURL != wantURL {
+		t.Errorf("BetweenStages[0] title, url = %q, %q, want %q, %q", hop.IssueTitle, hop.IssueURL, wantTitle, wantURL)
 	}
 	if len(result.PendingReactions) != 1 {
 		t.Fatalf("len(PendingReactions) = %d, want 1", len(result.PendingReactions))

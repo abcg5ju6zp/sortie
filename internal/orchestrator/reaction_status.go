@@ -82,6 +82,13 @@ func pullRequestOf(entry *PendingReaction) pullRequestRef {
 	}
 }
 
+// continuationTargetOf returns the target of the continuation that fixes the
+// pull request entry watches, on the given try of its reaction.
+func continuationTargetOf(entry *PendingReaction, attempt int) ContinuationTarget {
+	pr := pullRequestOf(entry)
+	return ContinuationTarget{PRNumber: pr.Number, Owner: pr.Owner, Repo: pr.Repo, Attempt: attempt}
+}
+
 // watchWindowStart returns when entry's watch window began: its last
 // retry-slot deferral, or its creation.
 func watchWindowStart(entry *PendingReaction) time.Time {
