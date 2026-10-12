@@ -52,6 +52,10 @@ type statsReport struct {
 	ByModel      []statsGroup      `json:"by_model"`
 	ByChain      []statsChainGroup `json:"by_chain"`
 	SelfReview   *statsSelfReview  `json:"self_review"`
+
+	// ratesConfigured lets the text renderer tell "no token_rates" from
+	// "no run was priced"; it stays out of the JSON report.
+	ratesConfigured bool
 }
 
 // statsSummary reports the report-wide figures. MeanTurnsSucceeded,
@@ -421,7 +425,9 @@ func (a *statsAggregator) add(row persistence.RunStatsRow) error {
 				a.total.succeededMeasured++
 			}
 
-			if a.ratesConfigured {
+			// A ci_failed row records a CI verdict and carries no agent
+			// kind, so it has no rate to look up and is not an unpriced run.
+			if a.ratesConfigured && row.Status != "ci_failed" {
 				cost := priceOf(row, a.rates)
 				if cost == nil {
 					a.total.costUnpricedRuns++
@@ -554,6 +560,8 @@ func (a *statsAggregator) report(
 		ByTemplate:   []statsGroup{},
 		ByModel:      []statsGroup{},
 		ByChain:      []statsChainGroup{},
+
+		ratesConfigured: a.ratesConfigured,
 	}
 	if since != nil {
 		rpt.Since = new(since.UTC().Format(time.RFC3339))
@@ -989,7 +997,7 @@ func renderStatsText(stdout, stderr io.Writer, report statsReport) {
 		case report.Summary.CostUSD != nil:
 			fmt.Fprintf(stdout, "cost (measured runs)    %s   per succeeded run %s\n", //nolint:errcheck // stdout write failure is unrecoverable
 				server.FormatCost(*report.Summary.CostUSD), formatCostDash(report.Summary.CostPerSucceededRunUSD))
-		case report.Summary.CostUnpricedRuns == 0 && report.Summary.Tokens != nil:
+		case !report.ratesConfigured && report.Summary.Tokens != nil:
 			fmt.Fprintln(stdout, //nolint:errcheck // stdout write failure is unrecoverable
 				"cost                    not estimated; set token_rates in the workflow to price these runs")
 		default:

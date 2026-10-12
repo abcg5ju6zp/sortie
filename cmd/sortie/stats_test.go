@@ -21,8 +21,6 @@ import (
 	"github.com/sortie-ai/sortie/internal/server"
 )
 
-// fullCaps reports every optional run_history column group present, so
-// the "full" projection and every summary and group figure are computed.
 var fullCaps = persistence.RunHistoryCapabilities{
 	HasTurnsCompleted:   true,
 	HasReviewMetadata:   true,
@@ -31,12 +29,8 @@ var fullCaps = persistence.RunHistoryCapabilities{
 	HasTokenMeasurement: true,
 }
 
-// fixedNow is a deterministic generatedAt value for aggregator-level
-// tests that call statsAggregator.report directly.
 var fixedNow = time.Date(2026, 8, 7, 9, 15, 0, 0, time.UTC)
 
-// rangeFloats returns the ascending integers from lo to hi inclusive, as
-// float64, for the worked nearest-rank percentile examples.
 func rangeFloats(lo, hi int) []float64 {
 	out := make([]float64, 0, hi-lo+1)
 	for i := lo; i <= hi; i++ {
@@ -45,8 +39,6 @@ func rangeFloats(lo, hi int) []float64 {
 	return out
 }
 
-// addRows folds each row into agg via statsAggregator.add, failing the
-// test immediately on an unexpected error (add always returns nil).
 func addRows(t *testing.T, agg *statsAggregator, rows ...persistence.RunStatsRow) {
 	t.Helper()
 	for _, r := range rows {
@@ -56,8 +48,6 @@ func addRows(t *testing.T, agg *statsAggregator, rows ...persistence.RunStatsRow
 	}
 }
 
-// findGroup returns the statsGroup named name in groups, failing the
-// test when no such group exists.
 func findGroup(t *testing.T, groups []statsGroup, name string) statsGroup {
 	t.Helper()
 	for _, g := range groups {
@@ -367,6 +357,9 @@ func TestStatsGroupDisclosure(t *testing.T) {
 	if report.Summary.ZeroDurationRuns != 1 {
 		t.Errorf("Summary.ZeroDurationRuns = %d, want 1", report.Summary.ZeroDurationRuns)
 	}
+	if report.Summary.CostUnpricedRuns != 0 {
+		t.Errorf("Summary.CostUnpricedRuns = %d, want 0 (a ci_failed row records a CI verdict, not an agent session)", report.Summary.CostUnpricedRuns)
+	}
 }
 
 func TestStatsCostDerivation(t *testing.T) {
@@ -455,9 +448,7 @@ func TestStatsCostDerivation(t *testing.T) {
 			t.Errorf("statsFootnotes = %v, want an unpriced-run footnote", footnotes)
 		}
 
-		var stdout, stderr bytes.Buffer
-		renderStatsText(&stdout, &stderr, report)
-		out := stdout.String()
+		out := renderText(report)
 		if !strings.Contains(out, "cost (measured runs)    -   per succeeded run -") {
 			t.Errorf("renderStatsText stdout = %q, want the dash arm", out)
 		}
@@ -487,9 +478,7 @@ func TestStatsCostDerivation(t *testing.T) {
 			t.Errorf("statsFootnotes = %v, want none (the cost column is already dropped)", footnotes)
 		}
 
-		var stdout, stderr bytes.Buffer
-		renderStatsText(&stdout, &stderr, report)
-		out := stdout.String()
+		out := renderText(report)
 		if !strings.Contains(out, "not estimated; set token_rates in the workflow") {
 			t.Errorf("renderStatsText stdout = %q, want the not-estimated line", out)
 		}
@@ -514,14 +503,36 @@ func TestStatsCostDerivation(t *testing.T) {
 			t.Errorf("Summary.CostUSD = %v, want nil (no measured run in range)", *report.Summary.CostUSD)
 		}
 
-		var stdout, stderr bytes.Buffer
-		renderStatsText(&stdout, &stderr, report)
-		out := stdout.String()
+		out := renderText(report)
 		if !strings.Contains(out, "cost (measured runs)    -   per succeeded run -") {
 			t.Errorf("renderStatsText stdout = %q, want the dash arm, not the token_rates remedy", out)
 		}
 		if strings.Contains(out, "not estimated; set token_rates") {
 			t.Errorf("renderStatsText stdout = %q, want no token_rates remedy naming a cause that is not the actual one", out)
+		}
+	})
+
+	t.Run("a range of only ci_failed rows under a complete rate entry renders the dash line without a skip note", func(t *testing.T) {
+		t.Parallel()
+
+		rates := server.TokenRates{"claude-code": server.TokenRateConfig{InputPerMtok: new(float64(10)), OutputPerMtok: new(float64(0))}}
+		agg := newStatsAggregator(fullCaps, rates)
+		addRows(t, agg, persistence.RunStatsRow{
+			Status:    "ci_failed",
+			StartedAt: "2026-01-01T00:00:00Z", CompletedAt: "2026-01-01T00:00:00Z",
+			TokensMeasured: true,
+		})
+
+		out := renderText(agg.report(fixedNow, "/wf", "/db", nil, nil, nil))
+
+		if !strings.Contains(out, "cost (measured runs)    -   per succeeded run -") {
+			t.Errorf("renderStatsText stdout = %q, want the dash arm", out)
+		}
+		if strings.Contains(out, "not estimated; set token_rates") {
+			t.Errorf("renderStatsText stdout = %q, want no token_rates remedy under configured rates", out)
+		}
+		if strings.Contains(out, "the cost figures skip") {
+			t.Errorf("renderStatsText stdout = %q, want no unpriced-run note for a ci_failed row", out)
 		}
 	})
 
@@ -540,9 +551,7 @@ func TestStatsCostDerivation(t *testing.T) {
 
 		report := agg.report(fixedNow, "/wf", "/db", nil, nil, nil)
 
-		var stdout, stderr bytes.Buffer
-		renderStatsText(&stdout, &stderr, report)
-		out := stdout.String()
+		out := renderText(report)
 		if !strings.Contains(out, "not estimated; set token_rates in the workflow") {
 			t.Errorf("renderStatsText stdout = %q, want the token_rates remedy for a range with a measured run", out)
 		}
@@ -557,9 +566,7 @@ func TestStatsCostDerivation(t *testing.T) {
 
 		report := agg.report(fixedNow, "/wf", "/db", nil, nil, nil)
 
-		var stdout, stderr bytes.Buffer
-		renderStatsText(&stdout, &stderr, report)
-		out := stdout.String()
+		out := renderText(report)
 		if !strings.Contains(out, "cost (measured runs)    $10.00   per succeeded run $10.00") {
 			t.Errorf("renderStatsText stdout = %q, want the priced numbers line", out)
 		}
