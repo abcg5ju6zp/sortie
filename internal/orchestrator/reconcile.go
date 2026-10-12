@@ -433,24 +433,8 @@ func reconcileStalled(state *State, params ReconcileParams, log *slog.Logger, ct
 				continue
 			}
 
-			pEntry := persistence.RetryEntry{
-				IssueID:    retryEntry.IssueID,
-				Identifier: retryEntry.Identifier,
-				DisplayID:  retryEntry.DisplayID,
-				IssueTitle: retryEntry.IssueIdentity.Title,
-				IssueURL:   retryEntry.IssueIdentity.URL,
-				Attempt:    retryEntry.Attempt,
-				DueAtMs:    retryEntry.DueAtMS,
-				Error:      stringPtr(retryEntry.Error),
-				RuleName:   retryEntry.RuleName,
-				TemplateID: retryEntry.TemplateID,
-				AgentKind:  retryEntry.AgentKind,
-				Trigger:    retryEntry.Trigger,
-
-				StagePrevious:        retryEntry.StageLineage.PreviousRule,
-				StagePreviousOutcome: retryEntry.StageLineage.PreviousOutcome,
-				ChainID:              retryEntry.StageLineage.ChainID,
-			}
+			pEntry := retryEntryRow(retryEntry)
+			pEntry.SessionID = nil
 			if err := params.Store.SaveRetryEntry(ctx, pEntry); err != nil {
 				entryLog.Error("failed to persist stall retry entry",
 					slog.Any("error", err),

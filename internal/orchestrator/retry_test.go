@@ -3239,15 +3239,16 @@ func TestHandleRetryTimer_FrozenFieldsPersistedOnReschedule(t *testing.T) {
 		RuleName:   wantRuleName,
 		TemplateID: wantTemplateID,
 
-		StageLineage: StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: "chain-1"},
+		StageLineage:  StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: "chain-1"},
+		IssueIdentity: IssueIdentity{Title: "held title", URL: "https://example.test/held"},
 	}
 	state.Claimed[id] = struct{}{}
 	state.Running["OTHER"] = &RunningEntry{Identifier: "OTHER"}
 
 	store := &mockRetryStore{}
-	tracker := &mockRetryTracker{
-		fetchedIssue: candidateIssue(id, id, "To Do"),
-	}
+	fired := candidateIssue(id, id, "To Do")
+	fired.URL, fired.IssueType, fired.Labels = "https://example.test/fired", "Bug", []string{"a", "b"}
+	tracker := &mockRetryTracker{fetchedIssue: fired}
 	params := defaultRetryParams(t, store, tracker)
 
 	HandleRetryTimer(state, id, params)
@@ -3267,6 +3268,12 @@ func TestHandleRetryTimer_FrozenFieldsPersistedOnReschedule(t *testing.T) {
 	}
 	if saved.StagePrevious != "specify" || saved.StagePreviousOutcome != "succeeded" || saved.ChainID != "chain-1" {
 		t.Errorf("saved RetryEntry previous, outcome, chain = %q, %q, %q, want %q, %q, %q", saved.StagePrevious, saved.StagePreviousOutcome, saved.ChainID, "specify", "succeeded", "chain-1")
+	}
+	if saved.IssueTitle != "held title" || saved.IssueURL != "https://example.test/held" {
+		t.Errorf("saved RetryEntry title, url = %q, %q, want the held %q, %q", saved.IssueTitle, saved.IssueURL, "held title", "https://example.test/held")
+	}
+	if saved.IssueType != "Bug" || !slices.Equal(saved.IssueLabels, []string{"a", "b"}) || saved.IssueState != "To Do" {
+		t.Errorf("saved RetryEntry type, labels, state = %q, %q, %q, want %q, %q, %q", saved.IssueType, saved.IssueLabels, saved.IssueState, "Bug", []string{"a", "b"}, "To Do")
 	}
 	if entry, ok := state.RetryAttempts[id]; ok && entry.TimerHandle != nil {
 		entry.TimerHandle.Stop()

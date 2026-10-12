@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -45,10 +46,16 @@ func PopulateRetries(state *State, entries []persistence.PendingRetry, log *slog
 		}
 
 		state.RetryAttempts[e.IssueID] = &RetryEntry{
-			IssueID:          e.IssueID,
-			Identifier:       e.Identifier,
-			DisplayID:        e.DisplayID,
-			IssueIdentity:    IssueIdentity{Title: e.IssueTitle, URL: e.IssueURL},
+			IssueID:    e.IssueID,
+			Identifier: e.Identifier,
+			DisplayID:  e.DisplayID,
+			IssueIdentity: IssueIdentity{
+				Title:     e.IssueTitle,
+				URL:       e.IssueURL,
+				IssueType: e.IssueType,
+				Labels:    slices.Clone(e.IssueLabels),
+				State:     e.IssueState,
+			},
 			SessionID:        sessionID,
 			Attempt:          e.Attempt,
 			DueAtMS:          e.DueAtMs,
@@ -295,7 +302,8 @@ func stageLineageOf(run persistence.RunHistory) StageLineage {
 	return StageLineage{PreviousRule: run.StagePrevious, PreviousOutcome: run.StagePreviousOutcome, ChainID: run.ChainID}
 }
 
-// issueIdentityOfRun returns the identity run recorded at dispatch.
+// issueIdentityOfRun returns the identity run recorded at dispatch: a title
+// and link with nil Labels, because run history keeps no other fact.
 func issueIdentityOfRun(run persistence.RunHistory) IssueIdentity {
 	return IssueIdentity{Title: run.IssueTitle, URL: run.IssueURL}
 }

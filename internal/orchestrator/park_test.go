@@ -447,6 +447,10 @@ func TestRefreshParkedIssuesNonCandidateStateRead(t *testing.T) {
 	})
 }
 
+func sameTitleAndURL(a, b IssueIdentity) bool {
+	return a.Title == b.Title && a.URL == b.URL
+}
+
 func TestRefreshParkedIssuesIdentityBackfill(t *testing.T) {
 	t.Parallel()
 
@@ -537,7 +541,7 @@ func TestRefreshParkedIssuesIdentityBackfill(t *testing.T) {
 			if parked != tt.wantParked {
 				t.Fatalf("parked after refreshParkedIssues = %v, want %v", parked, tt.wantParked)
 			}
-			if parked && entry.IssueIdentity != tt.wantIdentity {
+			if parked && !sameTitleAndURL(entry.IssueIdentity, tt.wantIdentity) {
 				t.Errorf("parked IssueIdentity = %+v, want %+v", entry.IssueIdentity, tt.wantIdentity)
 			}
 			if !slices.Equal(tracker.fetchIssueByIDCalls, tt.wantReads) {
@@ -547,7 +551,7 @@ func TestRefreshParkedIssuesIdentityBackfill(t *testing.T) {
 			for _, row := range store.parkedIssues {
 				rows = append(rows, IssueIdentity{Title: row.IssueTitle, URL: row.IssueURL})
 			}
-			if !slices.Equal(rows, tt.wantRows) {
+			if !slices.EqualFunc(rows, tt.wantRows, sameTitleAndURL) {
 				t.Errorf("upserted park identities = %+v, want %+v", rows, tt.wantRows)
 			}
 		})

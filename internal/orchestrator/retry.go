@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -420,11 +421,12 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	}
 
 	// reschedule reads popped when it runs, so every later reschedule of
-	// this fire carries the identity. A read already held is never replaced.
-	if popped.IssueIdentity == (IssueIdentity{}) {
-		popped.IssueIdentity = issueIdentityOf(issue)
+	// this fire carries the identity. A title or link already held is never
+	// replaced.
+	if popped.IssueIdentity.isZero() {
 		popped.DisplayID = issue.DisplayID
 	}
+	popped.IssueIdentity = popped.IssueIdentity.filledFrom(issueIdentityOf(issue))
 
 	// A person's label edit can pass through zero state labels for a
 	// moment, and a released retry loses its session and continuation
@@ -786,6 +788,33 @@ func isStaleRetryTimer(entry *RetryEntry) bool {
 	return false
 }
 
+// retryEntryRow returns the persisted form of entry. Labels are copied and
+// a nil Labels stays nil.
+func retryEntryRow(entry *RetryEntry) persistence.RetryEntry {
+	return persistence.RetryEntry{
+		IssueID:     entry.IssueID,
+		Identifier:  entry.Identifier,
+		DisplayID:   entry.DisplayID,
+		IssueTitle:  entry.IssueIdentity.Title,
+		IssueURL:    entry.IssueIdentity.URL,
+		IssueType:   entry.IssueIdentity.IssueType,
+		IssueLabels: slices.Clone(entry.IssueIdentity.Labels),
+		IssueState:  entry.IssueIdentity.State,
+		Attempt:     entry.Attempt,
+		DueAtMs:     entry.DueAtMS,
+		Error:       stringPtr(entry.Error),
+		SessionID:   stringPtr(entry.SessionID),
+		RuleName:    entry.RuleName,
+		TemplateID:  entry.TemplateID,
+		AgentKind:   entry.AgentKind,
+		Trigger:     entry.Trigger,
+
+		StagePrevious:        entry.StageLineage.PreviousRule,
+		StagePreviousOutcome: entry.StageLineage.PreviousOutcome,
+		ChainID:              entry.StageLineage.ChainID,
+	}
+}
+
 // persistRetryEntry saves the in-memory retry entry for issueID to SQLite.
 // Errors are logged but do not block in-memory state transitions.
 func persistRetryEntry(ctx context.Context, log *slog.Logger, store RetryTimerStore, state *State, issueID string) {
@@ -794,25 +823,7 @@ func persistRetryEntry(ctx context.Context, log *slog.Logger, store RetryTimerSt
 		return
 	}
 
-	pEntry := persistence.RetryEntry{
-		IssueID:    retryEntry.IssueID,
-		Identifier: retryEntry.Identifier,
-		DisplayID:  retryEntry.DisplayID,
-		IssueTitle: retryEntry.IssueIdentity.Title,
-		IssueURL:   retryEntry.IssueIdentity.URL,
-		Attempt:    retryEntry.Attempt,
-		DueAtMs:    retryEntry.DueAtMS,
-		Error:      stringPtr(retryEntry.Error),
-		SessionID:  stringPtr(retryEntry.SessionID),
-		RuleName:   retryEntry.RuleName,
-		TemplateID: retryEntry.TemplateID,
-		AgentKind:  retryEntry.AgentKind,
-		Trigger:    retryEntry.Trigger,
-
-		StagePrevious:        retryEntry.StageLineage.PreviousRule,
-		StagePreviousOutcome: retryEntry.StageLineage.PreviousOutcome,
-		ChainID:              retryEntry.StageLineage.ChainID,
-	}
+	pEntry := retryEntryRow(retryEntry)
 	if err := store.SaveRetryEntry(ctx, pEntry); err != nil {
 		log.Error("failed to persist retry entry",
 			slog.Any("error", err),

@@ -504,8 +504,8 @@ type PendingReaction struct {
 
 	DisplayID string
 
-	// IssueIdentity is the issue's title and link as read when the worker
-	// exited, or as restored from run history.
+	// IssueIdentity is the issue as read when the worker exited; restored
+	// from run history it holds the title and link alone, with nil Labels.
 	IssueIdentity IssueIdentity
 
 	// Attempt is the overall run attempt number from the completed worker.
@@ -857,22 +857,72 @@ type ParkedEntry struct {
 }
 
 // IssueIdentity names an issue to a person beside its key: the tracker's
-// title and web link as the orchestrator read them. The zero value holds no
-// read of the issue.
+// title, web link, issue type, labels, and state as the orchestrator read
+// them. The zero value holds no read of the issue. Labels is nil while the
+// labels are unread and an empty non-nil slice when a read found none.
 type IssueIdentity struct {
-	Title string
-	URL   string
+	Title     string
+	URL       string
+	IssueType string
+	Labels    []string
+	State     string
 }
 
-// issueIdentityOf returns the identity issue carries, unmasked.
+// issueIdentityOf returns the identity issue carries, unmasked. Labels is
+// a new non-nil slice.
 func issueIdentityOf(issue domain.Issue) IssueIdentity {
-	return IssueIdentity{Title: issue.Title, URL: issue.URL}
+	labels := make([]string, len(issue.Labels))
+	copy(labels, issue.Labels)
+	return IssueIdentity{
+		Title:     issue.Title,
+		URL:       issue.URL,
+		IssueType: issue.IssueType,
+		Labels:    labels,
+		State:     issue.State,
+	}
+}
+
+// isZero reports whether id holds no read of its issue.
+func (id IssueIdentity) isZero() bool {
+	return id.Title == "" && id.URL == "" && id.IssueType == "" && id.Labels == nil && id.State == ""
+}
+
+// holdsPartialRead reports whether id names its issue by title or link but
+// never read its labels: an identity restored from a retry row or a run
+// history row written before those facts were kept.
+func (id IssueIdentity) holdsPartialRead() bool {
+	return (id.Title != "" || id.URL != "") && id.Labels == nil
+}
+
+// filledFrom returns id completed by read. A zero id becomes read; a
+// partial read takes the type, labels, and state of read and keeps its
+// title and link, so a held title or link is never replaced; any other id
+// is returned unchanged.
+func (id IssueIdentity) filledFrom(read IssueIdentity) IssueIdentity {
+	switch {
+	case id.isZero():
+		return read
+	case id.holdsPartialRead():
+		id.IssueType = read.IssueType
+		id.Labels = read.Labels
+		id.State = read.State
+	}
+	return id
 }
 
 // maskedIdentity returns id with every secret registered for redaction
-// replaced by its marker.
+// replaced by its marker. A nil Labels stays nil.
 func maskedIdentity(id IssueIdentity) IssueIdentity {
-	return IssueIdentity{Title: redact.Mask(id.Title), URL: redact.Mask(id.URL)}
+	masked := IssueIdentity{
+		Title:     redact.Mask(id.Title),
+		URL:       redact.Mask(id.URL),
+		IssueType: redact.Mask(id.IssueType),
+		State:     redact.Mask(id.State),
+	}
+	if id.Labels != nil {
+		masked.Labels = maskedLabels(id.Labels)
+	}
+	return masked
 }
 
 // maskedLabels returns a new slice of labels with every registered secret
@@ -1202,9 +1252,9 @@ type SnapshotIssueUsage struct {
 }
 
 // SnapshotRunningEntry is a read-only view of a running session, produced
-// by [RuntimeSnapshot]. IssueTitle, IssueURL, and IssueLabels are masked,
-// and IssueLabels is never nil. IssueUsage is nil exactly when no usage read
-// has succeeded for the run.
+// by [RuntimeSnapshot]. IssueTitle, IssueURL, IssueType, IssueLabels, and
+// State are masked, and IssueLabels is never nil. IssueUsage is nil exactly
+// when no usage read has succeeded for the run.
 type SnapshotRunningEntry struct {
 	IssueID             string                    `json:"issue_id"`
 	Identifier          string                    `json:"issue_identifier"`
@@ -1212,6 +1262,7 @@ type SnapshotRunningEntry struct {
 	IssueTitle          string                    `json:"issue_title,omitempty"`
 	IssueURL            string                    `json:"issue_url,omitempty"`
 	IssueLabels         []string                  `json:"issue_labels"`
+	IssueType           string                    `json:"issue_type,omitempty"`
 	State               string                    `json:"state"`
 	SessionID           string                    `json:"session_id"`
 	TurnCount           int                       `json:"turn_count"`
@@ -1249,13 +1300,18 @@ type SnapshotRunningEntry struct {
 }
 
 // SnapshotRetryEntry is a read-only view of a pending retry, produced by
-// [RuntimeSnapshot]. IssueTitle and IssueURL are masked.
+// [RuntimeSnapshot]. IssueTitle, IssueURL, IssueType, IssueLabels, and State
+// are masked. IssueLabels is nil exactly when the entry holds no read of the
+// labels.
 type SnapshotRetryEntry struct {
 	IssueID           string       `json:"issue_id"`
 	Identifier        string       `json:"issue_identifier"`
 	DisplayID         string       `json:"display_identifier,omitempty"`
 	IssueTitle        string       `json:"issue_title,omitempty"`
 	IssueURL          string       `json:"issue_url,omitempty"`
+	IssueType         string       `json:"issue_type,omitempty"`
+	IssueLabels       []string     `json:"issue_labels,omitzero"`
+	State             string       `json:"state,omitempty"`
 	Attempt           int          `json:"attempt"`
 	DueAtMS           int64        `json:"due_at_ms"`
 	Error             string       `json:"error"`
@@ -1284,13 +1340,17 @@ type SnapshotParkedEntry struct {
 
 // SnapshotBudgetEntry is a read-only, value-copied view of one issue held
 // out of dispatch by a budget ceiling, produced by [RuntimeSnapshot].
-// IssueTitle and IssueURL are masked.
+// IssueTitle, IssueURL, IssueType, IssueLabels, and State are masked.
+// IssueLabels is nil exactly when the entry holds no read of the labels.
 type SnapshotBudgetEntry struct {
 	IssueID            string    `json:"issue_id"`
 	Identifier         string    `json:"issue_identifier"`
 	DisplayID          string    `json:"display_identifier,omitempty"`
 	IssueTitle         string    `json:"issue_title,omitempty"`
 	IssueURL           string    `json:"issue_url,omitempty"`
+	IssueType          string    `json:"issue_type,omitempty"`
+	IssueLabels        []string  `json:"issue_labels,omitzero"`
+	State              string    `json:"state,omitempty"`
 	Reason             string    `json:"reason"`
 	UsedSessions       int       `json:"used_sessions"`
 	BudgetSessions     int       `json:"budget_sessions"`
@@ -1504,7 +1564,8 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			IssueTitle:          identity.Title,
 			IssueURL:            identity.URL,
 			IssueLabels:         maskedLabels(entry.Issue.Labels),
-			State:               entry.Issue.State,
+			IssueType:           identity.IssueType,
+			State:               redact.Mask(entry.Issue.State),
 			SessionID:           entry.SessionID,
 			TurnCount:           entry.TurnCount,
 			LastAgentEvent:      entry.LastAgentEvent,
@@ -1553,14 +1614,17 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	for _, entry := range state.RetryAttempts {
 		identity := maskedIdentity(entry.IssueIdentity)
 		snap.Retrying = append(snap.Retrying, SnapshotRetryEntry{
-			IssueID:    entry.IssueID,
-			Identifier: entry.Identifier,
-			DisplayID:  entry.DisplayID,
-			IssueTitle: identity.Title,
-			IssueURL:   identity.URL,
-			Attempt:    entry.Attempt,
-			DueAtMS:    entry.DueAtMS,
-			Error:      entry.Error,
+			IssueID:     entry.IssueID,
+			Identifier:  entry.Identifier,
+			DisplayID:   entry.DisplayID,
+			IssueTitle:  identity.Title,
+			IssueURL:    identity.URL,
+			IssueType:   identity.IssueType,
+			IssueLabels: identity.Labels,
+			State:       identity.State,
+			Attempt:     entry.Attempt,
+			DueAtMS:     entry.DueAtMS,
+			Error:       entry.Error,
 
 			Trigger:           entry.Trigger,
 			ReactionKind:      entry.ReactionKind,
@@ -1596,6 +1660,9 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			DisplayID:          entry.DisplayID,
 			IssueTitle:         identity.Title,
 			IssueURL:           identity.URL,
+			IssueType:          identity.IssueType,
+			IssueLabels:        identity.Labels,
+			State:              identity.State,
 			Reason:             entry.Reason,
 			UsedSessions:       entry.UsedSessions,
 			BudgetSessions:     entry.BudgetSessions,

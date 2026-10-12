@@ -1344,25 +1344,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 	if retryScheduled {
 		if retryEntry, ok := state.RetryAttempts[workerResult.IssueID]; ok {
 			if !isKnownReactionKind(retryEntry.ReactionKind) {
-				pEntry := persistence.RetryEntry{
-					IssueID:    retryEntry.IssueID,
-					Identifier: retryEntry.Identifier,
-					DisplayID:  retryEntry.DisplayID,
-					IssueTitle: retryEntry.IssueIdentity.Title,
-					IssueURL:   retryEntry.IssueIdentity.URL,
-					Attempt:    retryEntry.Attempt,
-					DueAtMs:    retryEntry.DueAtMS,
-					Error:      stringPtr(retryEntry.Error),
-					SessionID:  stringPtr(retryEntry.SessionID),
-					RuleName:   retryEntry.RuleName,
-					TemplateID: retryEntry.TemplateID,
-					AgentKind:  retryEntry.AgentKind,
-					Trigger:    retryEntry.Trigger,
-
-					StagePrevious:        retryEntry.StageLineage.PreviousRule,
-					StagePreviousOutcome: retryEntry.StageLineage.PreviousOutcome,
-					ChainID:              retryEntry.StageLineage.ChainID,
-				}
+				pEntry := retryEntryRow(retryEntry)
 				if err := params.Store.SaveRetryEntry(ctx, pEntry); err != nil {
 					log.Error("failed to persist retry entry",
 						slog.Any("error", err),
