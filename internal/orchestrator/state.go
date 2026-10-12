@@ -14,6 +14,7 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/prompt"
 	"github.com/sortie-ai/sortie/internal/redact"
 	"github.com/sortie-ai/sortie/internal/registry"
@@ -260,6 +261,16 @@ type RunningEntry struct {
 	// across completed sessions, read at dispatch and replaced by a
 	// confirming read. 0 when the dispatch read failed.
 	IssueTokensCompleted int64
+
+	// IssueUsage is the issue's completed-session usage as of the last
+	// successful read on this entry, written on the event loop at dispatch
+	// and by a confirming read. Nil while no read has succeeded.
+	IssueUsage *persistence.IssueTokenUsage
+
+	// UnaccountedTurns is the running session's count of turns that spent
+	// tokens no figure was proven to cover, as its worker last relayed it.
+	// Written only on the event loop.
+	UnaccountedTurns int
 
 	// TokenCeilingStopRequest is set once the ceiling decides to stop this
 	// run. Non-nil alone does not mean the ceiling ended it; decided at exit.
@@ -884,6 +895,10 @@ type State struct {
 	// only on the event-loop goroutine.
 	MaxTokens int
 
+	// MaxSessions mirrors config.Agent.MaxSessions, refreshed on every poll
+	// tick. 0 means unlimited. Written only on the event-loop goroutine.
+	MaxSessions int
+
 	// TokenWarningThreshold mirrors config.Agent.TokenWarningThreshold()
 	// for the in-flight token warning, refreshed on every poll tick. 0
 	// disables the warning. Written only on the event-loop goroutine.
@@ -1093,9 +1108,22 @@ func RunningCountByState(running map[string]*RunningEntry, state string) int {
 	return count
 }
 
+// SnapshotIssueUsage is a running issue's completed-session usage,
+// value-copied by [RuntimeSnapshot]. Each ByKind value is shaped for cost
+// estimation: InputTokens spans fresh input and both cache classes, and
+// TotalTokens is left zero because pricing never reads it.
+type SnapshotIssueUsage struct {
+	Sessions           int                          `json:"sessions"`
+	TotalTokens        int64                        `json:"total_tokens"`
+	UnmeasuredSessions int                          `json:"unmeasured_sessions"`
+	UnaccountedTurns   int                          `json:"unaccounted_turns"`
+	ByKind             map[string]domain.TokenUsage `json:"by_kind"`
+}
+
 // SnapshotRunningEntry is a read-only view of a running session, produced
 // by [RuntimeSnapshot]. IssueTitle, IssueURL, and IssueLabels are masked,
-// and IssueLabels is never nil.
+// and IssueLabels is never nil. IssueUsage is nil exactly when no usage read
+// has succeeded for the run.
 type SnapshotRunningEntry struct {
 	IssueID             string                    `json:"issue_id"`
 	Identifier          string                    `json:"issue_identifier"`
@@ -1135,6 +1163,8 @@ type SnapshotRunningEntry struct {
 	UsageAttribution    registry.UsageAttribution `json:"usage_attribution"`
 	TokensPending       bool                      `json:"tokens_pending"`
 	TokensAwaited       bool                      `json:"tokens_awaited"`
+	IssueUsage          *SnapshotIssueUsage       `json:"issue_usage,omitempty"`
+	UnaccountedTurns    int                       `json:"unaccounted_turns"`
 }
 
 // SnapshotRetryEntry is a read-only view of a pending retry, produced by
@@ -1165,6 +1195,7 @@ type SnapshotBudgetEntry struct {
 	UsedTokens         *int64    `json:"used_tokens"`
 	BudgetTokens       int64     `json:"budget_tokens"`
 	UnmeasuredSessions *int      `json:"unmeasured_sessions"`
+	StoppedInFlight    *int      `json:"stopped_in_flight"`
 	ExhaustedAt        time.Time `json:"exhausted_at"`
 }
 
@@ -1201,6 +1232,11 @@ type RuntimeSnapshotResult struct {
 	ParkedCount          int                    `json:"parked_count"`
 	Parked               []string               `json:"parked,omitempty"`
 	ParkedReason         map[string]string      `json:"parked_reason,omitempty"`
+
+	// MaxTokens and MaxSessions are the token ceiling and session budget in
+	// force at capture; 0 means no limit.
+	MaxTokens   int `json:"max_tokens"`
+	MaxSessions int `json:"max_sessions"`
 }
 
 // ActiveElapsedSeconds sums wall-clock elapsed seconds across all running
@@ -1255,6 +1291,31 @@ func usageStillArriving(arrival registry.UsageArrival, turnCount int, lastEvent 
 // without the event.
 func turnHasEnded(turnCount int, lastEvent domain.AgentEventType) bool {
 	return turnCount > 1 || isTurnTerminalEvent(lastEvent)
+}
+
+// snapshotIssueUsage copies a running entry's usage read into the shape the
+// snapshot serves, sharing no map with state. A nil read stays nil so the
+// absence of a successful read is not served as zero usage.
+func snapshotIssueUsage(usage *persistence.IssueTokenUsage) *SnapshotIssueUsage {
+	if usage == nil {
+		return nil
+	}
+	byKind := make(map[string]domain.TokenUsage, len(usage.ByKind))
+	for kind, spent := range usage.ByKind {
+		byKind[kind] = domain.TokenUsage{
+			InputTokens:      spent.FreshInputTokens + spent.CacheReadTokens + spent.CacheWriteTokens,
+			OutputTokens:     spent.OutputTokens,
+			CacheReadTokens:  spent.CacheReadTokens,
+			CacheWriteTokens: spent.CacheWriteTokens,
+		}
+	}
+	return &SnapshotIssueUsage{
+		Sessions:           usage.Sessions,
+		TotalTokens:        usage.TotalTokens,
+		UnmeasuredSessions: usage.UnmeasuredSessions,
+		UnaccountedTurns:   usage.UnaccountedTurns,
+		ByKind:             byKind,
+	}
 }
 
 // RuntimeSnapshot captures a point-in-time view of the orchestrator's
@@ -1342,7 +1403,9 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			UsageAttribution:    entry.UsageAttribution,
 			TokensPending: entry.UsageArrival == registry.UsageArrivalTurnEnd &&
 				entry.UsageMeasured && !isTurnTerminalEvent(entry.LastAgentEvent),
-			TokensAwaited: tokensAwaited,
+			TokensAwaited:    tokensAwaited,
+			IssueUsage:       snapshotIssueUsage(entry.IssueUsage),
+			UnaccountedTurns: entry.UnaccountedTurns,
 		})
 
 		if !entry.StartedAt.IsZero() {
@@ -1380,6 +1443,9 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 		RunningNonReporting: runningNonReporting,
 	}
 
+	snap.MaxTokens = state.MaxTokens
+	snap.MaxSessions = state.MaxSessions
+
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
 	budgetExhausted := make([]SnapshotBudgetEntry, 0, len(state.BudgetExhausted))
 	for id, entry := range state.BudgetExhausted {
@@ -1396,6 +1462,7 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			UsedTokens:         entry.UsedTokens,
 			BudgetTokens:       entry.BudgetTokens,
 			UnmeasuredSessions: entry.UnmeasuredSessions,
+			StoppedInFlight:    entry.StoppedInFlight,
 			ExhaustedAt:        entry.ExhaustedAt,
 		})
 	}

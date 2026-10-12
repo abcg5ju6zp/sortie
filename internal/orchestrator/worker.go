@@ -322,6 +322,12 @@ type WorkerDeps struct {
 	// the worker goroutine; must be concurrency-safe. Nil disables it.
 	OnTurnStarted func(issueID string, turnsStarted int)
 
+	// OnUnaccountedTurns reports the run's cumulative count of turns that
+	// spent tokens no figure was proven to cover, each time a turn raises it.
+	// Called from the worker goroutine; must be concurrency-safe. Nil
+	// disables it.
+	OnUnaccountedTurns func(issueID string, unaccountedTurns int)
+
 	// ResumeSessionID is the previous attempt's session ID, non-empty on
 	// continuation retries so the adapter can resume the conversation.
 	ResumeSessionID string
@@ -667,6 +673,9 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 	foldTurnResult := func(result domain.TurnResult) (carriesMeasurement bool) {
 		if result.SpendUnaccounted {
 			localUnaccounted++
+			if deps.OnUnaccountedTurns != nil {
+				deps.OnUnaccountedTurns(issue.ID, localUnaccounted)
+			}
 		}
 		carriesMeasurement = hasUsage(result.Usage) || result.UsageMeasured
 		if carriesMeasurement && !admitMeasurement() {

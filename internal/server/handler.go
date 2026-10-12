@@ -78,6 +78,20 @@ type runningEntryResponse struct {
 	TokensPending       bool   `json:"tokens_pending"`
 	TokensAwaited       bool   `json:"tokens_awaited"`
 	APIRequestsMeasured bool   `json:"api_requests_measured"`
+
+	// The issue-level figures below are nil when unknown. The two budget
+	// keys are nil when no limit is configured and are never omitted.
+	UsedSessions          *int     `json:"used_sessions"`
+	BudgetSessions        *int     `json:"budget_sessions"`
+	IssueTokensCompleted  *int64   `json:"issue_tokens_completed"`
+	UnmeasuredSessions    *int     `json:"unmeasured_sessions"`
+	UsedTokens            *int64   `json:"used_tokens"`
+	UsedTokensComplete    bool     `json:"used_tokens_complete"`
+	BudgetTokens          *int64   `json:"budget_tokens"`
+	EstimatedCostUSD      *float64 `json:"estimated_cost_usd"`
+	CostStatus            string   `json:"cost_status"`
+	IssueEstimatedCostUSD *float64 `json:"issue_estimated_cost_usd"`
+	IssueCostStatus       string   `json:"issue_cost_status"`
 }
 
 // tokenInfo carries a running row's five token figures. The members
@@ -118,6 +132,7 @@ type budgetExhaustedResponse struct {
 	UsedTokens         *int64    `json:"used_tokens"`
 	BudgetTokens       int64     `json:"budget_tokens"`
 	UnmeasuredSessions *int      `json:"unmeasured_sessions"`
+	StoppedInFlight    *int      `json:"stopped_in_flight"`
 	ExhaustedAt        time.Time `json:"exhausted_at"`
 }
 
@@ -223,6 +238,53 @@ func toRunningEntryResponse(e orchestrator.SnapshotRunningEntry, nowArgs ...time
 	return resp
 }
 
+// toServedRunningEntry converts a running row for both endpoints, adding
+// the issue-level figures that depend on the snapshot's limits and on rates.
+func toServedRunningEntry(e orchestrator.SnapshotRunningEntry, snap orchestrator.RuntimeSnapshotResult, rates TokenRates) runningEntryResponse {
+	resp := toRunningEntryResponse(e, snap.GeneratedAt)
+
+	var completed int64
+	var completedIncomplete bool
+	if usage := e.IssueUsage; usage != nil {
+		completed = usage.TotalTokens
+		completedIncomplete = issueSpendIncomplete(usage)
+		resp.UsedSessions = new(usage.Sessions)
+		resp.UnmeasuredSessions = new(usage.UnmeasuredSessions)
+	}
+
+	known := completed
+	if e.UsageMeasured {
+		known += e.AgentTotalTokens
+	}
+	resp.UsedTokensComplete = e.IssueUsage != nil && !completedIncomplete && e.UsageMeasured && e.UnaccountedTurns == 0
+
+	// A zero that leaves spend out would stand in for spend Sortie does not
+	// know, so it is served as null.
+	if e.IssueUsage != nil && (completed != 0 || !completedIncomplete) {
+		resp.IssueTokensCompleted = new(completed)
+	}
+	if known != 0 || resp.UsedTokensComplete {
+		resp.UsedTokens = new(known)
+	}
+
+	if snap.MaxTokens > 0 {
+		resp.BudgetTokens = new(int64(snap.MaxTokens))
+	}
+	if snap.MaxSessions > 0 {
+		resp.BudgetSessions = new(snap.MaxSessions)
+	}
+
+	resp.EstimatedCostUSD, resp.CostStatus = sessionCostOf(e, rates)
+	resp.IssueEstimatedCostUSD, resp.IssueCostStatus = issueCostOf(e, resp.UsedTokens, resp.UsedTokensComplete, resp.EstimatedCostUSD, resp.CostStatus, rates)
+	return resp
+}
+
+// issueSpendIncomplete reports whether usage.TotalTokens leaves spend out,
+// by the same condition the persistence layer applies to its own figure.
+func issueSpendIncomplete(usage *orchestrator.SnapshotIssueUsage) bool {
+	return usage.UnmeasuredSessions > 0 || usage.UnaccountedTurns > 0
+}
+
 func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse {
 	return retryEntryResponse{
 		IssueID:           e.IssueID,
@@ -249,6 +311,7 @@ func toBudgetExhaustedResponse(e orchestrator.SnapshotBudgetEntry) budgetExhaust
 		UsedTokens:         e.UsedTokens,
 		BudgetTokens:       e.BudgetTokens,
 		UnmeasuredSessions: e.UnmeasuredSessions,
+		StoppedInFlight:    e.StoppedInFlight,
 		ExhaustedAt:        e.ExhaustedAt,
 	}
 }
@@ -256,7 +319,7 @@ func toBudgetExhaustedResponse(e orchestrator.SnapshotBudgetEntry) budgetExhaust
 func toStateResponse(snap orchestrator.RuntimeSnapshotResult, tokenRates TokenRates) stateResponse {
 	running := make([]runningEntryResponse, 0, len(snap.Running))
 	for _, e := range snap.Running {
-		running = append(running, toRunningEntryResponse(e, snap.GeneratedAt))
+		running = append(running, toServedRunningEntry(e, snap, tokenRates))
 	}
 
 	retrying := make([]retryEntryResponse, 0, len(snap.Retrying))
@@ -396,7 +459,7 @@ func (s *Server) handleIssueDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := buildIssueDetail(identifier, snap)
+	resp := buildIssueDetail(identifier, snap, s.tokenRates)
 	if resp == nil {
 		writeErrorJSON(w, s.logger, http.StatusNotFound,
 			"issue_not_found",
@@ -467,14 +530,14 @@ func (s *Server) methodNotAllowed(w http.ResponseWriter, r *http.Request, allowe
 		fmt.Sprintf("method %s is not allowed on this endpoint", r.Method))
 }
 
-func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult) *issueDetailResponse {
+func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult, rates TokenRates) *issueDetailResponse {
 	var runEntry *runningEntryResponse
 	var retryEntry *retryEntryResponse
 	var budgetEntry *budgetExhaustedResponse
 
 	for _, e := range snap.Running {
 		if e.Identifier == identifier {
-			runEntry = new(toRunningEntryResponse(e, snap.GeneratedAt))
+			runEntry = new(toServedRunningEntry(e, snap, rates))
 			break
 		}
 	}

@@ -103,6 +103,7 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
 - each running row should include `tokens_pending`, true only when the frozen arrival settles at most one figure per turn, the session is measured, and the turn that figure would settle for is still in flight
 - each running row should include `tokens_awaited`, true only when the session has recorded no figure and the moment its frozen arrival names for one has not passed: no turn has begun for an arrival that reports during a turn, and no turn has ended for one that settles at most one figure per turn. A row whose arrival reports figures and whose `tokens_awaited` is false recorded nothing and will record nothing, so a consumer must not present it as a figure still to come
 - each running row should include `api_requests_measured`, true when the row's `api_request_count` is a count of model API requests the session measured
+- each running row should include the issue's spend and the limits it runs against: the usage of the issue's completed sessions, read from run history at every dispatch whether or not a token ceiling is set and refreshed by each confirming read of the in-flight token ceiling; whether the issue's token sum is its whole spend, which counts the running session's unaccounted turns as its worker reports them while the session runs; the token ceiling and the session budget in force as of the latest poll tick; and the estimated cost of the running session and of the whole issue, each with a state that names why a figure is partial or absent. Section 13.7.2 gives the keys and how to read them
 - each running row should include `rule_name`, `configured_model`, and `configured_effort`, the dispatch rule the session runs under and the model and reasoning level its resolved settings block carries, empty (and omitted from the JSON form) when unset; `model_name` keeps the model the runtime reported, which can differ from the configured one under routing aliases and runtime fallbacks
 - each running row should include `issue_title`, `issue_url`, and `issue_labels`, the issue's title, web link, and labels as the session was dispatched with them, unchanged for the whole run and the same text the agent's prompt received. `issue_title` and `issue_url` are empty (and omitted from the JSON form) when the tracker returned none; `issue_labels` is always present, an empty list when the issue carries none, lowercase in the tracker's order as Section 11 normalizes them
 - every such string is masked as Section 15.3 states, in the snapshot rather than in the state it is copied from, because stage advancement reads the labels as the tracker returned them
@@ -119,7 +120,7 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
   - `running_non_reporting` (count of the current running set reporting no usage at all: either the resolved `usage_arrival` is `none`, in which case any figure the session's runtime sends is discarded, or the arrival reports figures and the moment it names for one passed with nothing recorded)
 - `rate_limits` (latest coding-agent rate limit payload, if available)
 - `budget_exhausted_count` (number of issues currently blocked by a re-dispatch budget; always present)
-- `budget_exhausted` (list of blocked-issue records, sorted by identifier; always present, empty when the set is empty). Each record carries the issue's ID and identifier, the reason (`token_budget` or `session_budget`; `token_budget` takes precedence over `session_budget` when one issue reaches both gates), the used and budgeted session and token counts, the time the hold began, and the issue's title and tracker link. The title and link come from the read of the poll tick that last rebuilt the set, or from the retry the hold was found on until the next tick. The set is rebuilt per tick from those two gates (Section 8.4) and also updated by the retry lane when it discovers a hold between ticks.
+- `budget_exhausted` (list of blocked-issue records, sorted by identifier; always present, empty when the set is empty). Each record carries the issue's ID and identifier, the reason (`token_budget` or `session_budget`; `token_budget` takes precedence over `session_budget` when one issue reaches both gates), the used and budgeted session and token counts, the count of the issue's sessions the token ceiling stopped in flight (present only when the token ceiling was evaluated for the issue), the time the hold began, and the issue's title and tracker link. The title and link come from the read of the poll tick that last rebuilt the set, or from the retry the hold was found on until the next tick. The set is rebuilt per tick from those two gates (Section 8.4) and also updated by the retry lane when it discovers a hold between ticks.
 - `parked_count` (number of issues currently held out of primary dispatch; always present)
 - `parked` (sorted list of parked issue IDs; omitted when the set is empty)
 - `parked_reason` (map from parked issue ID to the park's reason, `agent_blocked` or `handoff_absence`; omitted when the set is empty)
@@ -263,7 +264,18 @@ Minimum endpoints:
           "usage_attribution": "per_model",
           "tokens_pending": false,
           "tokens_awaited": false,
-          "api_requests_measured": true
+          "api_requests_measured": true,
+          "used_sessions": 2,
+          "budget_sessions": 5,
+          "issue_tokens_completed": 105000,
+          "unmeasured_sessions": 0,
+          "used_tokens": 107000,
+          "used_tokens_complete": true,
+          "budget_tokens": 500000,
+          "estimated_cost_usd": 0.014595,
+          "cost_status": "estimated",
+          "issue_estimated_cost_usd": 0.235095,
+          "issue_cost_status": "estimated"
         }
       ],
       "retrying": [
@@ -289,6 +301,7 @@ Minimum endpoints:
           "used_tokens": null,
           "budget_tokens": 0,
           "unmeasured_sessions": null,
+          "stopped_in_flight": null,
           "exhausted_at": "2026-02-24T20:12:00Z"
         }
       ],
@@ -346,7 +359,18 @@ Minimum endpoints:
         "usage_arrival": "incremental",
         "usage_attribution": "per_model",
         "tokens_pending": false,
-        "api_requests_measured": true
+        "api_requests_measured": true,
+        "used_sessions": 2,
+        "budget_sessions": 5,
+        "issue_tokens_completed": 105000,
+        "unmeasured_sessions": 0,
+        "used_tokens": 107000,
+        "used_tokens_complete": true,
+        "budget_tokens": 500000,
+        "estimated_cost_usd": 0.014595,
+        "cost_status": "estimated",
+        "issue_estimated_cost_usd": 0.235095,
+        "issue_cost_status": "estimated"
       },
       "retry": null,
       "budget_exhausted": null,
@@ -394,8 +418,18 @@ API design notes:
 - Implementations may add fields, but should avoid breaking existing fields within a version.
 - Running, retry, and budget-exhausted rows name their issue in flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`, never in a nested object, and the same rows inside `GET /api/v1/<issue_identifier>` carry them. `issue_title` and `issue_url` are the tracker's title and web link, each omitted when empty; a running row always carries a title, and a retry row lacks it only while the retry holds no read of its issue. `issue_labels` is on running rows only and always present. Every such string is masked as Section 15.3 states.
 - On a running row, `api_request_count` is `null` exactly when `api_requests_measured` is false, the five members of `tokens` are `null` exactly when `tokens_measured` is false, and `requests_by_model` is absent on the first condition and when the attribution names no model.
-- Sortie deviates from the field-stability note above for those six figures, narrowing each from an integer to a nullable one, because a consumer reading a number cannot tell a measured zero from an unmeasured one. A typed consumer is forced to handle the null; an untyped one, in a language where `null` coerces to `0` in arithmetic, is no worse off than it was.
-- `active_estimated_cost_usd`, an implementation extension beyond the baseline shape above, sums the estimated cost of running, measured sessions whose agent kind has a configured token rate; it is omitted when no running, measured session prices. `cost_unpriced_running` sits beside it and counts the running, measured sessions the sum leaves out for want of a rate. It is present, zero included, whenever `token_rates` holds an entry for any agent kind, complete or not, and omitted otherwise, so its presence alone tells a consumer whether cost pricing is configured at all.
+- Sortie deviates from the field-stability note above for those figures, narrowing each from an integer to a nullable one, because a consumer reading a number cannot tell a measured zero from an unmeasured one. A typed consumer is forced to handle the null; an untyped one, in a language where `null` coerces to `0` in arithmetic, is no worse off than it was.
+- A running row, and the `running` object of the per-issue response, which serves the same keys, carries the issue's spend and limits in flat keys. The keys are additive; no existing key changes name, type, or meaning.
+  - `used_sessions` counts the issue's completed sessions: the run-history rows that `agent.max_sessions` is compared with. The running session is not counted, and a recorded CI result counts as a session. `unmeasured_sessions` counts the completed sessions whose usage was never recorded, which the token figures leave out.
+  - `issue_tokens_completed` is the summed total tokens of the completed sessions, the baseline the in-flight ceiling adds the running session's spend to. `used_tokens` is `issue_tokens_completed` plus the row's `tokens.total_tokens`, each counted as `0` when `null`: the figure the ceiling compares with `agent.max_tokens`.
+  - `used_tokens_complete` is true exactly when `used_tokens` is the issue's whole spend: the completed sessions were read, none is unmeasured, none recorded an unaccounted turn, the running session is measured, and it has recorded no unaccounted turn. When it is false, `used_tokens` is a lower bound. It ignores `tokens_pending`, which keeps telling a consumer that the figure excludes a turn in flight.
+  - `budget_tokens` and `budget_sessions` are `agent.max_tokens` and `agent.max_sessions` as of the latest poll tick. A limit key whose limit is not configured serves `null`, present and never `0` or omitted, because `0` computes as a ceiling of zero. The budget-exhausted record keeps its existing encoding, `0` for a ceiling that is not set.
+  - `null` on a limit key means no ceiling; `null` on a usage key (`used_sessions`, `unmeasured_sessions`, `issue_tokens_completed`, `used_tokens`) means unknown, and it is `null` for the first three when no read of the issue's run history has succeeded for the run. Headroom is a limit key minus its usage key (`budget_tokens` minus `used_tokens`, `budget_sessions` minus `used_sessions`) and has no value when either is `null`. Token headroom turns negative when a run overshoots, because the ceiling stops a run at the first usage figure at or past it; the API serves no clamped headroom key.
+  - A key never serves a sum of `0` that leaves spend out. `issue_tokens_completed` and `used_tokens` serve `null` instead, so a completed session that never reported usage, or a measured zero beside unknown spend, never reads as a spend of zero. A completed session is measured when it reported a usage figure or never entered an agent turn; a measured zero is exact and `issue_tokens_completed` serves it.
+  - `estimated_cost_usd` is the running session's estimate under `token_rates` for its agent kind, and `cost_status` says why it is absent: `estimated`, `unpriced` when the session is measured and its kind has no complete rate entry, or `unmeasured` when the session has reported no usage. `issue_estimated_cost_usd` sums the estimates of the issue's priced parts, completed sessions included, and `issue_cost_status` is `estimated` when the sum covers the whole spend, `partial` when it is a lower bound because a part that spent tokens is left out, `unpriced` when no priced part spent tokens and a part that did has no rate, and `unmeasured` when `used_tokens` is `null` or no part is priced or unpriced. A running session that has reported zero tokens leaves nothing out, so a missing rate for its kind does not make a complete, otherwise priced issue `partial`.
+  - Estimates are unrounded USD, priced at the rates the process started with. `used_tokens` is `null` only when `issue_cost_status` is `unmeasured`, and `issue_cost_status` is `estimated` only when `used_tokens_complete` is true.
+  - A budget-exhausted record also carries `stopped_in_flight`, the count of the issue's sessions the token ceiling stopped mid-run, `null` exactly when the record's `used_tokens` is `null`.
+- `active_estimated_cost_usd`, an implementation extension beyond the baseline shape above, sums the estimated cost of running, measured sessions whose agent kind has a configured token rate; it is omitted when no running, measured session prices. `cost_unpriced_running` sits beside it and counts the running, measured sessions the sum leaves out for want of a rate. It is present, zero included, whenever `token_rates` holds an entry for any agent kind, complete or not, and omitted otherwise, so its presence alone tells a consumer whether cost pricing is configured at all. While `token_rates` holds an entry for any agent kind, `active_estimated_cost_usd` equals the sum of `estimated_cost_usd` over the running rows whose `cost_status` is `estimated` (and is absent when no row is), and `cost_unpriced_running` equals the count of rows whose `cost_status` is `unpriced`.
 - Endpoints should be read-only except for operational triggers like `/refresh`.
 - Unsupported methods on defined routes should return `405 Method Not Allowed`.
 - API errors should use a JSON envelope such as `{"error":{"code":"...","message":"..."}}`.

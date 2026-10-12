@@ -1620,9 +1620,6 @@ func TestApplyTurnStarted(t *testing.T) {
 	})
 }
 
-// TestOrchestrator_TurnStartedAppliesAheadOfExit pins that a turn-started
-// message queued before a worker's exit reaches that run's entry, never
-// a later run of the same issue.
 func TestOrchestrator_TurnStartedAppliesAheadOfExit(t *testing.T) {
 	t.Parallel()
 
@@ -1639,6 +1636,7 @@ func TestOrchestrator_TurnStartedAppliesAheadOfExit(t *testing.T) {
 		o := budgetOrchestrator(state, budgetTickConfig(0), store, tracker)
 
 		o.turnStartedCh <- turnStartedMsg{IssueID: issueID, TurnsStarted: 5}
+		o.unaccountedTurnsCh <- unaccountedTurnsMsg{IssueID: issueID, UnaccountedTurns: 2}
 
 		o.handleWorkerExit(context.Background(), WorkerResult{
 			IssueID:      issueID,
@@ -1653,19 +1651,25 @@ func TestOrchestrator_TurnStartedAppliesAheadOfExit(t *testing.T) {
 		if entry.TurnCount != 5 {
 			t.Errorf("entry.TurnCount = %d, want 5 (applied before HandleWorkerExit removed the entry)", entry.TurnCount)
 		}
+		if entry.UnaccountedTurns != 2 {
+			t.Errorf("entry.UnaccountedTurns = %d, want 2 (applied before HandleWorkerExit removed the entry)", entry.UnaccountedTurns)
+		}
 
 		state.Running[issueID] = queuedOrderingIssueEntry(issueID)
 		o.applyQueuedAheadOfExit(context.Background(), map[string]struct{}{})
 		if got := state.Running[issueID].TurnCount; got != 0 {
 			t.Errorf("a later entry's TurnCount = %d, want 0 (no stray message left queued)", got)
 		}
+		if got := state.Running[issueID].UnaccountedTurns; got != 0 {
+			t.Errorf("a later entry's UnaccountedTurns = %d, want 0 (no stray message left queued)", got)
+		}
 	})
 
 	t.Run("workerExitCh case of drainRunningWorkers", func(t *testing.T) {
 		t.Parallel()
 
-		// The drain's own turnStartedCh case wins the random select about
-		// half the time, so a single trial cannot catch a missing drain.
+		// The drain's own channel cases win the random select about half
+		// the time, so a single trial cannot catch a missing drain.
 		const trials = 64
 
 		for trial := range trials {
@@ -1679,6 +1683,7 @@ func TestOrchestrator_TurnStartedAppliesAheadOfExit(t *testing.T) {
 			o := budgetOrchestrator(state, budgetTickConfig(0), store, tracker)
 
 			o.turnStartedCh <- turnStartedMsg{IssueID: issueID, TurnsStarted: 9}
+			o.unaccountedTurnsCh <- unaccountedTurnsMsg{IssueID: issueID, UnaccountedTurns: 4}
 			o.workerExitCh <- WorkerResult{
 				IssueID:      issueID,
 				Identifier:   entry.Identifier,
@@ -1700,6 +1705,9 @@ func TestOrchestrator_TurnStartedAppliesAheadOfExit(t *testing.T) {
 
 			if entry.TurnCount != 9 {
 				t.Fatalf("trial %d: entry.TurnCount = %d, want 9 (applied before the drain's HandleWorkerExit removed the entry)", trial, entry.TurnCount)
+			}
+			if entry.UnaccountedTurns != 4 {
+				t.Fatalf("trial %d: entry.UnaccountedTurns = %d, want 4 (applied before the drain's HandleWorkerExit removed the entry)", trial, entry.UnaccountedTurns)
 			}
 		}
 	})

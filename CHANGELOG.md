@@ -10,9 +10,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The JSON API at `/api/v1/state` and `/api/v1/{identifier}` now names every running, retrying, and budget-held issue by its title and tracker link, and shows each running issue's labels along with its session's SSH host, agent, and self-review progress. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
 
+- The JSON API at `/api/v1/state` and `/api/v1/{identifier}` now shows, for each running issue, the tokens its finished sessions and its running session have used against `agent.max_tokens`, its finished sessions against `agent.max_sessions`, and the estimated cost of the session and of the whole issue when `token_rates` prices its agent. A figure Sortie does not have reads as not measured or unpriced instead of zero, and an issue held by a budget ceiling also shows how many of its sessions the token ceiling stopped mid-run. ([#1071](https://github.com/sortie-ai/sortie/issues/1071))
+
 ### Fixed
 
 - Jira issue links no longer include a user name and password written into `tracker.endpoint`, so the link opens and an agent prompt that shows it no longer exposes them. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
+
+- A token ceiling turned on in WORKFLOW.md while an issue's session is running now stops that session once the issue's total spend reaches `agent.max_tokens`; the session used to spend up to the ceiling by itself, on top of what the issue's earlier sessions had spent, and the `agent.token_warning_percent` warning came late the same way. ([#1071](https://github.com/sortie-ai/sortie/issues/1071))
+
+- `sortie stats` no longer reports CI failures as runs without a price, so with every coding agent priced in `token_rates` it no longer notes that its cost figures skip some runs. ([#1071](https://github.com/sortie-ai/sortie/issues/1071))
 
 ### Migrations
 
