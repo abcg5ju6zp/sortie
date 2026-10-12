@@ -445,6 +445,7 @@ func handleCIFailure(
 		Logger:              log,
 
 		IssueIdentity: pending.IssueIdentity,
+		Trigger:       triggerCIFix,
 	}, params.OnRetryFire)
 	metrics.IncRetries(triggerCIFix)
 

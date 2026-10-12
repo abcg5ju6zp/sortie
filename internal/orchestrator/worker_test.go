@@ -236,11 +236,15 @@ type mockTrackerAdapter struct {
 	transitionIssueFn func(ctx context.Context, issueID, targetState string) error
 	transitionCalls   []transitionIssueCall
 	commentIssueFn    func(ctx context.Context, issueID, text string) error
+	fetchIssueByIDFn  func(ctx context.Context, id string) (domain.Issue, error)
 
 	// commentMu guards commentCalls: several detached budget-hold-notice
 	// goroutines can write it concurrently within a single tick.
 	commentMu    sync.Mutex
 	commentCalls []commentIssueCall
+
+	fetchIssueByIDMu    sync.Mutex
+	fetchIssueByIDCalls []string
 
 	// fetchStatesCalls is atomic because the double is shared across the
 	// worker goroutine and the test goroutine under -race.
@@ -255,7 +259,13 @@ func (m *mockTrackerAdapter) FetchCandidateIssues(_ context.Context) ([]domain.I
 
 func (m *mockTrackerAdapter) SetTrackerStates(func() domain.TrackerStates) {}
 
-func (m *mockTrackerAdapter) FetchIssueByID(_ context.Context, _ string) (domain.Issue, error) {
+func (m *mockTrackerAdapter) FetchIssueByID(ctx context.Context, id string) (domain.Issue, error) {
+	m.fetchIssueByIDMu.Lock()
+	m.fetchIssueByIDCalls = append(m.fetchIssueByIDCalls, id)
+	m.fetchIssueByIDMu.Unlock()
+	if m.fetchIssueByIDFn != nil {
+		return m.fetchIssueByIDFn(ctx, id)
+	}
 	return domain.Issue{}, nil
 }
 

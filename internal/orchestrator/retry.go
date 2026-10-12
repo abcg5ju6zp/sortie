@@ -190,6 +190,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			RuleSettingsApplied: popped.RuleSettingsApplied,
 			TemplateID:          popped.TemplateID,
 			Logger:              log,
+			Trigger:             triggerTimer,
 		}, params.OnRetryFire)
 		if isKnownReactionKind(popped.ReactionKind) {
 			if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
@@ -219,7 +220,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		log.Debug("worker still running, rescheduling retry",
 			slog.Int("attempt", popped.Attempt),
 		)
-		reschedule(popped.Attempt, delayMS, popped.Error)
+		reschedule(popped.Attempt, delayMS, "worker still running")
 		setNoStateObserved(popped.noStateObserved)
 		return
 	}
@@ -263,6 +264,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 					issueID,
 					popped.Identifier,
 					popped.DisplayID,
+					popped.IssueIdentity,
 					"",
 					consecutiveAbsences,
 					absenceCeiling,
@@ -435,7 +437,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 				slog.Int("attempt", popped.Attempt),
 				slog.Int64("delay_ms", delayMS),
 			)
-			reschedule(popped.Attempt, delayMS, popped.Error)
+			reschedule(popped.Attempt, delayMS, "issue without a state label")
 			setNoStateObserved(true)
 			return
 		}
@@ -471,7 +473,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	// Unbounded, either arm would re-occupy the slot on every fire for the
 	// process lifetime; the entry is dropped once its consecutive paused
 	// dwell reaches pausedRetryMaxDwell.
-	pausedReschedule := func(nextAttempt int, delayMS int64, logReschedule func()) {
+	pausedReschedule := func(nextAttempt int, delayMS int64, reason string, logReschedule func()) {
 		now := time.Now()
 		pausedSince := now
 		if popped.pausedSinceMS != 0 {
@@ -495,7 +497,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			return
 		}
 		logReschedule()
-		reschedule(nextAttempt, delayMS, popped.Error)
+		reschedule(nextAttempt, delayMS, reason)
 		if entry, ok := state.RetryAttempts[issueID]; ok {
 			entry.pausedSinceMS = pausedSince.UnixMilli()
 		}
@@ -540,7 +542,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 				nextAttempt := popped.Attempt + 1
 				delayMS := computeBackoffDelay(nextAttempt, params.MaxRetryBackoffMS)
 
-				pausedReschedule(nextAttempt, delayMS, func() {
+				pausedReschedule(nextAttempt, delayMS, "reaction retry paused by an open blocking issue", func() {
 					log.Info("issue blocked, rescheduling reaction retry",
 						slog.String("issue_state", issue.State),
 						slog.String("kind", popped.ReactionKind),
@@ -579,7 +581,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		nextAttempt := popped.Attempt + 1
 		delayMS := computeBackoffDelay(nextAttempt, params.MaxRetryBackoffMS)
 
-		pausedReschedule(nextAttempt, delayMS, func() {
+		pausedReschedule(nextAttempt, delayMS, "reaction retry paused by issue state", func() {
 			log.Info("reaction retry paused by issue state, rescheduling",
 				slog.String("issue_state", issue.State),
 				slog.String("kind", popped.ReactionKind),
@@ -805,6 +807,7 @@ func persistRetryEntry(ctx context.Context, log *slog.Logger, store RetryTimerSt
 		RuleName:   retryEntry.RuleName,
 		TemplateID: retryEntry.TemplateID,
 		AgentKind:  retryEntry.AgentKind,
+		Trigger:    retryEntry.Trigger,
 
 		StagePrevious:        retryEntry.StageLineage.PreviousRule,
 		StagePreviousOutcome: retryEntry.StageLineage.PreviousOutcome,

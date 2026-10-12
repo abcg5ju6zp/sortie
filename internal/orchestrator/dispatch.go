@@ -548,6 +548,11 @@ type ScheduleRetryParams struct {
 	// retries.
 	ReactionKind string
 
+	// Trigger is the sortie_retries_total trigger label of this schedule.
+	// Propagated to [RetryEntry.Trigger]. Empty when the schedule records
+	// none.
+	Trigger string
+
 	// AgentKind is the adapter kind of the dispatch. Propagated verbatim
 	// into the new [RetryEntry].
 	AgentKind string
@@ -633,6 +638,7 @@ func ScheduleRetry(state *State, params ScheduleRetryParams, onFire func(issueID
 		LastSSHHost:         params.LastSSHHost,
 		ContinuationContext: params.ContinuationContext,
 		ReactionKind:        params.ReactionKind,
+		Trigger:             params.Trigger,
 		RuleName:            params.RuleName,
 		StageLineage:        params.StageLineage,
 		RuleSettingsApplied: params.RuleSettingsApplied,

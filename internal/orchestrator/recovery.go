@@ -57,6 +57,7 @@ func PopulateRetries(state *State, entries []persistence.PendingRetry, log *slog
 			StageLineage:     StageLineage{PreviousRule: e.StagePrevious, PreviousOutcome: e.StagePreviousOutcome, ChainID: e.ChainID},
 			TemplateID:       e.TemplateID,
 			AgentKind:        e.AgentKind,
+			Trigger:          e.Trigger,
 			scheduledDelayMS: pending.RemainingMs,
 		}
 		state.Claimed[e.IssueID] = struct{}{}

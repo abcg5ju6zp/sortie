@@ -71,6 +71,8 @@ func TestUpsertParkedIssue_RoundTrip(t *testing.T) {
 		Label:        "needs-human",
 		LabelApplied: false,
 		ParkedAt:     "2026-08-17T00:00:00Z",
+		IssueTitle:   "Flaky login redirect",
+		IssueURL:     "https://tracker.example.test/browse/PROJ-1",
 	}
 	if err := s.UpsertParkedIssue(ctx, entry); err != nil {
 		t.Fatalf("UpsertParkedIssue: %v", err)
@@ -98,6 +100,7 @@ func TestUpsertParkedIssue_RewritesExistingRow(t *testing.T) {
 	if err := s.UpsertParkedIssue(ctx, ParkedIssue{
 		IssueID: issueID, Identifier: "PROJ-2", Reason: "agent_blocked",
 		ParkedState: "In Progress", Label: "needs-human", ParkedAt: "2026-08-17T00:00:00Z",
+		IssueTitle: "Old title", IssueURL: "https://tracker.example.test/browse/OLD",
 	}); err != nil {
 		t.Fatalf("UpsertParkedIssue (initial): %v", err)
 	}
@@ -105,7 +108,7 @@ func TestUpsertParkedIssue_RewritesExistingRow(t *testing.T) {
 	if err := s.UpsertParkedIssue(ctx, ParkedIssue{
 		IssueID: issueID, Identifier: "PROJ-2", Reason: "handoff_absence",
 		ParkedState: "Blocked", Label: "operator-needed", LabelApplied: true,
-		ParkedAt: "2026-08-17T01:00:00Z",
+		ParkedAt: "2026-08-17T01:00:00Z", IssueTitle: "New title", IssueURL: "https://tracker.example.test/browse/PROJ-2",
 	}); err != nil {
 		t.Fatalf("UpsertParkedIssue (rewrite): %v", err)
 	}
@@ -117,7 +120,8 @@ func TestUpsertParkedIssue_RewritesExistingRow(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("ListParkedIssues() length = %d, want 1 (rewrite, not a duplicate row)", len(rows))
 	}
-	if rows[0].Reason != "handoff_absence" || !rows[0].LabelApplied {
+	if rows[0].Reason != "handoff_absence" || !rows[0].LabelApplied ||
+		rows[0].IssueTitle != "New title" || rows[0].IssueURL != "https://tracker.example.test/browse/PROJ-2" {
 		t.Errorf("ListParkedIssues()[0] = %+v, want the rewritten row", rows[0])
 	}
 }

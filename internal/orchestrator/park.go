@@ -45,7 +45,8 @@ type parkIssueParams struct {
 	IssueID       string
 	Identifier    string
 	DisplayID     string
-	ObservedState string // tracker state to record as parked_state
+	IssueIdentity IssueIdentity // the issue's title and link as read; zero when unread
+	ObservedState string        // tracker state to record as parked_state
 	Reason        string
 	Label         string // resolved parking label; empty disables the label write
 	Absences      int    // log attribute only; omitted from the record when zero
@@ -76,13 +77,14 @@ func parkIssue(state *State, params parkIssueParams) {
 
 	parkedAt := time.Now().UTC()
 	entry := &ParkedEntry{
-		Identifier:   params.Identifier,
-		DisplayID:    params.DisplayID,
-		Reason:       params.Reason,
-		ParkedState:  params.ObservedState,
-		Label:        params.Label,
-		LabelApplied: false,
-		ParkedAt:     parkedAt,
+		Identifier:    params.Identifier,
+		DisplayID:     params.DisplayID,
+		IssueIdentity: params.IssueIdentity,
+		Reason:        params.Reason,
+		ParkedState:   params.ObservedState,
+		Label:         params.Label,
+		LabelApplied:  false,
+		ParkedAt:      parkedAt,
 	}
 	state.Parked[params.IssueID] = entry
 
@@ -180,13 +182,14 @@ func PopulateParked(state *State, rows []persistence.ParkedIssue, log *slog.Logg
 		}
 
 		state.Parked[row.IssueID] = &ParkedEntry{
-			Identifier:   row.Identifier,
-			DisplayID:    row.DisplayID,
-			Reason:       row.Reason,
-			ParkedState:  row.ParkedState,
-			Label:        row.Label,
-			LabelApplied: row.LabelApplied,
-			ParkedAt:     parkedAt,
+			Identifier:    row.Identifier,
+			DisplayID:     row.DisplayID,
+			IssueIdentity: IssueIdentity{Title: row.IssueTitle, URL: row.IssueURL},
+			Reason:        row.Reason,
+			ParkedState:   row.ParkedState,
+			Label:         row.Label,
+			LabelApplied:  row.LabelApplied,
+			ParkedAt:      parkedAt,
 		}
 	}
 }
@@ -249,5 +252,7 @@ func parkedIssueRow(issueID string, entry *ParkedEntry) persistence.ParkedIssue 
 		Label:        entry.Label,
 		LabelApplied: entry.LabelApplied,
 		ParkedAt:     entry.ParkedAt.Format(time.RFC3339),
+		IssueTitle:   entry.IssueIdentity.Title,
+		IssueURL:     entry.IssueIdentity.URL,
 	}
 }

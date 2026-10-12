@@ -37,6 +37,11 @@ type RetryEntry struct {
 	DisplayID  string
 	IssueTitle string
 	IssueURL   string
+
+	// Trigger is the sortie_retries_total label of the schedule that
+	// created the retry; empty for legacy rows and for a schedule that
+	// records none.
+	Trigger string
 }
 
 // PendingRetry pairs a persisted [RetryEntry] with the computed delay
@@ -62,8 +67,8 @@ func (s *Store) SaveRetryEntry(ctx context.Context, entry RetryEntry) error {
 	}
 
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO retry_entries (issue_id, identifier, attempt, due_at_ms, error, session_id, rule_name, template_id, agent_kind, stage_previous, stage_previous_outcome, chain_id, display_identifier, issue_title, issue_url)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO retry_entries (issue_id, identifier, attempt, due_at_ms, error, session_id, rule_name, template_id, agent_kind, stage_previous, stage_previous_outcome, chain_id, display_identifier, issue_title, issue_url, trigger)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (issue_id) DO UPDATE SET
 			identifier             = excluded.identifier,
 			attempt                = excluded.attempt,
@@ -78,11 +83,12 @@ func (s *Store) SaveRetryEntry(ctx context.Context, entry RetryEntry) error {
 			chain_id               = excluded.chain_id,
 			display_identifier     = excluded.display_identifier,
 			issue_title            = excluded.issue_title,
-			issue_url              = excluded.issue_url`,
+			issue_url              = excluded.issue_url,
+			trigger                = excluded.trigger`,
 		entry.IssueID, entry.Identifier, entry.Attempt, entry.DueAtMs, errVal, ssnVal,
 		entry.RuleName, entry.TemplateID, entry.AgentKind,
 		entry.StagePrevious, entry.StagePreviousOutcome, entry.ChainID,
-		entry.DisplayID, entry.IssueTitle, entry.IssueURL,
+		entry.DisplayID, entry.IssueTitle, entry.IssueURL, entry.Trigger,
 	)
 	if err != nil {
 		return fmt.Errorf("save retry entry %q: %w", entry.IssueID, err)
@@ -96,7 +102,7 @@ func (s *Store) SaveRetryEntry(ctx context.Context, entry RetryEntry) error {
 func (s *Store) LoadRetryEntries(ctx context.Context) ([]RetryEntry, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT issue_id, identifier, attempt, due_at_ms, error, session_id, rule_name, template_id, agent_kind,
-			stage_previous, stage_previous_outcome, chain_id, display_identifier, issue_title, issue_url
+			stage_previous, stage_previous_outcome, chain_id, display_identifier, issue_title, issue_url, trigger
 		FROM retry_entries
 		ORDER BY due_at_ms ASC, issue_id ASC`)
 	if err != nil {
@@ -111,7 +117,7 @@ func (s *Store) LoadRetryEntries(ctx context.Context) ([]RetryEntry, error) {
 		var ssnVal sql.NullString
 		if err := rows.Scan(&e.IssueID, &e.Identifier, &e.Attempt, &e.DueAtMs, &errVal, &ssnVal,
 			&e.RuleName, &e.TemplateID, &e.AgentKind, &e.StagePrevious, &e.StagePreviousOutcome, &e.ChainID,
-			&e.DisplayID, &e.IssueTitle, &e.IssueURL); err != nil {
+			&e.DisplayID, &e.IssueTitle, &e.IssueURL, &e.Trigger); err != nil {
 			return nil, fmt.Errorf("scan retry entry: %w", err)
 		}
 		if errVal.Valid {

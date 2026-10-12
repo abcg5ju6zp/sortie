@@ -723,6 +723,7 @@ func TestHandleRetryTimer(t *testing.T) {
 				state := retryState(t, id, id, 2)
 				entry := state.RetryAttempts[id]
 				entry.SessionID, entry.ReactionKind = "sess-keep", ReactionKindCI
+				entry.Error = "worker exited: boom"
 				entry.ContinuationContext = map[string]any{"ci_failure": "failing"}
 				state.StageHops[id] = &StageHopEntry{Count: 2}
 				return state
@@ -742,6 +743,9 @@ func TestHandleRetryTimer(t *testing.T) {
 				}
 				if entry.Attempt != 2 || entry.SessionID != "sess-keep" || entry.ReactionKind != ReactionKindCI || entry.ContinuationContext == nil || !entry.noStateObserved {
 					t.Errorf("RetryAttempts[%s] = %+v, want attempt 2, session, reaction kind and continuation kept, noStateObserved set", id, entry)
+				}
+				if entry.Error != "issue without a state label" || entry.Trigger != "timer" {
+					t.Errorf("RetryAttempts[%s] error, trigger = %q, %q, want %q, %q", id, entry.Error, entry.Trigger, "issue without a state label", "timer")
 				}
 				if _, claimed := state.Claimed[id]; !claimed || state.StageHops[id] == nil || len(state.Running) != 0 {
 					t.Errorf("after the first no-state reading claimed = %v, hop kept = %v, running = %d; want true, true, 0", claimed, state.StageHops[id] != nil, len(state.Running))
@@ -1627,6 +1631,7 @@ func TestHandleRetryTimer_WorkerStillRunningReschedulesInsteadOfDispatching(t *t
 	tracker := &mockRetryTracker{}
 
 	state := retryState(t, "ISS-1", "ISS-1", 2)
+	state.RetryAttempts["ISS-1"].Error = "worker exited: boom"
 	state.Running["ISS-1"] = &RunningEntry{
 		Identifier: "ISS-1",
 		Issue:      candidateIssue("ISS-1", "ISS-1", "In Progress"),
@@ -1658,6 +1663,9 @@ func TestHandleRetryTimer_WorkerStillRunningReschedulesInsteadOfDispatching(t *t
 	}
 	if entry.Attempt != 2 {
 		t.Errorf("rescheduled Attempt = %d, want 2 (same as original)", entry.Attempt)
+	}
+	if entry.Error != "worker still running" || entry.Trigger != "timer" {
+		t.Errorf("rescheduled error, trigger = %q, %q, want %q, %q", entry.Error, entry.Trigger, "worker still running", "timer")
 	}
 	if entry.TimerHandle == nil {
 		t.Error("rescheduled TimerHandle = nil, want non-nil")
@@ -2655,6 +2663,7 @@ func TestHandleRetryTimer_ReactionInUnrelatedStateReschedules(t *testing.T) {
 		Identifier:          id,
 		Attempt:             1,
 		ReactionKind:        ReactionKindReview,
+		Error:               "worker exited: boom",
 		ContinuationContext: contContext,
 		SessionID:           "sess-x",
 		LastSSHHost:         "host-a",
@@ -2682,6 +2691,9 @@ func TestHandleRetryTimer_ReactionInUnrelatedStateReschedules(t *testing.T) {
 	}
 	if entry.ReactionKind != ReactionKindReview {
 		t.Errorf("RetryAttempts[%s].ReactionKind = %q, want %q", id, entry.ReactionKind, ReactionKindReview)
+	}
+	if entry.Error != "reaction retry paused by issue state" || entry.Trigger != "timer" {
+		t.Errorf("RetryAttempts[%s] error, trigger = %q, %q, want %q, %q", id, entry.Error, entry.Trigger, "reaction retry paused by issue state", "timer")
 	}
 	if entry.ContinuationContext == nil {
 		t.Fatal("RetryAttempts.ContinuationContext is nil, want preserved")
@@ -2931,6 +2943,7 @@ func TestHandleRetryTimer_ReactionActiveStateBlockerReschedules(t *testing.T) {
 		Identifier:          id,
 		Attempt:             1,
 		ReactionKind:        ReactionKindReview,
+		Error:               "worker exited: boom",
 		ContinuationContext: contContext,
 		SessionID:           "sess-b",
 		LastSSHHost:         "host-b",
@@ -2959,6 +2972,9 @@ func TestHandleRetryTimer_ReactionActiveStateBlockerReschedules(t *testing.T) {
 	}
 	if entry.ReactionKind != ReactionKindReview {
 		t.Errorf("RetryAttempts[%s].ReactionKind = %q, want %q", id, entry.ReactionKind, ReactionKindReview)
+	}
+	if entry.Error != "reaction retry paused by an open blocking issue" || entry.Trigger != "timer" {
+		t.Errorf("RetryAttempts[%s] error, trigger = %q, %q, want %q, %q", id, entry.Error, entry.Trigger, "reaction retry paused by an open blocking issue", "timer")
 	}
 	if entry.ContinuationContext == nil {
 		t.Fatal("RetryAttempts.ContinuationContext nil after blocker reschedule, want preserved")
