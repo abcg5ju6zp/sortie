@@ -1952,6 +1952,7 @@ Returns the system-wide runtime state including running sessions, retry queue, b
       "issue_title": "Fix the flaky login test",
       "issue_url": "https://tracker.example.com/browse/MT-649",
       "issue_labels": ["bug", "backend"],
+      "issue_type": "Bug",
       "state": "In Progress",
       "session_id": "thread-1-turn-1",
       "turn_count": 7,
@@ -2004,6 +2005,9 @@ Returns the system-wide runtime state including running sessions, retry queue, b
       "issue_identifier": "MT-650",
       "issue_title": "Retry the export job",
       "issue_url": "https://tracker.example.com/browse/MT-650",
+      "issue_type": "Task",
+      "issue_labels": ["export"],
+      "state": "In Progress",
       "attempt": 3,
       "due_at": "2026-02-24T20:16:00Z",
       "error": "no available orchestrator slots",
@@ -2023,6 +2027,9 @@ Returns the system-wide runtime state including running sessions, retry queue, b
       "issue_identifier": "MT-651",
       "issue_title": "Migrate the billing tables",
       "issue_url": "https://tracker.example.com/browse/MT-651",
+      "issue_type": "Task",
+      "issue_labels": [],
+      "state": "In Progress",
       "reason": "session_budget",
       "used_sessions": 3,
       "budget_sessions": 3,
@@ -2158,6 +2165,8 @@ Returns the system-wide runtime state including running sessions, retry queue, b
 | `issue_title`             | string or absent  | The tracker's title of the issue, as read when the session was dispatched and unchanged for the whole run. Omitted when the tracker returned none. Masked: a value registered as a secret is replaced by `[redacted]`. |
 | `issue_url`               | string or absent  | The tracker's web link of the issue, as read at dispatch. Omitted when the tracker returned none. A Jira link carries no user name or password of `tracker.endpoint`. Masked like `issue_title`. |
 | `issue_labels`            | array of strings  | The issue's labels as read at dispatch, lowercase and in the tracker's order. Always present; `[]` when the issue carries none. Masked like `issue_title`. |
+| `issue_type`              | string or absent  | The tracker's issue type, as read at dispatch. Omitted when the tracker returned none. Masked like `issue_title`. |
+| `state`                   | string            | The tracker state of the issue as Sortie last read it for the session. Masked like `issue_title`. |
 | `ssh_host`                | string or absent  | The SSH host the session runs on. Omitted for a local session. |
 | `workflow_file`           | string or absent  | Base filename of the `WORKFLOW.md` in force at dispatch. Omitted when unset. |
 | `agent_kind`              | string or absent  | The agent kind the session runs, from the configuration in force at dispatch. Omitted when unset. |
@@ -2196,14 +2205,17 @@ A limit key (`budget_tokens`, `budget_sessions`) is always present: `null` means
 
 **Retry and budget-exhausted identity fields:**
 
-Each row of `retrying` and each record of `budget_exhausted` carries these flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`. Both are masked like the running row's `issue_title`.
+Each row of `retrying` and each record of `budget_exhausted` carries these flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`. Every one is masked like the running row's `issue_title`.
 
 | Field         | Type             | Description                                                                                                                                  |
 | ------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `issue_title` | string or absent | The tracker's title of the issue. Omitted when empty, which on a retry row means the retry holds no read of its issue yet. |
 | `issue_url`   | string or absent | The tracker's web link of the issue. Omitted when empty, under the same rule as `issue_title`. |
+| `issue_type`  | string or absent | The tracker's issue type. Omitted when empty or unread. |
+| `issue_labels` | array of strings or absent | The issue's labels, lowercase and in the tracker's order. `[]` when the issue was read and carries none; omitted while the row holds no read of its labels, so an unread issue never reads as one without labels. |
+| `state`       | string or absent | The tracker state of the issue. Omitted when empty or unread. |
 
-A retry row carries the read of the issue the retry was scheduled with. Sortie stores the read with the retry and restores it at startup, so a restart serves the title, link, and display identifier it served before. A retry restored from a row stored by an earlier release holds no read; it takes one from the next poll tick whose candidates list its issue, or from its next fire, and a read already held is never replaced. A `budget_exhausted` record carries the read of the poll tick that last rebuilt the set, or of the retry the hold was found on until the next tick.
+A retry row carries the read of the issue the retry was scheduled with. Sortie stores the read with the retry and restores it at startup, so a restart serves the title, link, display identifier, type, labels, and state it served before. A retry restored from a row stored by an earlier release holds no read; it takes one from the next poll tick whose candidates list its issue, or from its next fire. A retry restored from a row stored before the type, labels, and state were recorded holds a title and link and no labels; it takes the type, labels, and state of the same next read and keeps its title and link. A title or link already held is never replaced. A `budget_exhausted` record carries the read of the poll tick that last rebuilt the set, or of the retry the hold was found on until the next tick.
 
 Each record of `budget_exhausted` also carries `stopped_in_flight`, an integer or `null`: the number of the issue's completed sessions that the token ceiling stopped mid-run. It is `null` exactly when the record's `used_tokens` is `null`, that is when the token ceiling was not evaluated for the issue. The record's own `budget_tokens` and `budget_sessions` serve `0` when the ceiling is not set, unlike the same keys on a running row.
 
@@ -2401,6 +2413,13 @@ Returns issue-specific runtime and debug details for a single issue. Returns `40
   "issue_identifier": "MT-649",
   "issue_id": "abc123",
   "status": "running",
+  "issue": {
+    "title": "Fix the flaky login test",
+    "url": "https://tracker.example.com/browse/MT-649",
+    "issue_type": "Bug",
+    "labels": ["bug", "backend"],
+    "state": "In Progress"
+  },
   "workspace": {
     "path": "/tmp/sortie_workspaces/MT-649"
   },
@@ -2412,6 +2431,7 @@ Returns issue-specific runtime and debug details for a single issue. Returns `40
     "issue_title": "Fix the flaky login test",
     "issue_url": "https://tracker.example.com/browse/MT-649",
     "issue_labels": ["bug", "backend"],
+    "issue_type": "Bug",
     "session_id": "thread-1-turn-1",
     "turn_count": 7,
     "state": "In Progress",
@@ -2463,6 +2483,14 @@ Returns issue-specific runtime and debug details for a single issue. Returns `40
 ```
 
 The `running` object uses the same per-session field schema as `GET /api/v1/state` (see the per-session fields table above). `status` is `"running"` when the issue has a running session, `"retrying"` when it does not but has a pending retry, `"budget_exhausted"` when it has neither but is held out of dispatch by a per-issue budget ceiling, `"parked"` when it is none of those but is parked, and `"pending_reactions"` when it is none of those but a pending pull request reaction holds it. The fields for whichever cases do not apply are `null`. `budget_exhausted` carries the same record shape as the `budget_exhausted` array on `GET /api/v1/state`, and `parked` the record shape of the `parked` array. `pending_reactions` is always present: the issue's rows in the record shape and order of the `pending_reactions` array on `GET /api/v1/state`, `[]` when the issue has none, whatever the status. A parked-only or pending-reaction-only response carries a `null` `workspace`, zero `attempts`, and a `null` `last_error`, as a budget-exhausted one does. `last_error` is the retry's `error`, so after a reschedule it is the reschedule reason.
+
+`issue` is present on every `200` response, built from the entry that decides `status`. Its members take the names of the prompt template's `issue` variable, and each is omitted when that entry holds none, so the object is `{}` when it holds none of them. All are masked like the running row's `issue_title`. `labels` is `[]` when the entry holds labels and the issue carries none.
+
+| `status`                                         | `issue` members |
+| ------------------------------------------------ | --------------- |
+| `running`, `retrying`, `budget_exhausted`        | `title`, `url`, `issue_type`, `labels`, and `state`, from the row's `issue_title`, `issue_url`, `issue_type`, `issue_labels`, and `state` |
+| `parked`                                         | `title` and `url` of the record, and `state` from its `parked_state` |
+| `pending_reactions`                              | `title` and `url` of the issue's first row |
 
 #### `POST /api/v1/refresh`
 

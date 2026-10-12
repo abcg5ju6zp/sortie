@@ -997,10 +997,20 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	now := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
 	state.Running["ISS-1"] = &RunningEntry{
-		Issue: domain.Issue{ID: "ISS-1", Title: "rotate " + value, Labels: []string{"ops", "leak-" + value}},
+		Issue: domain.Issue{
+			ID: "ISS-1", Title: "rotate " + value, Labels: []string{"ops", "leak-" + value},
+			IssueType: "type-" + value, State: "state-" + value,
+		},
 	}
 	state.RetryAttempts["ISS-2"] = &RetryEntry{
-		IssueID: "ISS-2", IssueIdentity: IssueIdentity{Title: "rotate " + value},
+		IssueID: "ISS-2",
+		IssueIdentity: IssueIdentity{
+			Title: "rotate " + value, IssueType: "type-" + value,
+			Labels: []string{"ops", "leak-" + value}, State: "state-" + value,
+		},
+	}
+	state.BudgetExhausted["ISS-5"] = &BudgetExhaustedEntry{
+		Identifier: "PROJ-5", IssueIdentity: IssueIdentity{State: "state-" + value},
 	}
 	state.Parked["ISS-3"] = &ParkedEntry{
 		Identifier: "PROJ-3", IssueIdentity: IssueIdentity{Title: "rotate " + value},
@@ -1016,9 +1026,9 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 
 	result := RuntimeSnapshot(state, now)
 
-	if len(result.Running) != 1 || len(result.Retrying) != 1 || len(result.Parked) != 1 {
-		t.Fatalf("RuntimeSnapshot rows = %d running, %d retrying, %d parked, want 1, 1, 1",
-			len(result.Running), len(result.Retrying), len(result.Parked))
+	if len(result.Running) != 1 || len(result.Retrying) != 1 || len(result.Parked) != 1 || len(result.BudgetExhausted) != 1 {
+		t.Fatalf("RuntimeSnapshot rows = %d running, %d retrying, %d parked, %d budget, want 1, 1, 1, 1",
+			len(result.Running), len(result.Retrying), len(result.Parked), len(result.BudgetExhausted))
 	}
 	running, retrying := result.Running[0], result.Retrying[0]
 	if want := "rotate " + redact.Marker; running.IssueTitle != want {
@@ -1027,8 +1037,26 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	if want := []string{"ops", "leak-" + redact.Marker}; !slices.Equal(running.IssueLabels, want) {
 		t.Errorf("Running[0].IssueLabels = %q, want %q", running.IssueLabels, want)
 	}
+	if want := "type-" + redact.Marker; running.IssueType != want {
+		t.Errorf("Running[0].IssueType = %q, want %q", running.IssueType, want)
+	}
+	if want := "state-" + redact.Marker; running.State != want {
+		t.Errorf("Running[0].State = %q, want %q", running.State, want)
+	}
 	if want := "rotate " + redact.Marker; retrying.IssueTitle != want {
 		t.Errorf("Retrying[0].IssueTitle = %q, want %q", retrying.IssueTitle, want)
+	}
+	if want := "type-" + redact.Marker; retrying.IssueType != want {
+		t.Errorf("Retrying[0].IssueType = %q, want %q", retrying.IssueType, want)
+	}
+	if want := []string{"ops", "leak-" + redact.Marker}; !slices.Equal(retrying.IssueLabels, want) {
+		t.Errorf("Retrying[0].IssueLabels = %q, want %q", retrying.IssueLabels, want)
+	}
+	if want := "state-" + redact.Marker; retrying.State != want {
+		t.Errorf("Retrying[0].State = %q, want %q", retrying.State, want)
+	}
+	if want := "state-" + redact.Marker; result.BudgetExhausted[0].State != want {
+		t.Errorf("BudgetExhausted[0].State = %q, want %q", result.BudgetExhausted[0].State, want)
 	}
 	if want := "rotate " + redact.Marker; result.Parked[0].IssueTitle != want {
 		t.Errorf("Parked[0].IssueTitle = %q, want %q", result.Parked[0].IssueTitle, want)

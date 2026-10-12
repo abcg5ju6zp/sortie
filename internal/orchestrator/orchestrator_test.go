@@ -5340,15 +5340,18 @@ func TestHandleTick_FillsRetryHoldingNoRead(t *testing.T) {
 	t.Parallel()
 
 	candidates := []domain.Issue{
-		{ID: "iss-1", Identifier: "TEST-1", DisplayID: "acme/web#1", Title: "first title", URL: "https://example.test/1", State: "To Do"},
-		{ID: "iss-2", Identifier: "TEST-2", DisplayID: "acme/web#2", Title: "candidate title", URL: "https://example.test/2", State: "To Do"},
+		{ID: "iss-1", Identifier: "TEST-1", DisplayID: "acme/web#1", Title: "first title", URL: "https://example.test/1", IssueType: "Bug", Labels: []string{"a", "b"}, State: "To Do"},
+		{ID: "iss-2", Identifier: "TEST-2", DisplayID: "acme/web#2", Title: "candidate title", URL: "https://example.test/2", IssueType: "Story", Labels: []string{"c"}, State: "In Progress"},
+		{ID: "iss-4", Identifier: "TEST-4", Title: "fresh title", URL: "https://example.test/4", IssueType: "Task", Labels: []string{"new"}, State: "Done"},
 	}
-	held := IssueIdentity{Title: "held title", URL: "https://example.test/held"}
+	partial := IssueIdentity{Title: "held title", URL: "https://example.test/held"}
+	complete := IssueIdentity{Title: "read title", URL: "https://example.test/read", IssueType: "Epic", Labels: []string{}, State: "Blocked"}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
 	for id, entry := range map[string]*RetryEntry{
 		"iss-1": {IssueID: "iss-1", Identifier: "TEST-1"},
-		"iss-2": {IssueID: "iss-2", Identifier: "TEST-2", DisplayID: "acme/web#held", IssueIdentity: held},
+		"iss-2": {IssueID: "iss-2", Identifier: "TEST-2", DisplayID: "acme/web#held", IssueIdentity: partial},
 		"iss-3": {IssueID: "iss-3", Identifier: "TEST-3"},
+		"iss-4": {IssueID: "iss-4", Identifier: "TEST-4", IssueIdentity: complete},
 	} {
 		state.RetryAttempts[id] = entry
 		state.Claimed[id] = struct{}{}
@@ -5360,15 +5363,16 @@ func TestHandleTick_FillsRetryHoldingNoRead(t *testing.T) {
 
 	budgetOrchestrator(state, budgetTickConfig(0), &stubStore{}, tracker).handleTick(context.Background())
 
-	type row struct{ displayID, title, url string }
+	type row struct{ displayID, title, url, issueType, labels, state string }
 	got := map[string]row{}
 	for _, r := range RuntimeSnapshot(state, time.Now()).Retrying {
-		got[r.IssueID] = row{r.DisplayID, r.IssueTitle, r.IssueURL}
+		got[r.IssueID] = row{r.DisplayID, r.IssueTitle, r.IssueURL, r.IssueType, strings.Join(r.IssueLabels, ","), r.State}
 	}
 	want := map[string]row{
-		"iss-1": {"acme/web#1", "first title", "https://example.test/1"},
-		"iss-2": {"acme/web#held", "held title", "https://example.test/held"},
+		"iss-1": {"acme/web#1", "first title", "https://example.test/1", "Bug", "a,b", "To Do"},
+		"iss-2": {"acme/web#held", "held title", "https://example.test/held", "Story", "c", "In Progress"},
 		"iss-3": {},
+		"iss-4": {"", "read title", "https://example.test/read", "Epic", "", "Blocked"},
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("Retrying rows after handleTick = %+v, want %+v", got, want)

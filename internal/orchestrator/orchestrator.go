@@ -1286,8 +1286,10 @@ func (o *Orchestrator) maybeWriteIncrementalMetadata(ctx context.Context, issueI
 }
 
 // fillRetryIdentity gives each queued retry that holds no read of its issue
-// the read this tick's candidates carry. A retry that holds a read, or that
-// no candidate matches, keeps its values. Must run on the event loop.
+// the read this tick's candidates carry, and a retry that holds only a title
+// or link the candidate's type, labels, and state. A retry that holds a
+// complete read, or that no candidate matches, keeps its values. Must run on
+// the event loop.
 func (o *Orchestrator) fillRetryIdentity(candidates []domain.Issue) {
 	if len(o.state.RetryAttempts) == 0 {
 		return
@@ -1298,15 +1300,14 @@ func (o *Orchestrator) fillRetryIdentity(candidates []domain.Issue) {
 		candidateByID[issue.ID] = issue
 	}
 	for id, entry := range o.state.RetryAttempts {
-		if entry.IssueIdentity != (IssueIdentity{}) {
-			continue
-		}
 		candidate, ok := candidateByID[id]
 		if !ok {
 			continue
 		}
-		entry.IssueIdentity = issueIdentityOf(candidate)
-		entry.DisplayID = candidate.DisplayID
+		if entry.IssueIdentity.isZero() {
+			entry.DisplayID = candidate.DisplayID
+		}
+		entry.IssueIdentity = entry.IssueIdentity.filledFrom(issueIdentityOf(candidate))
 	}
 }
 
@@ -1367,7 +1368,7 @@ func (o *Orchestrator) refreshParkedIssues(ctx context.Context, candidates []dom
 		if !observeParkedState(ctx, o.state, o.store, o.logger, entry, id, observed) {
 			continue
 		}
-		if entry.IssueIdentity != (IssueIdentity{}) {
+		if !entry.IssueIdentity.isZero() {
 			continue
 		}
 		issue, err := o.trackerAdapter.FetchIssueByID(ctx, id)
@@ -1386,11 +1387,11 @@ func (o *Orchestrator) refreshParkedIssues(ctx context.Context, candidates []dom
 // no read and is still parked. A read that names nothing leaves the park as
 // it was.
 func (o *Orchestrator) backfillParkedIdentity(ctx context.Context, id string, entry *ParkedEntry, issue domain.Issue) {
-	if o.state.Parked[id] != entry || entry.IssueIdentity != (IssueIdentity{}) {
+	if o.state.Parked[id] != entry || !entry.IssueIdentity.isZero() {
 		return
 	}
 	identity := issueIdentityOf(issue)
-	if identity == (IssueIdentity{}) {
+	if identity.Title == "" && identity.URL == "" {
 		return
 	}
 	entry.IssueIdentity = identity

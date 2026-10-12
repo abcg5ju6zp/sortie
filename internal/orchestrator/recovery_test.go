@@ -551,28 +551,35 @@ func TestPopulateRetries_SessionID(t *testing.T) {
 	t.Parallel()
 
 	sessID := "sess-abc"
-	state := NewState(5000, 4, 0, nil, AgentTotals{})
-	entries := []persistence.PendingRetry{
-		{
-			Entry: persistence.RetryEntry{
-				IssueID:    "id-sess",
-				Identifier: "PROJ-SESS",
-				Attempt:    1,
-				DueAtMs:    10000,
-				SessionID:  &sessID,
-			},
-			RemainingMs: 5000,
-		},
+	tests := []struct {
+		name      string
+		sessionID *string
+		want      string
+	}{
+		{"session id restored", &sessID, sessID},
+		{"nil session id restored empty", nil, ""},
 	}
 
-	PopulateRetries(state, entries, nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	got, ok := state.RetryAttempts["id-sess"]
-	if !ok {
-		t.Fatal("RetryAttempts[id-sess] missing after PopulateRetries")
-	}
-	if got.SessionID != sessID {
-		t.Errorf("PopulateRetries_SessionID: SessionID = %q, want %q", got.SessionID, sessID)
+			state := NewState(5000, 4, 0, nil, AgentTotals{})
+			entries := []persistence.PendingRetry{{
+				Entry:       persistence.RetryEntry{IssueID: "id-sess", Identifier: "PROJ-SESS", Attempt: 1, DueAtMs: 10000, SessionID: tt.sessionID},
+				RemainingMs: 5000,
+			}}
+
+			PopulateRetries(state, entries, nil)
+
+			got, ok := state.RetryAttempts["id-sess"]
+			if !ok {
+				t.Fatal("RetryAttempts[id-sess] missing after PopulateRetries")
+			}
+			if got.SessionID != tt.want {
+				t.Errorf("PopulateRetries SessionID = %q, want %q", got.SessionID, tt.want)
+			}
+		})
 	}
 }
 
@@ -595,64 +602,57 @@ func TestPopulateRetries_RestoredClaimStartsWithoutTheRuleSettingsFlag(t *testin
 func TestPopulateRetries_RestartKeepsIssueIdentity(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	store := openInMemoryStore(t)
-	before := NewState(5000, 4, 0, nil, AgentTotals{})
-	before.RetryAttempts["iss-1"] = &RetryEntry{IssueID: "iss-1", Identifier: "PROJ-1", Attempt: 1, DueAtMS: 10000}
-	persistRetryEntry(ctx, discardLogger(), store, before, "iss-1")
-	entry := before.RetryAttempts["iss-1"]
-	entry.DisplayID = "acme/web#1"
-	entry.IssueIdentity = IssueIdentity{Title: "Fix the login redirect", URL: "https://example.test/acme/web/issues/1"}
-	entry.Trigger = triggerTimer
-	persistRetryEntry(ctx, discardLogger(), store, before, "iss-1")
-
-	pending, err := store.LoadRetryEntriesForRecovery(ctx, 0)
-	if err != nil {
-		t.Fatalf("LoadRetryEntriesForRecovery: %v", err)
-	}
-	after := NewState(5000, 4, 0, nil, AgentTotals{})
-	PopulateRetries(after, pending, nil)
-
-	retrying := RuntimeSnapshot(after, recoveryNow).Retrying
-	if len(retrying) != 1 {
-		t.Fatalf("len(Retrying) = %d, want 1", len(retrying))
-	}
-	got := [4]string{retrying[0].DisplayID, retrying[0].IssueTitle, retrying[0].IssueURL, retrying[0].Trigger}
-	want := [4]string{"acme/web#1", "Fix the login redirect", "https://example.test/acme/web/issues/1", "timer"}
-	if got != want {
-		t.Errorf("Retrying[0] display id, title, url, trigger = %q, want %q", got, want)
-	}
-}
-
-func TestPopulateRetries_SessionID_Nil(t *testing.T) {
-	t.Parallel()
-
-	state := NewState(5000, 4, 0, nil, AgentTotals{})
-	entries := []persistence.PendingRetry{
-		{
-			Entry: persistence.RetryEntry{
-				IssueID:    "id-nosess",
-				Identifier: "PROJ-NOSESS",
-				Attempt:    1,
-				DueAtMs:    10000,
-				SessionID:  nil,
-			},
-			RemainingMs: 0,
-		},
+	tests := []struct {
+		name   string
+		labels []string
+	}{
+		{"labels read", []string{"backend", "urgent"}},
+		{"read with no labels", []string{}},
+		{"labels never read", nil},
 	}
 
-	PopulateRetries(state, entries, nil)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	got, ok := state.RetryAttempts["id-nosess"]
-	if !ok {
-		t.Fatal("RetryAttempts[id-nosess] missing after PopulateRetries")
-	}
-	if got.SessionID != "" {
-		t.Errorf("PopulateRetries_SessionID_Nil: SessionID = %q, want empty", got.SessionID)
+			ctx := context.Background()
+			store := openInMemoryStore(t)
+			before := NewState(5000, 4, 0, nil, AgentTotals{})
+			before.RetryAttempts["iss-1"] = &RetryEntry{IssueID: "iss-1", Identifier: "PROJ-1", Attempt: 1, DueAtMS: 10000}
+			persistRetryEntry(ctx, discardLogger(), store, before, "iss-1")
+			entry := before.RetryAttempts["iss-1"]
+			entry.DisplayID = "acme/web#1"
+			entry.IssueIdentity = IssueIdentity{
+				Title: "Fix the login redirect", URL: "https://example.test/acme/web/issues/1",
+				IssueType: "Bug", Labels: tt.labels, State: "In Review",
+			}
+			entry.Trigger = triggerTimer
+			persistRetryEntry(ctx, discardLogger(), store, before, "iss-1")
+
+			pending, err := store.LoadRetryEntriesForRecovery(ctx, 0)
+			if err != nil {
+				t.Fatalf("LoadRetryEntriesForRecovery: %v", err)
+			}
+			after := NewState(5000, 4, 0, nil, AgentTotals{})
+			PopulateRetries(after, pending, nil)
+
+			retrying := RuntimeSnapshot(after, recoveryNow).Retrying
+			if len(retrying) != 1 {
+				t.Fatalf("len(Retrying) = %d, want 1", len(retrying))
+			}
+			got := retrying[0]
+			gotFacts := [6]string{got.DisplayID, got.IssueTitle, got.IssueURL, got.Trigger, got.IssueType, got.State}
+			wantFacts := [6]string{"acme/web#1", "Fix the login redirect", "https://example.test/acme/web/issues/1", "timer", "Bug", "In Review"}
+			if gotFacts != wantFacts {
+				t.Errorf("Retrying[0] display id, title, url, trigger, type, state = %q, want %q", gotFacts, wantFacts)
+			}
+			if !slices.Equal(got.IssueLabels, tt.labels) || (got.IssueLabels == nil) != (tt.labels == nil) {
+				t.Errorf("Retrying[0].IssueLabels = %#v, want %#v", got.IssueLabels, tt.labels)
+			}
+		})
 	}
 }
 
-// recoveryNow is a fixed instant used as the NowFunc reference for recovery tests.
 var recoveryNow = time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
 // writeRecoverySCM writes meta as .sortie/scm.json inside <wsRoot>/<key>.

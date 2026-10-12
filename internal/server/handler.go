@@ -49,6 +49,7 @@ type runningEntryResponse struct {
 	IssueTitle          string         `json:"issue_title,omitempty"`
 	IssueURL            string         `json:"issue_url,omitempty"`
 	IssueLabels         []string       `json:"issue_labels"`
+	IssueType           string         `json:"issue_type,omitempty"`
 	State               string         `json:"state"`
 	SessionID           string         `json:"session_id"`
 	TurnCount           int            `json:"turn_count"`
@@ -118,6 +119,9 @@ type retryEntryResponse struct {
 	DisplayIdentifier string    `json:"display_identifier,omitempty"`
 	IssueTitle        string    `json:"issue_title,omitempty"`
 	IssueURL          string    `json:"issue_url,omitempty"`
+	IssueType         string    `json:"issue_type,omitempty"`
+	IssueLabels       []string  `json:"issue_labels,omitzero"`
+	State             string    `json:"state,omitempty"`
 	Attempt           int       `json:"attempt"`
 	DueAt             time.Time `json:"due_at"`
 	Error             string    `json:"error"`
@@ -239,6 +243,9 @@ type budgetExhaustedResponse struct {
 	DisplayIdentifier  string    `json:"display_identifier,omitempty"`
 	IssueTitle         string    `json:"issue_title,omitempty"`
 	IssueURL           string    `json:"issue_url,omitempty"`
+	IssueType          string    `json:"issue_type,omitempty"`
+	IssueLabels        []string  `json:"issue_labels,omitzero"`
+	State              string    `json:"state,omitempty"`
 	Reason             string    `json:"reason"`
 	UsedSessions       int       `json:"used_sessions"`
 	BudgetSessions     int       `json:"budget_sessions"`
@@ -249,10 +256,22 @@ type budgetExhaustedResponse struct {
 	ExhaustedAt        time.Time `json:"exhausted_at"`
 }
 
+// issueResponse is the tracker's view of one issue, under the names the
+// prompt template's issue variable uses. A member is omitted when its source
+// holds none; Labels is nil only when the source holds no read of the labels.
+type issueResponse struct {
+	Title     string   `json:"title,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	IssueType string   `json:"issue_type,omitempty"`
+	Labels    []string `json:"labels,omitzero"`
+	State     string   `json:"state,omitempty"`
+}
+
 type issueDetailResponse struct {
 	IssueIdentifier  string                    `json:"issue_identifier"`
 	IssueID          string                    `json:"issue_id"`
 	Status           string                    `json:"status"`
+	Issue            issueResponse             `json:"issue"`
 	Workspace        *workspaceInfo            `json:"workspace"`
 	Attempts         *attemptsInfo             `json:"attempts"`
 	Running          *runningEntryResponse     `json:"running"`
@@ -298,6 +317,7 @@ func toRunningEntryResponse(e orchestrator.SnapshotRunningEntry, nowArgs ...time
 		IssueTitle:          e.IssueTitle,
 		IssueURL:            e.IssueURL,
 		IssueLabels:         e.IssueLabels,
+		IssueType:           e.IssueType,
 		State:               e.State,
 		SessionID:           e.SessionID,
 		TurnCount:           e.TurnCount,
@@ -415,6 +435,9 @@ func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse 
 		DisplayIdentifier: e.DisplayID,
 		IssueTitle:        e.IssueTitle,
 		IssueURL:          e.IssueURL,
+		IssueType:         e.IssueType,
+		IssueLabels:       e.IssueLabels,
+		State:             e.State,
 		Attempt:           e.Attempt,
 		DueAt:             time.UnixMilli(e.DueAtMS).UTC(),
 		Error:             e.Error,
@@ -487,6 +510,9 @@ func toBudgetExhaustedResponse(e orchestrator.SnapshotBudgetEntry) budgetExhaust
 		DisplayIdentifier:  e.DisplayID,
 		IssueTitle:         e.IssueTitle,
 		IssueURL:           e.IssueURL,
+		IssueType:          e.IssueType,
+		IssueLabels:        e.IssueLabels,
+		State:              e.State,
 		Reason:             e.Reason,
 		UsedSessions:       e.UsedSessions,
 		BudgetSessions:     e.BudgetSessions,
@@ -773,23 +799,54 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 
 	var status string
 	var issueID string
+	var issue issueResponse
 
 	switch {
 	case runEntry != nil:
 		status = "running"
 		issueID = runEntry.IssueID
+		issue = issueResponse{
+			Title:     runEntry.IssueTitle,
+			URL:       runEntry.IssueURL,
+			IssueType: runEntry.IssueType,
+			Labels:    runEntry.IssueLabels,
+			State:     runEntry.State,
+		}
 	case retryEntry != nil:
 		status = "retrying"
 		issueID = retryEntry.IssueID
+		issue = issueResponse{
+			Title:     retryEntry.IssueTitle,
+			URL:       retryEntry.IssueURL,
+			IssueType: retryEntry.IssueType,
+			Labels:    retryEntry.IssueLabels,
+			State:     retryEntry.State,
+		}
 	case budgetEntry != nil:
 		status = "budget_exhausted"
 		issueID = budgetEntry.IssueID
+		issue = issueResponse{
+			Title:     budgetEntry.IssueTitle,
+			URL:       budgetEntry.IssueURL,
+			IssueType: budgetEntry.IssueType,
+			Labels:    budgetEntry.IssueLabels,
+			State:     budgetEntry.State,
+		}
 	case parkedEntry != nil:
 		status = "parked"
 		issueID = parkedEntry.IssueID
+		issue = issueResponse{
+			Title: parkedEntry.IssueTitle,
+			URL:   parkedEntry.IssueURL,
+			State: parkedEntry.ParkedState,
+		}
 	case len(pendingRows) > 0:
 		status = "pending_reactions"
 		issueID = pendingRows[0].IssueID
+		issue = issueResponse{
+			Title: pendingRows[0].IssueTitle,
+			URL:   pendingRows[0].IssueURL,
+		}
 	default:
 		status = "unknown"
 	}
@@ -822,6 +879,7 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 		IssueIdentifier:  identifier,
 		IssueID:          issueID,
 		Status:           status,
+		Issue:            issue,
 		Workspace:        ws,
 		Attempts:         attempts,
 		Running:          runEntry,

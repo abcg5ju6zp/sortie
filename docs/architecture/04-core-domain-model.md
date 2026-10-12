@@ -150,6 +150,7 @@ Fields:
 - `timer_handle` (runtime-specific timer reference; runtime-only, not persisted to SQLite)
 - `error` (string or null)
 - `trigger` (string; the `sortie_retries_total` label of the schedule that created the entry, empty when that schedule records none; persisted with the entry)
+- `issue_title`, `issue_url`, `issue_type`, `issue_labels`, `issue_state` (strings and a list of strings; the issue's title, web link, type, labels, and tracker state as read when the entry was scheduled; persisted with the entry and restored at startup; a read that records no labels leaves `issue_labels` absent, which differs from an empty list, and an entry holding a title or link and no labels takes the type, labels, and state of its next read without replacing the title or link)
 
 Note: `timer_handle` is a runtime-only field and is not persisted. On restart, pending retries are reconstructed from the persisted `due_at` timestamps stored in SQLite.
 

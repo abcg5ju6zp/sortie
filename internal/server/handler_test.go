@@ -220,103 +220,6 @@ func TestToRunningEntryResponse(t *testing.T) {
 	}
 }
 
-// TestToRunningEntryResponse_ExtendedFields verifies that the
-// CacheReadTokens, ModelName, APIRequestCount, and RequestsByModel
-// fields are mapped correctly through the wire-type constructor for a
-// measured entry, whose figures the constructor carries rather than
-// nulls.
-func TestToRunningEntryResponse_ExtendedFields(t *testing.T) {
-	t.Parallel()
-
-	entry := orchestrator.SnapshotRunningEntry{
-		IssueID:         "issue-ext",
-		Identifier:      "MT-EXT",
-		State:           "In Progress",
-		StartedAt:       time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC),
-		CacheReadTokens: 8000,
-		ModelName:       "claude-sonnet-4-20250514",
-		APIRequestCount: 15,
-		RequestsByModel: map[string]int{"claude-sonnet-4-20250514": 12, "claude-opus-4-20250514": 3},
-
-		UsageMeasured:       true,
-		APIRequestsMeasured: true,
-	}
-
-	got := toRunningEntryResponse(entry)
-
-	if got.Tokens.CacheReadTokens == nil {
-		t.Fatal("Tokens.CacheReadTokens = nil, want 8000 on a measured entry")
-	}
-	if *got.Tokens.CacheReadTokens != 8000 {
-		t.Errorf("Tokens.CacheReadTokens = %d, want 8000", *got.Tokens.CacheReadTokens)
-	}
-	if got.ModelName != "claude-sonnet-4-20250514" {
-		t.Errorf("ModelName = %q, want %q", got.ModelName, "claude-sonnet-4-20250514")
-	}
-	if got.APIRequestCount == nil {
-		t.Fatal("APIRequestCount = nil, want 15 on a measured entry")
-	}
-	if *got.APIRequestCount != 15 {
-		t.Errorf("APIRequestCount = %d, want 15", *got.APIRequestCount)
-	}
-	if len(got.RequestsByModel) != 2 {
-		t.Fatalf("len(RequestsByModel) = %d, want 2", len(got.RequestsByModel))
-	}
-	if got.RequestsByModel["claude-sonnet-4-20250514"] != 12 {
-		t.Errorf("RequestsByModel[sonnet] = %d, want 12", got.RequestsByModel["claude-sonnet-4-20250514"])
-	}
-}
-
-// TestToRunningEntryResponse_ExtendedFields_JSON verifies that the new
-// fields serialize correctly as JSON with proper keys.
-func TestToRunningEntryResponse_ExtendedFields_JSON(t *testing.T) {
-	t.Parallel()
-
-	entry := orchestrator.SnapshotRunningEntry{
-		IssueID:           "issue-json",
-		Identifier:        "MT-JSON",
-		State:             "In Progress",
-		StartedAt:         time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC),
-		AgentInputTokens:  1000,
-		AgentOutputTokens: 500,
-		AgentTotalTokens:  1500,
-		CacheReadTokens:   3000,
-		ModelName:         "test-model",
-		APIRequestCount:   7,
-		RequestsByModel:   map[string]int{"test-model": 7},
-
-		UsageMeasured:       true,
-		APIRequestsMeasured: true,
-	}
-
-	got := toRunningEntryResponse(entry)
-	data, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
-	}
-
-	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("json.Unmarshal: %v", err)
-	}
-
-	// Check JSON key names.
-	tokens := decoded["tokens"].(map[string]any)
-	if tokens["cache_read_tokens"] != float64(3000) {
-		t.Errorf("JSON tokens.cache_read_tokens = %v, want 3000", tokens["cache_read_tokens"])
-	}
-	if decoded["model_name"] != "test-model" {
-		t.Errorf("JSON model_name = %v, want %q", decoded["model_name"], "test-model")
-	}
-	if decoded["api_request_count"] != float64(7) {
-		t.Errorf("JSON api_request_count = %v, want 7", decoded["api_request_count"])
-	}
-	rbm := decoded["requests_by_model"].(map[string]any)
-	if rbm["test-model"] != float64(7) {
-		t.Errorf("JSON requests_by_model[test-model] = %v, want 7", rbm["test-model"])
-	}
-}
-
 func TestToRunningEntryResponse_ConfiguredSettingsBesideTheReportedModel(t *testing.T) {
 	t.Parallel()
 
@@ -943,43 +846,6 @@ func TestToRunningEntryResponse_ZeroStartedAt_JSON_Null(t *testing.T) {
 	}
 }
 
-func TestToRetryEntryResponse(t *testing.T) {
-	t.Parallel()
-
-	dueAtMS := int64(1711276800000) // 2024-03-24T12:00:00.000Z
-	entry := orchestrator.SnapshotRetryEntry{
-		IssueID:    "retry-1",
-		Identifier: "MT-301",
-		Attempt:    3,
-		DueAtMS:    dueAtMS,
-		Error:      "agent timeout",
-	}
-
-	got := toRetryEntryResponse(entry)
-
-	if got.IssueID != "retry-1" {
-		t.Errorf("IssueID = %q, want %q", got.IssueID, "retry-1")
-	}
-	if got.IssueIdentifier != "MT-301" {
-		t.Errorf("IssueIdentifier = %q, want %q", got.IssueIdentifier, "MT-301")
-	}
-	if got.Attempt != 3 {
-		t.Errorf("Attempt = %d, want %d", got.Attempt, 3)
-	}
-	if got.Error != "agent timeout" {
-		t.Errorf("Error = %q, want %q", got.Error, "agent timeout")
-	}
-
-	// DueAt should be UTC.
-	if got.DueAt.Location() != time.UTC {
-		t.Errorf("DueAt location = %v, want UTC", got.DueAt.Location())
-	}
-	wantDueAt := time.UnixMilli(dueAtMS).UTC()
-	if !got.DueAt.Equal(wantDueAt) {
-		t.Errorf("DueAt = %v, want %v", got.DueAt, wantDueAt)
-	}
-}
-
 func TestEntryResponses_KeysJSON(t *testing.T) {
 	t.Parallel()
 
@@ -999,6 +865,7 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				IssueTitle:          "Fix the login redirect",
 				IssueURL:            "https://acme.atlassian.net/browse/PROJ-1",
 				IssueLabels:         []string{"backend", "urgent"},
+				IssueType:           "Bug",
 				State:               "In Progress",
 				SessionID:           "sess-1",
 				TurnCount:           4,
@@ -1018,6 +885,7 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				"issue_title":           "Fix the login redirect",
 				"issue_url":             "https://acme.atlassian.net/browse/PROJ-1",
 				"issue_labels":          []any{"backend", "urgent"},
+				"issue_type":            "Bug",
 				"state":                 "In Progress",
 				"session_id":            "sess-1",
 				"turn_count":            float64(4),
@@ -1049,6 +917,48 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				"issue_url":          "https://acme.atlassian.net/browse/PROJ-2",
 				"attempt":            float64(3),
 				"error":              "agent timeout",
+			},
+		},
+		{
+			name: "retry carries the issue facts and a UTC due time",
+			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{IssueType: "Task", IssueLabels: []string{"backend", "urgent"}, State: "To Do", DueAtMS: startedAt.UnixMilli()}),
+			want: map[string]any{"issue_type": "Task", "issue_labels": []any{"backend", "urgent"}, "state": "To Do", "due_at": "2026-03-24T12:00:00Z"},
+		},
+		{
+			name:   "retry without a read of labels omits the issue facts",
+			body:   toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Attempt: 1}),
+			want:   map[string]any{"attempt": float64(1)},
+			absent: []string{"issue_type", "issue_labels", "state"},
+		},
+		{
+			name: "retry whose issue carries no labels serves an empty list",
+			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{IssueLabels: []string{}}),
+			want: map[string]any{"issue_labels": []any{}},
+		},
+		{
+			name: "running measured usage and per-model requests",
+			body: toRunningEntryResponse(orchestrator.SnapshotRunningEntry{
+				IssueID:             "id-4",
+				Identifier:          "PROJ-4",
+				StartedAt:           startedAt,
+				AgentInputTokens:    1000,
+				AgentOutputTokens:   500,
+				AgentTotalTokens:    1500,
+				CacheReadTokens:     3000,
+				ModelName:           "test-model",
+				APIRequestCount:     7,
+				RequestsByModel:     map[string]int{"test-model": 7},
+				UsageMeasured:       true,
+				APIRequestsMeasured: true,
+			}),
+			want: map[string]any{
+				"tokens": map[string]any{
+					"input_tokens": 1000, "output_tokens": 500, "total_tokens": 1500,
+					"cache_read_tokens": 3000, "cache_write_tokens": 0,
+				},
+				"model_name":        "test-model",
+				"api_request_count": 7,
+				"requests_by_model": map[string]any{"test-model": 7},
 			},
 		},
 		{name: "retry trigger error", body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Trigger: "error"}), want: map[string]any{"trigger": "error"}},
@@ -1103,6 +1013,11 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				"used_sessions":      float64(3),
 				"budget_sessions":    float64(3),
 			},
+		},
+		{
+			name: "budget exhausted carries the issue facts",
+			body: toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{IssueType: "Story", IssueLabels: []string{"billing"}, State: "Backlog"}),
+			want: map[string]any{"issue_type": "Story", "issue_labels": []any{"billing"}, "state": "Backlog"},
 		},
 		{
 			name: "budget exhausted with sessions stopped in flight",
@@ -2016,6 +1931,33 @@ func TestBuildIssueDetail(t *testing.T) {
 		}
 		if got.Attempts.RestartCount != 1 {
 			t.Errorf("Attempts.RestartCount = %d, want %d", got.Attempts.RestartCount, 1)
+		}
+	})
+
+	t.Run("issue object carries the deciding row's values", func(t *testing.T) {
+		t.Parallel()
+		issueSnap := orchestrator.RuntimeSnapshotResult{
+			Running:         []orchestrator.SnapshotRunningEntry{{Identifier: "MT-1", IssueTitle: "Run", IssueURL: "https://t.example/MT-1", IssueType: "Bug", IssueLabels: []string{"a"}, State: "In Progress"}},
+			Retrying:        []orchestrator.SnapshotRetryEntry{{Identifier: "MT-2", IssueTitle: "Retry", IssueURL: "https://t.example/MT-2", IssueType: "Task", IssueLabels: []string{"b"}, State: "To Do"}},
+			BudgetExhausted: []orchestrator.SnapshotBudgetEntry{{Identifier: "MT-3", IssueTitle: "Held", IssueURL: "https://t.example/MT-3", IssueType: "Story", IssueLabels: []string{"c"}, State: "Backlog"}},
+		}
+		tests := []struct {
+			identifier string
+			want       issueResponse
+		}{
+			{"MT-1", issueResponse{Title: "Run", URL: "https://t.example/MT-1", IssueType: "Bug", Labels: []string{"a"}, State: "In Progress"}},
+			{"MT-2", issueResponse{Title: "Retry", URL: "https://t.example/MT-2", IssueType: "Task", Labels: []string{"b"}, State: "To Do"}},
+			{"MT-3", issueResponse{Title: "Held", URL: "https://t.example/MT-3", IssueType: "Story", Labels: []string{"c"}, State: "Backlog"}},
+		}
+
+		for _, tt := range tests {
+			got := buildIssueDetail(tt.identifier, issueSnap, nil)
+			if got == nil {
+				t.Fatalf("buildIssueDetail(%q) = nil, want non-nil", tt.identifier)
+			}
+			if !reflect.DeepEqual(got.Issue, tt.want) {
+				t.Errorf("buildIssueDetail(%q).Issue = %+v, want %+v", tt.identifier, got.Issue, tt.want)
+			}
 		}
 	})
 
