@@ -860,6 +860,8 @@ func defaultRecoveryParams(wsRoot string, tracker domain.TrackerAdapter) Pending
 		MaxCandidates:    PendingReactionRecoveryMaxCandidates,
 		NowFunc:          func() time.Time { return recoveryNow },
 		Logger:           discardLogger(),
+
+		ReviewReactionConfigured: true,
 	}
 }
 
@@ -954,6 +956,7 @@ func TestRecoverPendingReactions_RecreatesCIAfterRestart(t *testing.T) {
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
 	run := freshRun("ISS-2", "PROJ-2", "", 1)
 	params := defaultRecoveryParams(wsRoot, tracker)
+	params.ReviewReactionConfigured = false
 
 	result, err := RecoverPendingReactions(context.Background(), state, []persistence.RunHistory{run}, params)
 	if err != nil {
@@ -961,6 +964,12 @@ func TestRecoverPendingReactions_RecreatesCIAfterRestart(t *testing.T) {
 	}
 	if result.CIRecovered != 1 {
 		t.Errorf("CIRecovered = %d, want 1", result.CIRecovered)
+	}
+	if result.ReviewRecovered != 0 {
+		t.Errorf("ReviewRecovered = %d, want 0 without the review reaction configured", result.ReviewRecovered)
+	}
+	if _, ok := state.PendingReactions[ReactionKey("ISS-2", ReactionKindReview)]; ok {
+		t.Error("PendingReactions[ISS-2:review] present, want absent without the review reaction configured")
 	}
 
 	rkey := ReactionKey("ISS-2", ReactionKindCI)

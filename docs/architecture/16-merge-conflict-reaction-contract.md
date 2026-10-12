@@ -28,13 +28,13 @@ Not every adapter can satisfy the rule. The Gitea adapter's single `mergeable` b
 
 The merge-conflict reconcile pass runs after `reconcileBotReviewComments` and before `reconcileAutoMerge` in each poll tick. It is skipped entirely when no `SCMAdapter` is constructed or when merge-conflict is not configured.
 
-The state machine mirrors `reconcileCIStatus` (§11A), not the bot-review or auto-merge loops. The defining property: there is no retry-budget check before the `GetMergeability` read. The read runs on every due tick so the not-dirty branch (N1, which resets the per-episode attempt counter) is always reachable. The budget check and the attempt increment live inside the dirty branch (D1), after the precondition guards and the head-SHA dedup. The comparison is strict over-limit (`attempts > MaxRetries`), matching `handleCIFailure`.
+The state machine mirrors `reconcileCIStatus` (§11A), not the bot-review or auto-merge loops. The defining property: there is no retry-budget check before the `GetMergeability` read. The read runs on every due tick so the not-dirty branch (N1, which resets the per-episode attempt counter) is always reachable. The budget check and the attempt increment live inside the dirty branch (D1), after the precondition guards and the head-SHA dedup. The comparison is strict over-limit (`attempts > MaxRetries`).
 
 Loop body per `ReactionKindMergeConflict` entry in `state.PendingReactions`:
 
 1. Delete the entry from the map (prevents reprocessing within the same tick).
 2. Type-assert `KindData` to `*MergeConflictReactionData`; on mismatch, log and skip.
-3. Drop the entry when its age, measured from the entry's creation rather than from the last recorded head, exceeds the configured `reactions.merge_conflicts.watch_window_ms` (default `1800000`, thirty minutes; `0` removes the bound).
+3. Drop the entry when its age, counted from the entry's creation or its last retry-slot deferral and never from the last recorded head, exceeds the configured `reactions.merge_conflicts.watch_window_ms` (default `1800000`, thirty minutes; `0` removes the bound).
 4. Respect the `PendingRetryAt` poll throttle: if `now < PendingRetryAt`, re-enqueue and continue.
 5. If the entry holds a triage run that has not finished (Section 5.3.8), re-enqueue it ready for the next tick and continue. `GetMergeability` is not called and the pending-backoff counter is untouched.
 6. Call `GetMergeability`. On error, increment the pending-backoff counter, set `PendingRetryAt`, re-enqueue, count `sortie_merge_conflict_checks_total{result="error"}`, and continue.
@@ -47,7 +47,7 @@ Loop body per `ReactionKindMergeConflict` entry in `state.PendingReactions`:
 
 Before any dispatch, the dirty branch applies three precondition guards, in order. All three run before any counter increment, so a deferral never burns an attempt:
 
-- **Retry-slot guard**: consult the retry slot (Section 7.5) first, ahead of every other guard. A non-nil incumbent means the branch defers as a whole, re-enqueuing the pending entry unchanged except for a refreshed `CreatedAt` and returning without touching the fingerprint, the counter, or `sortie_merge_conflict_checks_total`.
+- **Retry-slot guard**: consult the retry slot (Section 7.5) first, ahead of every other guard. A non-nil incumbent means the branch defers as a whole, re-enqueuing the pending entry with its watch window restarted, its creation time unchanged, and returning without touching the fingerprint, the counter, or `sortie_merge_conflict_checks_total`.
 - **D1a**: if `status.HeadSHA == ""`, defer at poll interval (no rebase anchor).
 - **D1b**: if `status.BaseBranch == ""`, defer at poll interval (no rebase target). This is defense-in-depth: every wired adapter always populates `BaseBranch` (§11E.1), so D1b is a safety net rather than a normal-operation path on any of them.
 

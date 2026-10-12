@@ -490,6 +490,17 @@ func CancelRetry(state *State, issueID string) {
 	delete(state.RetryAttempts, issueID)
 }
 
+// releaseClaimUnlessRunning deletes the issue's claim unless a worker runs
+// for it. A running worker's exit decides its own claim and re-seeds the
+// watches its dispatch consumed, so releasing the claim under it would make
+// that exit seed nothing.
+func releaseClaimUnlessRunning(state *State, issueID string) {
+	if state.Running[issueID] != nil {
+		return
+	}
+	delete(state.Claimed, issueID)
+}
+
 // retrySlotIncumbent returns the retry entry occupying the issue's retry
 // slot, or nil when the slot is free. The retry slot holds at most one
 // entry per issue; a non-nil result means another unit of work already

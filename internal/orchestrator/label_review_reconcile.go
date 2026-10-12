@@ -77,6 +77,8 @@ func reconcileLabelReviewCommands(state *State, params ReconcileParams, log *slo
 			continue
 		}
 
+		readPullRequestURL(ctx, params.SCMAdapter, pending, entryLog)
+
 		// The dispatched flag is not consulted for this kind. The read error
 		// is: at-most-once rests solely on the mark, and this kind has no
 		// turn cap to bound a duplicate, so when the mark cannot be read the
@@ -87,7 +89,7 @@ func reconcileLabelReviewCommands(state *State, params ReconcileParams, log *slo
 			pending.PendingAttempts++
 			delay := max(computeReactionPendingDelay(pending.PendingAttempts), pollInterval)
 			pending.PendingRetryAt = now.Add(delay)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			entryLog.Warn("label-review fingerprint read failed, backing off without dispatch",
 				slog.Int("pr_number", data.PRNumber),
 				slog.Any("error", fpErr),
@@ -102,7 +104,7 @@ func reconcileLabelReviewCommands(state *State, params ReconcileParams, log *slo
 			pending.PendingAttempts++
 			delay := max(computeReactionPendingDelay(pending.PendingAttempts), pollInterval)
 			pending.PendingRetryAt = now.Add(delay)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			entryLog.Warn("label-review journal fetch failed, retrying with backoff",
 				slog.Int("pr_number", data.PRNumber),
 				slog.Any("error", err),
@@ -122,7 +124,7 @@ func reconcileLabelReviewCommands(state *State, params ReconcileParams, log *slo
 		}
 		if len(newEvents) == 0 {
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			continue
 		}
 
@@ -151,8 +153,7 @@ func reconcileLabelReviewCommands(state *State, params ReconcileParams, log *slo
 		// past the labeling event and swallow the gesture.
 		if commandConfirmed && incumbent != nil && incumbent.ReactionKind != ReactionKindLabelReview {
 			logRetrySlotDeferral(entryLog, ReactionKindLabelReview, incumbent)
-			pending.CreatedAt = now
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitRetrySlot)
 			continue
 		}
 
@@ -214,7 +215,7 @@ func reconcileLabelReviewCommands(state *State, params ReconcileParams, log *slo
 			// Re-enqueue so the detection loop survives the dispatch,
 			// decoupled from the scratch workspace the session runs in.
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			continue
 		}
 
@@ -228,7 +229,7 @@ func reconcileLabelReviewCommands(state *State, params ReconcileParams, log *slo
 		}
 		data.HighWaterMark = newestMark
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitPollInterval)
 	}
 }
 

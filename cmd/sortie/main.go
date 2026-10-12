@@ -721,6 +721,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 				CIProvider:                        ciProvider,
 				SCMAdapter:                        scmAdapter,
 				AutoMergeReactionConfigured:       autoMergeConfigured,
+				ReviewReactionConfigured:          reviewActive,
 				BotReviewReactionConfigured:       botReviewConfigured,
 				MergeConflictReactionConfigured:   mergeConflictConfigured,
 				LabelReviewReactionConfigured:     labelReviewConfigured,

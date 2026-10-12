@@ -57,6 +57,8 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 			continue
 		}
 
+		readPullRequestURL(ctx, params.SCMAdapter, pending, entryLog)
+
 		// The dispatched flag is not consulted for this kind. The read error
 		// is: at-most-once rests solely on the mark, and this kind has no
 		// turn cap to bound a duplicate, so when the mark cannot be read the
@@ -67,7 +69,7 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 			pending.PendingAttempts++
 			delay := max(computeReactionPendingDelay(pending.PendingAttempts), pollInterval)
 			pending.PendingRetryAt = now.Add(delay)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			entryLog.Warn("label-fix fingerprint read failed, backing off without dispatch",
 				slog.Int("pr_number", data.PRNumber),
 				slog.Any("error", fpErr),
@@ -82,7 +84,7 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 			pending.PendingAttempts++
 			delay := max(computeReactionPendingDelay(pending.PendingAttempts), pollInterval)
 			pending.PendingRetryAt = now.Add(delay)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			entryLog.Warn("label-fix journal fetch failed, retrying with backoff",
 				slog.Int("pr_number", data.PRNumber),
 				slog.Any("error", err),
@@ -102,7 +104,7 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 		}
 		if len(newEvents) == 0 {
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			continue
 		}
 
@@ -131,8 +133,7 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 		// past the labeling event and swallow the gesture.
 		if commandConfirmed && incumbent != nil && incumbent.ReactionKind != ReactionKindLabelFix {
 			logRetrySlotDeferral(entryLog, ReactionKindLabelFix, incumbent)
-			pending.CreatedAt = now
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitRetrySlot)
 			continue
 		}
 
@@ -194,7 +195,7 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 			// Re-enqueue so the detection loop survives the dispatch,
 			// decoupled from the per-issue workspace the session runs in.
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			continue
 		}
 
@@ -208,7 +209,7 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 		}
 		data.HighWaterMark = newestMark
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitPollInterval)
 	}
 }
 

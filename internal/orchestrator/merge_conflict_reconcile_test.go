@@ -1261,17 +1261,14 @@ func TestReconcileRunningIssues_MergeConflictOrdering(t *testing.T) {
 	})
 }
 
-// TestReconcileMergeConflicts_ForeignIncumbentDefers covers the deferral
-// half of the retry-slot arbitration check at the top of the dirty
-// branch: a foreign incumbent survives, MarkReactionDispatched is not
-// called for the merge-conflict kind, and the merge-conflict
-// ReactionAttempts counter does not move.
 func TestReconcileMergeConflicts_ForeignIncumbentDefers(t *testing.T) {
 	t.Parallel()
 
 	const issueID = "MC-DEFER"
 	state := stateWithMergeConflict(t, issueID, 10)
 	rkey := ReactionKey(issueID, ReactionKindMergeConflict)
+	seededAt := mcBaseTime.Add(-5 * time.Minute)
+	state.PendingReactions[rkey].CreatedAt = seededAt
 	state.RetryAttempts[issueID] = &RetryEntry{
 		IssueID:      issueID,
 		Attempt:      1,
@@ -1284,6 +1281,7 @@ func TestReconcileMergeConflicts_ForeignIncumbentDefers(t *testing.T) {
 		return dirtyStatus("head-defer", "main"), nil
 	}}
 	params := mergeConflictParams(store, scm, nil)
+	params.MergeConflictPendingTTL = 10 * time.Minute
 
 	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
 
@@ -1291,8 +1289,11 @@ func TestReconcileMergeConflicts_ForeignIncumbentDefers(t *testing.T) {
 	if !ok {
 		t.Fatal("PendingReactions entry dropped on a defer; want re-enqueued")
 	}
-	if !entry.CreatedAt.Equal(mcBaseTime) {
-		t.Errorf("CreatedAt = %v, want refreshed to %v", entry.CreatedAt, mcBaseTime)
+	if !entry.CreatedAt.Equal(seededAt) {
+		t.Errorf("CreatedAt = %v, want %v (a deferral leaves it unchanged)", entry.CreatedAt, seededAt)
+	}
+	if !entry.WatchRestartedAt.Equal(mcBaseTime) {
+		t.Errorf("WatchRestartedAt = %v, want %v (the deferral restarts the watch window)", entry.WatchRestartedAt, mcBaseTime)
 	}
 	incumbent := state.RetryAttempts[issueID]
 	if incumbent.ReactionKind != ReactionKindCI {
@@ -1307,12 +1308,18 @@ func TestReconcileMergeConflicts_ForeignIncumbentDefers(t *testing.T) {
 	if metrics.checks["dispatched"] != 0 {
 		t.Errorf(`IncMergeConflictChecks("dispatched") = %d, want 0`, metrics.checks["dispatched"])
 	}
+
+	// Past the window measured from creation (seededAt + 10m), inside the
+	// restarted one (mcBaseTime + 10m).
+	params.NowFunc = func() time.Time { return mcBaseTime.Add(8 * time.Minute) }
+
+	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
+
+	if _, ok := state.PendingReactions[rkey]; !ok {
+		t.Error("PendingReactions entry dropped past its creation-based window but inside the restarted one; want kept")
+	}
 }
 
-// TestReconcileMergeConflicts_FreeSlotControlDispatches is the free-slot
-// control paired with TestReconcileMergeConflicts_ForeignIncumbentDefers:
-// the same dirty setup, but with no incumbent occupying the slot, results
-// in a merge-conflict retry and exactly one MarkReactionDispatched call.
 func TestReconcileMergeConflicts_FreeSlotControlDispatches(t *testing.T) {
 	t.Parallel()
 

@@ -165,6 +165,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - The budget-exhausted gauge reports a per-reason level derived from the current set, seeded to zero for every declared reason on each recompute, so a reason that clears reports zero rather than freezing at its last published value
 - Both `GET /api/v1/state` and `GET /api/v1/{identifier}` carry the budget-exhausted record's identifier, reason, and numbers, and the per-issue endpoint answers for a budget-blocked issue instead of reporting it unknown
 - Retry rows of both endpoints carry the trigger, the reaction kind with its `reactions` key, and the paused flag, and a retry the retry timer rescheduled carries its reschedule reason instead of the error of the run before it; both endpoints serve a parked issue, the per-issue one instead of reporting it unknown
+- Both endpoints carry one pending reaction row per issue and kind, with the `reactions` key the kind is configured under, the pull request with its link, the creation time, the next check time, the wait reason, the tries used of the kind's ceiling, the escalation time, and the latest check result; `counts.pending_reactions` equals the list length, and the list is empty when no reaction is pending
+- A pending reaction row serves `null` for a `merge-conflict` mergeability the provider has not computed, `null` tries and ceiling and no wait reason for a `label-review` row, and a `null` escalation time until the reaction escalates
+- A pending reaction row serves the pull request link the provider reported, the reason of the pass that last returned the entry (poll interval, debounce, backoff, retry slot, or triage), and a next check time equal to the entry's retry time; a debounced review row's next check ends the debounce window and its actionable and new comment counts equal the comments served
+- The per-issue endpoint answers 200 with status `pending_reactions` and the issue's rows for an issue held only by a pending reaction, keeps every other status for an issue that already resolved, and answers 404 for an identifier in no list
+- A registered secret held in a pending reaction's branch, link, or failing check name is masked in the row
 - The dashboard renders a budget-blocked card and table only when the exhausted set is non-empty
 - A hold entering the budget-exhausted set, on either lane, delivers exactly one `budget.held` event to its destinations, which posts one tracker comment naming the fired ceiling and its governing setting when the `tracker_comment` destination receives it; a tick or retry fire that re-observes the same hold under the same reason delivers nothing further
 - A hold whose `budget.held` delivery has no destination spends no pacing slot and writes neither a durable notice row nor a memory entry, on either lane; after a configuration change subscribes a destination to `budget.held`, the next pass delivers the notice exactly once
@@ -191,12 +196,17 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - CI status passing clears CI fix attempts for the issue
 - CI status pending re-enqueues the pending check for the next tick
 - CI status failing within `max_retries` schedules a CI-fix dispatch with failure context
-- CI status failing beyond `max_retries` escalates (applies the label under `label`, and emits the `escalation.ci_failure` event under every posture) and releases the claim
+- CI status failing with the CI fix counter at `max_retries` escalates (applies the label under `label`, and emits the `escalation.ci_failure` event under every posture) and releases the claim when no worker runs for the issue; a running worker's exit decides the claim and re-seeds the watches its dispatch consumed
+- A CI escalation records its time on the entry once per pull request head and leaves the CI fix counter at `max_retries`; a second failing pass over that head keeps both, and the pending reaction row serves the escalation time, the failing check's name, and the check counts
+- A failing pass over an already-escalated head with the CI fix counter at `max_retries` appends no run-history row, so a head that stays red spends none of the issue's `agent.max_sessions`; every other failing pass appends one
 - CI failure context is injected into turn 1 prompt via `prompt.WithContinuationContext`
 - Escalation label failure is logged but does not block claim release
 - `.sortie/scm.json` symlink rejection prevents CI check enqueue
 - `.sortie/scm.json` oversized or malformed files degrade to no-CI behavior
 - Review comment reconciliation is skipped when `reactions.review_comments` is not configured
+- Worker exit and startup recovery seed a `review` entry only while `reactions.review_comments` is configured, whatever other reaction builds the SCM adapter
+- A review check on a spent budget that finds no comment a run was not given leaves a result with a new comment count of zero, however many actionable comments it found
+- A retry-slot deferral of a `review`, `bot-review`, or `merge-conflict` entry leaves its creation time unchanged and restarts its watch window, so the window keeps its length; a deferral of a `label-review` or `label-fix` entry refreshes nothing
 - A review pending entry younger than the configured `watch_window_ms` survives and re-enqueues; one whose age exactly equals the window still survives; one older than the window is dropped, leaving the claim, the retry, the fingerprint row, and every sibling kind's entry untouched; a configured `0` leaves an entry far older than thirty minutes in place
 - Review comment poll throttle respected (PendingRetryAt in future → skip)
 - Review comment fetch error increments backoff and re-enqueues
@@ -234,7 +244,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Merge-conflict reconciliation is skipped when no SCM adapter is constructed or when merge-conflict is not configured, and the pass runs after bot-review and before auto-merge
 - Only the normalized `dirty` state arms the reaction; `unknown` defers at the poll interval without touching the fingerprint or the attempt counter
 - A provider whose mergeability mapping never yields `dirty` leaves the kind inert: every due tick defers and the configured watch window drops the entry without escalating
-- A merge-conflict pending entry ages against its own configured `watch_window_ms`, the drop deletes only its own attempt counter, and an entry with a non-zero `HeadRecordedAt` still ages from `CreatedAt` rather than from `HeadRecordedAt`
+- A merge-conflict pending entry ages against its own configured `watch_window_ms`, the drop deletes only its own attempt counter, and an entry with a non-zero `HeadRecordedAt` still ages from its creation or its last retry-slot deferral, never from `HeadRecordedAt`
 - The mergeability read runs on every due tick with no retry-budget check ahead of it, so the not-dirty branch that closes the episode stays reachable
 - The retry-slot guard, the empty head-SHA guard, and the empty base-branch guard all run before the attempt increment, so a deferral never burns an attempt
 - The merge-conflict fingerprint is the SHA-256 of the head SHA under its own kind row; a same-head dispatched observation re-enqueues without incrementing or dispatching, a new head re-arms a fresh attempt, and the not-dirty branch deletes the row so the next dirty observation dispatches

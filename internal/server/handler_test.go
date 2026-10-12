@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,59 @@ func assertJSONKeys(t *testing.T, body any, want map[string]any) {
 			t.Errorf("JSON %q = %v (present=%t), want %v", key, gotValue, present, wantValue)
 		}
 	}
+}
+
+const wantPendingReactionsJSON = `[
+  {"issue_id": "mno345", "issue_identifier": "MT-653", "issue_title": "Add the export button",
+   "issue_url": "https://tracker.example.com/browse/MT-653", "kind": "ci", "config_key": "ci_failure",
+   "pull_request": {"number": 931, "repository": "acme/web", "url": "https://github.com/acme/web/pull/931",
+                    "branch": "sortie/MT-653", "head_sha": "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b"},
+   "created_at": "2026-02-24T20:09:30Z", "next_poll_at": "2026-02-24T20:17:40Z", "wait": "poll_interval",
+   "used_attempts": 2, "max_attempts": 2, "escalated_at": "2026-02-24T20:12:40Z",
+   "last_check": {"observed_at": "2026-02-24T20:12:40Z", "head_sha": "9b7e3d1c0a2f4e6b8d0c1a3e5f7b9d2c4e6a8f0b",
+                  "status": "failing", "failing_checks": ["Test"], "failing": 1, "pending": 0, "passing": 4}},
+  {"issue_id": "mno345", "issue_identifier": "MT-653", "issue_title": "Add the export button",
+   "issue_url": "https://tracker.example.com/browse/MT-653", "kind": "review", "config_key": "review_comments",
+   "pull_request": {"number": 931, "repository": "acme/web", "url": "https://github.com/acme/web/pull/931",
+                    "branch": "sortie/MT-653", "head_sha": "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b"},
+   "created_at": "2026-02-24T20:09:30Z", "next_poll_at": "2026-02-24T20:16:05Z", "wait": "debounce",
+   "used_attempts": 1, "max_attempts": 3, "escalated_at": null,
+   "last_check": {"observed_at": "2026-02-24T20:15:10Z", "actionable_comments": 3, "new_comments": 1}}
+]`
+
+func pendingReactionRows() []orchestrator.SnapshotPendingReaction {
+	base := orchestrator.SnapshotPendingReaction{
+		IssueID: "mno345", Identifier: "MT-653",
+		IssueTitle: "Add the export button", IssueURL: "https://tracker.example.com/browse/MT-653",
+		PullRequest: orchestrator.SnapshotPullRequest{
+			Number: 931, Repository: "acme/web", URL: "https://github.com/acme/web/pull/931",
+			Branch: "sortie/MT-653", HeadSHA: "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b",
+		},
+	}
+
+	ci := base
+	ci.Kind, ci.ConfigKey, ci.Wait = "ci", "ci_failure", "poll_interval"
+	ci.CreatedAt = time.Date(2026, 2, 24, 15, 9, 30, 0, time.FixedZone("EST", -5*60*60))
+	ci.NextPollAt = time.Date(2026, 2, 24, 20, 17, 40, 0, time.UTC)
+	ci.UsedAttempts, ci.MaxAttempts = new(2), new(2)
+	ci.EscalatedAt = new(time.Date(2026, 2, 24, 20, 12, 40, 0, time.UTC))
+	ci.LastCheck = &orchestrator.ReactionCheck{
+		ObservedAt: time.Date(2026, 2, 24, 20, 12, 40, 0, time.UTC),
+		HeadSHA:    "9b7e3d1c0a2f4e6b8d0c1a3e5f7b9d2c4e6a8f0b",
+		CI:         &orchestrator.CICheck{Status: "failing", FailingChecks: []string{"Test"}, Failing: 1, Passing: 4},
+	}
+
+	review := base
+	review.Kind, review.ConfigKey, review.Wait = "review", "review_comments", "debounce"
+	review.CreatedAt = time.Date(2026, 2, 24, 20, 9, 30, 0, time.UTC)
+	review.NextPollAt = time.Date(2026, 2, 24, 20, 16, 5, 0, time.UTC)
+	review.UsedAttempts, review.MaxAttempts = new(1), new(3)
+	review.LastCheck = &orchestrator.ReactionCheck{
+		ObservedAt: time.Date(2026, 2, 24, 20, 15, 10, 0, time.UTC),
+		Comments:   &orchestrator.CommentCheck{Actionable: 3, New: 1},
+	}
+
+	return []orchestrator.SnapshotPendingReaction{ci, review}
 }
 
 func TestToRunningEntryResponse(t *testing.T) {
@@ -1060,6 +1114,47 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 			body: toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{}),
 			want: map[string]any{"stopped_in_flight": nil},
 		},
+		{
+			name: "pending reaction merge-conflict with mergeability not computed",
+			body: toPendingReactionResponse(orchestrator.SnapshotPendingReaction{
+				Kind: "merge-conflict",
+				LastCheck: &orchestrator.ReactionCheck{
+					ObservedAt:   startedAt,
+					HeadSHA:      "9b7e3d1c",
+					Mergeability: &orchestrator.MergeabilityCheck{},
+				},
+			}),
+			want: map[string]any{"last_check": map[string]any{"observed_at": "2026-03-24T12:00:00Z", "head_sha": "9b7e3d1c", "mergeable": nil}},
+		},
+		{
+			name: "pending reaction label-review counts no tries and records no check",
+			body: toPendingReactionResponse(orchestrator.SnapshotPendingReaction{
+				Kind:        "label-review",
+				ConfigKey:   "label_review",
+				PullRequest: orchestrator.SnapshotPullRequest{Number: 7, Repository: "acme/web"},
+			}),
+			want: map[string]any{
+				"used_attempts": nil,
+				"max_attempts":  nil,
+				"escalated_at":  nil,
+				"last_check":    nil,
+				"pull_request":  map[string]any{"number": 7, "repository": "acme/web"},
+			},
+			absent: []string{"wait", "display_identifier", "issue_title", "issue_url"},
+		},
+		{
+			name: "pending reaction passing CI serves zero counts and an empty failing_checks",
+			body: toPendingReactionResponse(orchestrator.SnapshotPendingReaction{
+				Kind: "ci",
+				LastCheck: &orchestrator.ReactionCheck{
+					ObservedAt: startedAt,
+					CI:         &orchestrator.CICheck{Status: "passing", Passing: 5},
+				},
+			}),
+			want: map[string]any{"last_check": map[string]any{
+				"observed_at": "2026-03-24T12:00:00Z", "status": "passing", "failing_checks": []any{}, "failing": 0, "pending": 0, "passing": 5,
+			}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1143,6 +1238,9 @@ func TestToStateResponse(t *testing.T) {
 		}
 		if got.Retrying == nil {
 			t.Fatal("Retrying = nil, want non-nil empty slice")
+		}
+		if got.PendingReactions == nil {
+			t.Fatal("PendingReactions = nil, want non-nil empty slice")
 		}
 		if len(got.Retrying) != 0 {
 			t.Errorf("len(Retrying) = %d, want 0", len(got.Retrying))
@@ -1231,6 +1329,21 @@ func TestToStateResponse(t *testing.T) {
 			"label":              "needs-human",
 			"label_applied":      true,
 			"parked_at":          "2026-03-24T17:00:00Z",
+		})
+	})
+
+	t.Run("pending reactions serve every key and count", func(t *testing.T) {
+		t.Parallel()
+
+		snap := orchestrator.RuntimeSnapshotResult{PendingReactions: pendingReactionRows()}
+
+		got := toStateResponse(snap, nil)
+
+		assertJSONKeys(t, got, map[string]any{
+			"counts": map[string]any{
+				"running": 0, "retrying": 0, "budget_exhausted": 0, "parked": 0, "pending_reactions": 2,
+			},
+			"pending_reactions": json.RawMessage(wantPendingReactionsJSON),
 		})
 	})
 
@@ -2280,42 +2393,107 @@ func TestHandleIssueDetail(t *testing.T) {
 func TestHandleIssueDetail_Parked(t *testing.T) {
 	t.Parallel()
 
-	snap := orchestrator.RuntimeSnapshotResult{
-		Parked: []orchestrator.SnapshotParkedEntry{
-			{IssueID: "id-p", Identifier: "MT-9", Reason: "agent_blocked", Label: "needs-human", ParkedAt: time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)},
+	parked := []orchestrator.SnapshotParkedEntry{
+		{IssueID: "id-p", Identifier: "MT-9", Reason: "agent_blocked", Label: "needs-human", ParkedAt: time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)},
+	}
+	otherIssueRow := orchestrator.SnapshotPendingReaction{IssueID: "id-o", Identifier: "MT-700", Kind: "merge", ConfigKey: "merge"}
+	rows := append(pendingReactionRows(), otherIssueRow)
+
+	tests := []struct {
+		name             string
+		snap             orchestrator.RuntimeSnapshotResult
+		identifier       string
+		wantCode         int
+		wantStatus       string
+		wantIssueID      string
+		wantParkedReason string
+		wantKinds        []string
+	}{
+		{
+			name:             "parked issue keeps its record and serves no pending reactions",
+			snap:             orchestrator.RuntimeSnapshotResult{Parked: parked, PendingReactions: rows},
+			identifier:       "MT-9",
+			wantCode:         http.StatusOK,
+			wantStatus:       "parked",
+			wantIssueID:      "id-p",
+			wantParkedReason: "agent_blocked",
+			wantKinds:        []string{},
+		},
+		{
+			name:        "issue held only by pending reactions serves its own rows",
+			snap:        orchestrator.RuntimeSnapshotResult{PendingReactions: rows},
+			identifier:  "MT-653",
+			wantCode:    http.StatusOK,
+			wantStatus:  "pending_reactions",
+			wantIssueID: "mno345",
+			wantKinds:   []string{"ci", "review"},
+		},
+		{
+			name: "retrying issue keeps its status and still serves its pending reactions",
+			snap: orchestrator.RuntimeSnapshotResult{
+				Retrying:         []orchestrator.SnapshotRetryEntry{{IssueID: "mno345", Identifier: "MT-653"}},
+				PendingReactions: rows,
+			},
+			identifier:  "MT-653",
+			wantCode:    http.StatusOK,
+			wantStatus:  "retrying",
+			wantIssueID: "mno345",
+			wantKinds:   []string{"ci", "review"},
+		},
+		{
+			name:       "identifier in no list answers 404",
+			snap:       orchestrator.RuntimeSnapshotResult{Parked: parked, PendingReactions: rows},
+			identifier: "NONEXISTENT",
+			wantCode:   http.StatusNotFound,
 		},
 	}
-	ts := testServer(t, fixedSnapshot(snap), acceptingRefresh())
 
-	resp, err := http.Get(ts.URL + "/api/v1/MT-9")
-	if err != nil {
-		t.Fatalf("GET /api/v1/MT-9: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /api/v1/MT-9 status = %d, want %d", resp.StatusCode, http.StatusOK)
-	}
-	body := decodeJSON[issueDetailResponse](t, resp)
-	if body.Status != "parked" {
-		t.Errorf("Status = %q, want %q", body.Status, "parked")
-	}
-	if body.Parked == nil || body.Parked.Reason != "agent_blocked" {
-		t.Errorf("Parked = %+v, want the parked record with reason agent_blocked", body.Parked)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	miss, err := http.Get(ts.URL + "/api/v1/NONEXISTENT")
-	if err != nil {
-		t.Fatalf("GET /api/v1/NONEXISTENT: %v", err)
-	}
-	defer func() { _ = miss.Body.Close() }()
-	if miss.StatusCode != http.StatusNotFound {
-		t.Errorf("GET /api/v1/NONEXISTENT status = %d, want %d", miss.StatusCode, http.StatusNotFound)
+			ts := testServer(t, fixedSnapshot(tt.snap), acceptingRefresh())
+
+			resp, err := http.Get(ts.URL + "/api/v1/" + tt.identifier)
+			if err != nil {
+				t.Fatalf("GET /api/v1/%s: %v", tt.identifier, err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tt.wantCode {
+				t.Fatalf("GET /api/v1/%s status = %d, want %d", tt.identifier, resp.StatusCode, tt.wantCode)
+			}
+			if tt.wantCode != http.StatusOK {
+				return
+			}
+			body := decodeJSON[issueDetailResponse](t, resp)
+
+			if body.Status != tt.wantStatus {
+				t.Errorf("GET /api/v1/%s status = %q, want %q", tt.identifier, body.Status, tt.wantStatus)
+			}
+			if body.IssueID != tt.wantIssueID {
+				t.Errorf("GET /api/v1/%s issue_id = %q, want %q", tt.identifier, body.IssueID, tt.wantIssueID)
+			}
+			if body.Workspace != nil || body.LastError != nil || body.Attempts == nil || *body.Attempts != (attemptsInfo{}) {
+				t.Errorf("GET /api/v1/%s workspace, attempts, last_error = %+v, %+v, %v, want nil, zero, nil",
+					tt.identifier, body.Workspace, body.Attempts, body.LastError)
+			}
+			if tt.wantParkedReason != "" && (body.Parked == nil || body.Parked.Reason != tt.wantParkedReason) {
+				t.Errorf("GET /api/v1/%s parked = %+v, want reason %q", tt.identifier, body.Parked, tt.wantParkedReason)
+			}
+			if body.PendingReactions == nil {
+				t.Fatalf("GET /api/v1/%s pending_reactions = null, want an array", tt.identifier)
+			}
+			gotKinds := []string{}
+			for _, row := range body.PendingReactions {
+				gotKinds = append(gotKinds, row.Kind)
+			}
+			if !slices.Equal(gotKinds, tt.wantKinds) {
+				t.Errorf("GET /api/v1/%s pending_reactions kinds = %v, want %v", tt.identifier, gotKinds, tt.wantKinds)
+			}
+		})
 	}
 }
 
-// TestHandleIssueDetail_Budget fails if the per-issue endpoint stops
-// answering for a budget-blocked issue, or if a surface this change adds
-// names a setting as a thing to change.
 func TestHandleIssueDetail_Budget(t *testing.T) {
 	t.Parallel()
 

@@ -345,6 +345,9 @@ func TestRetrySlot_ReviewDefersToLabelReview(t *testing.T) {
 	if _, ok := state.ReactionAttempts[rKey]; ok {
 		t.Errorf("ReactionAttempts[%s] present, want absent (a defer must not increment it)", rKey)
 	}
+	if got := pendingRow(t, state, issueID, ReactionKindReview).Wait; got != "retry_slot" {
+		t.Errorf("review row Wait = %q, want %q", got, "retry_slot")
+	}
 }
 
 func TestRetrySlot_CIAndLabelFixDeferrals(t *testing.T) {
@@ -655,9 +658,6 @@ func TestRetrySlot_DeferralRecordReportsContinuationForEmptyKindIncumbent(t *tes
 	}
 }
 
-// TestRetrySlot_TTLRefreshOnArbitrationDeferral verifies that CreatedAt
-// advances on every arbitration deferral, for both a TTL-bearing kind and
-// a kind with no TTL.
 func TestRetrySlot_TTLRefreshOnArbitrationDeferral(t *testing.T) {
 	t.Parallel()
 
@@ -736,7 +736,8 @@ func TestRetrySlot_TTLRefreshOnArbitrationDeferral(t *testing.T) {
 		state.Claimed[issueID] = struct{}{}
 		state.RetryAttempts[issueID] = &RetryEntry{IssueID: issueID, Attempt: 1, ReactionKind: ReactionKindCI}
 		lrKey := ReactionKey(issueID, ReactionKindLabelReview)
-		state.PendingReactions[lrKey] = retrySlotLabelReviewPending(issueID, tick1.Add(-29*time.Minute))
+		seededAt := tick1.Add(-29 * time.Minute)
+		state.PendingReactions[lrKey] = retrySlotLabelReviewPending(issueID, seededAt)
 
 		store := newRetrySlotStore()
 		scm := &retrySlotSCM{
@@ -754,8 +755,8 @@ func TestRetrySlot_TTLRefreshOnArbitrationDeferral(t *testing.T) {
 			if !ok {
 				t.Fatalf("label-review pending entry dropped at tick %v; want re-enqueued", tickNow)
 			}
-			if !entry.CreatedAt.Equal(tickNow) {
-				t.Errorf("CreatedAt at tick %v = %v, want %v", tickNow, entry.CreatedAt, tickNow)
+			if !entry.CreatedAt.Equal(seededAt) {
+				t.Errorf("CreatedAt at tick %v = %v, want %v (a deferral leaves it unchanged)", tickNow, entry.CreatedAt, seededAt)
 			}
 		}
 	})

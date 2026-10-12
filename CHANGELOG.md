@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The JSON API (`/api/v1/state`) now reports the workflow configuration in effect, so a client can tell which stages and pull request reactions the workflow runs without reading WORKFLOW.md: the tracker states, the dispatch rules in order with how each is chosen and the stage chains they form, the limit on automatic stage hops, each reaction with its limits, escalation label, and timing, the session and token budgets, the cost rates, the poll interval, the concurrency limits, the SSH hosts, and whether each agent reports token usage. It includes no credential. ([#1290](https://github.com/sortie-ai/sortie/issues/1290))
 
+- The JSON API (`/api/v1/state` and `/api/v1/{identifier}`) now lists the pull request reactions each issue waits on, such as CI, review comments, bot reviews, merge conflicts, auto-merge, merge completion, and label commands, each with its pull request and link, why it waits and when it checks next, how many tries it used of its limit where it has one, what its last check saw (the failing CI checks and how many checks fail, wait, or pass; how many review comments it found and how many of those Sortie has yet to act on; whether the pull request has merge conflicts), and when it escalated. `/api/v1/{identifier}` answers for an issue that only waits on a reaction instead of reporting it unknown. ([#1288](https://github.com/sortie-ai/sortie/issues/1288))
+
 ### Fixed
 
 - Jira issue links no longer include a user name and password written into `tracker.endpoint`, so the link opens and an agent prompt that shows it no longer exposes them. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
@@ -25,6 +27,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `sortie stats` no longer reports CI failures as runs without a price, so with every coding agent priced in `token_rates` it no longer notes that its cost figures skip some runs. ([#1071](https://github.com/sortie-ai/sortie/issues/1071))
 
 - A retry that came due but could not start now says why it was put back, for example that the issue is blocked or that its previous run is still stopping, instead of repeating an earlier run's error that no longer applies. ([#1287](https://github.com/sortie-ai/sortie/issues/1287))
+
+- The CI escalation message now gives the number of CI fixes Sortie ran; it gave one more than ran. ([#1288](https://github.com/sortie-ai/sortie/issues/1288))
+
+- An escalated CI failure no longer uses up the issue's session budget: while the checks stayed red on the same commit, Sortie counted each recheck as a session against `agent.max_sessions`. ([#1288](https://github.com/sortie-ai/sortie/issues/1288))
+
+- Sortie no longer watches pull requests for review comments when `reactions.review_comments` is not configured. A workflow with another pull request reaction, such as `ci_failure`, got a review comment escalation on the first change a reviewer requested. ([#1288](https://github.com/sortie-ai/sortie/issues/1288))
+
+- A CI or review comment escalation that fires while a fix is running no longer stops Sortie from watching the pull request's CI and review comments afterwards. ([#1288](https://github.com/sortie-ai/sortie/issues/1288))
 
 ### Migrations
 

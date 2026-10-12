@@ -29,7 +29,7 @@ const mergeConflictPendingBackoffBase = 10 * time.Second
 // not-dirty branch (which resets the per-episode attempt counter) is
 // always reachable. The per-episode counter is incremented only inside the
 // dirty branch on a new conflicting head, and the cap is strict
-// over-limit, matching [handleCIFailure].
+// over-limit.
 func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Logger, ctx context.Context, metrics domain.Metrics) {
 	if params.SCMAdapter == nil {
 		return
@@ -64,12 +64,12 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 
 		entryLog := logging.WithIssue(log, pending.IssueID, pending.Identifier)
 
-		if ttl > 0 && now.Sub(pending.CreatedAt) > ttl {
+		if ttl > 0 && now.Sub(watchWindowStart(pending)) > ttl {
 			cancelReactionTriage(pending)
 			delete(state.ReactionAttempts, ReactionKey(pending.IssueID, ReactionKindMergeConflict))
 			entryLog.Warn("merge conflict watch window elapsed, dropping",
 				slog.Int64("window_ms", int64(ttl/time.Millisecond)),
-				slog.Int64("age_ms", int64(now.Sub(pending.CreatedAt)/time.Millisecond)),
+				slog.Int64("age_ms", int64(now.Sub(watchWindowStart(pending))/time.Millisecond)),
 			)
 			continue
 		}
@@ -84,7 +84,7 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 		// counter is untouched: waiting is not a fetch error.
 		if pending.Triage != nil && !triageRunFinished(pending.Triage) {
 			pending.PendingRetryAt = now
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitTriage)
 			continue
 		}
 
@@ -96,7 +96,7 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 			pending.PendingAttempts++
 			delay := max(computeReactionPendingDelay(pending.PendingAttempts), pollInterval)
 			pending.PendingRetryAt = now.Add(delay)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			entryLog.Warn("merge conflict mergeability fetch failed, retrying with backoff",
 				slog.Any("error", err),
 				slog.Int("pending_attempts", pending.PendingAttempts),
@@ -106,12 +106,15 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 			continue
 		}
 
+		notePullRequestURL(pending, status)
+		pending.LastCheck = mergeConflictReactionCheck(status, now)
+
 		rkey := ReactionKey(pending.IssueID, ReactionKindMergeConflict)
 
 		switch status.Mergeability {
 		case domain.MergeabilityUnknown:
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			metrics.IncMergeConflictChecks("unknown")
 			entryLog.Debug("merge conflict deferred: mergeability unknown",
 				slog.Int("pr_number", data.PRNumber),
@@ -134,7 +137,7 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 			}
 			delete(state.ReactionAttempts, rkey)
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			metrics.IncMergeConflictChecks("clear")
 			entryLog.Debug("merge conflict not present, tracking reset",
 				slog.Int("pr_number", data.PRNumber),
@@ -153,8 +156,7 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 // pushes the episode strictly over the retry budget. The
 // dedup-before-attribution-before-increment ordering means a same-head
 // re-observation returns before either the attribution query or the
-// increment runs. The increment-then-strict-over-limit ordering mirrors
-// [handleCIFailure].
+// increment runs.
 func handleMergeConflictDirty(
 	state *State,
 	params ReconcileParams,
@@ -171,8 +173,8 @@ func handleMergeConflictDirty(
 ) {
 	if incumbent := retrySlotIncumbent(state, pending.IssueID); incumbent != nil {
 		logRetrySlotDeferral(log, ReactionKindMergeConflict, incumbent)
-		pending.CreatedAt = now
-		state.PendingReactions[key] = pending
+		pending.WatchRestartedAt = now
+		requeueReaction(state, key, pending, waitRetrySlot)
 		return
 	}
 
@@ -180,7 +182,7 @@ func handleMergeConflictDirty(
 	// attempt: a deferral is not a resolution attempt.
 	if status.HeadSHA == "" {
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitBackoff)
 		log.Debug("merge conflict deferred: empty head sha, no rebase anchor",
 			slog.Int("pr_number", data.PRNumber),
 		)
@@ -195,7 +197,7 @@ func handleMergeConflictDirty(
 	// attempt.
 	if status.BaseBranch == "" {
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitBackoff)
 		log.Debug("merge conflict deferred: empty base branch, no rebase target",
 			slog.Int("pr_number", data.PRNumber),
 		)
@@ -220,7 +222,7 @@ func handleMergeConflictDirty(
 		)
 	} else if storedFP == fingerprint && dispatched {
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitPollInterval)
 		log.Debug("merge conflict already dispatched for this head, skipping",
 			slog.Int("pr_number", data.PRNumber),
 		)
@@ -245,9 +247,13 @@ func handleMergeConflictDirty(
 	}, log, ctx)
 
 	switch triageVerdict {
-	case triageWait, triageHandled:
+	case triageWait:
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitTriage)
+		return
+	case triageHandled:
+		pending.PendingRetryAt = now.Add(pollInterval)
+		requeueReaction(state, key, pending, waitPollInterval)
 		return
 	case triageEscalate:
 		escalateMergeConflictFailure(state, params, pending, state.ReactionAttempts[rkey],
@@ -278,6 +284,20 @@ func handleMergeConflictDirty(
 
 	dispatchMergeConflictContinuation(state, params, pending, data, status, log, ctx)
 	metrics.IncMergeConflictChecks("dispatched")
+}
+
+// mergeConflictReactionCheck records what a mergeability read observed. A
+// nil Mergeable means the provider had not computed mergeability.
+func mergeConflictReactionCheck(status domain.PRMergeStatus, observedAt time.Time) *ReactionCheck {
+	check := &MergeabilityCheck{}
+	switch status.Mergeability {
+	case domain.MergeabilityUnknown:
+	case domain.MergeabilityDirty:
+		check.Mergeable = new(false)
+	default:
+		check.Mergeable = new(true)
+	}
+	return &ReactionCheck{ObservedAt: observedAt, HeadSHA: status.HeadSHA, Mergeability: check}
 }
 
 // buildMergeConflictFingerprint computes the SHA-256 hex digest of the PR
