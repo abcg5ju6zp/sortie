@@ -123,6 +123,7 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
 - `budget_exhausted` (list of blocked-issue records, sorted by identifier; always present, empty when the set is empty). Each record carries the issue's ID and identifier, the reason (`token_budget` or `session_budget`; `token_budget` takes precedence over `session_budget` when one issue reaches both gates), the used and budgeted session and token counts, the count of the issue's sessions the token ceiling stopped in flight (present only when the token ceiling was evaluated for the issue), the time the hold began, and the issue's title and tracker link. The title and link come from the read of the poll tick that last rebuilt the set, or from the retry the hold was found on until the next tick. The set is rebuilt per tick from those two gates (Section 8.4) and also updated by the retry lane when it discovers a hold between ticks.
 - `parked_count` (number of issues currently held out of primary dispatch; always present)
 - `parked` (list of park records, sorted by identifier and then issue ID; always present, empty when no issue is parked). Each record carries the issue's ID and identifier, the display identifier when the tracker needs a qualified form, the issue's title and tracker link, the reason (`agent_blocked` or `handoff_absence`), the tracker state observed when the park was recorded, the parking label the orchestrator applied, whether a read has shown that label on the issue, and the time the park was recorded. The title, link, and state are masked as Section 15.3 states, in the snapshot rather than in the state they are copied from. The park persists the title and link and restores them at startup. A park that holds no read of its issue, because it was recorded or restored without one, takes the first read the orchestrator takes of the issue: the next poll tick's candidate, or one single-issue read when the candidate fetch omits the issue and the batched state read of the release step finds it (Section 8.1). A read already held is never replaced or read again
+- `pending_reactions` (list of pending pull request reactions, one row per issue and kind, sorted by identifier, then issue ID, then kind; always present, empty when none). Each row carries the issue's ID, identifier, display identifier, title, and tracker link; the reaction's kind and the `reactions` key of WORKFLOW.md it is configured under; the pull request it watches (number, repository, web link, head branch, and head commit); when the orchestrator created the reaction and when its next check is due; why it waits for that check; the tries it used of its ceiling; when it escalated; and what its latest check observed. The identity and every other runtime-derived string are masked as Section 15.3 states, in the snapshot rather than in the state they are copied from. Pending reactions are runtime-only, so a restart rebuilds the rows without a link, wait reason, check result, or escalation time. Section 13.7.2 gives the keys and how to read them
 - `config` (the effective workflow shape: the tracker states, the dispatch rules in order with how each is selected, the stage chains their `next` links form, the hop ceiling, the reaction kinds the process applies with their limits, escalation, and timing, the token rates, the session and token budgets, the poll interval, the concurrency caps, the SSH hosts, and whether each agent selection reports token usage). It reports the configuration in force after the last successful load, except that a reaction appears exactly when the process applies it, with the settings it applies, and the token rates are the ones the process started with. It carries no credential. Section 13.7.2 gives the keys and how to read them
 
 Recommended snapshot error modes:
@@ -215,7 +216,7 @@ Provide a JSON REST API under `/api/v1/*` for current runtime state and operatio
 Minimum endpoints:
 
 - `GET /api/v1/state`
-  - Returns a summary view of the current system state (running sessions, retry queue/delays, aggregate token/runtime totals, latest rate limits, the effective workflow shape, and any additional tracked summary fields).
+  - Returns a summary view of the current system state (running sessions, retry queue/delays, pending pull request reactions, aggregate token/runtime totals, latest rate limits, the effective workflow shape, and any additional tracked summary fields).
   - Suggested response shape:
 
     ```json
@@ -225,7 +226,8 @@ Minimum endpoints:
         "running": 2,
         "retrying": 1,
         "budget_exhausted": 1,
-        "parked": 1
+        "parked": 1,
+        "pending_reactions": 2
       },
       "running": [
         {
@@ -325,6 +327,64 @@ Minimum endpoints:
           "label": "needs-human",
           "label_applied": true,
           "parked_at": "2026-02-24T20:05:00Z"
+        }
+      ],
+      "pending_reactions": [
+        {
+          "issue_id": "mno345",
+          "issue_identifier": "MT-653",
+          "issue_title": "Add the export button",
+          "issue_url": "https://tracker.example.com/browse/MT-653",
+          "kind": "ci",
+          "config_key": "ci_failure",
+          "pull_request": {
+            "number": 931,
+            "repository": "acme/web",
+            "url": "https://github.com/acme/web/pull/931",
+            "branch": "sortie/MT-653",
+            "head_sha": "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b"
+          },
+          "created_at": "2026-02-24T20:09:30Z",
+          "next_poll_at": "2026-02-24T20:17:40Z",
+          "wait": "poll_interval",
+          "used_attempts": 2,
+          "max_attempts": 2,
+          "escalated_at": "2026-02-24T20:12:40Z",
+          "last_check": {
+            "observed_at": "2026-02-24T20:12:40Z",
+            "head_sha": "9b7e3d1c0a2f4e6b8d0c1a3e5f7b9d2c4e6a8f0b",
+            "status": "failing",
+            "failing_checks": ["Test"],
+            "failing": 1,
+            "pending": 0,
+            "passing": 4
+          }
+        },
+        {
+          "issue_id": "mno345",
+          "issue_identifier": "MT-653",
+          "issue_title": "Add the export button",
+          "issue_url": "https://tracker.example.com/browse/MT-653",
+          "kind": "review",
+          "config_key": "review_comments",
+          "pull_request": {
+            "number": 931,
+            "repository": "acme/web",
+            "url": "https://github.com/acme/web/pull/931",
+            "branch": "sortie/MT-653",
+            "head_sha": "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b"
+          },
+          "created_at": "2026-02-24T20:09:30Z",
+          "next_poll_at": "2026-02-24T20:16:05Z",
+          "wait": "debounce",
+          "used_attempts": 1,
+          "max_attempts": 3,
+          "escalated_at": null,
+          "last_check": {
+            "observed_at": "2026-02-24T20:15:10Z",
+            "actionable_comments": 3,
+            "new_comments": 1
+          }
         }
       ],
       "agent_totals": {
@@ -429,6 +489,7 @@ Minimum endpoints:
       "retry": null,
       "budget_exhausted": null,
       "parked": null,
+      "pending_reactions": [],
       "logs": {
         "agent_session_logs": [
           {
@@ -450,8 +511,8 @@ Minimum endpoints:
     }
     ```
 
-  - `status` is `"running"` when the issue has a running session, otherwise `"retrying"` when it has a pending retry, otherwise `"budget_exhausted"` when it is held out of dispatch by a per-issue budget ceiling, otherwise `"parked"` when it is parked; `budget_exhausted` in the response body carries the same record shape as the `budget_exhausted` array on `GET /api/v1/state` and is `null` when the issue is not in that set, and `parked` carries the record shape of the `parked` array and is `null` when the issue is not parked. An issue that is only parked answers with a `null` workspace, zero attempts, and a `null` `last_error`, as a budget-held one does. `last_error` is the retry row's error, so after the retry timer reschedules a retry it is the reschedule reason.
-  - If the issue is unknown to the current in-memory state, return `404` with an error response (for example `{"error":{"code":"issue_not_found","message":"..."}}`); an issue held by a budget ceiling or parked is not unknown to it, so this case is distinct from those.
+  - `status` is `"running"` when the issue has a running session, otherwise `"retrying"` when it has a pending retry, otherwise `"budget_exhausted"` when it is held out of dispatch by a per-issue budget ceiling, otherwise `"parked"` when it is parked, otherwise `"pending_reactions"` when it is known only through a pending reaction; `budget_exhausted` in the response body carries the same record shape as the `budget_exhausted` array on `GET /api/v1/state` and is `null` when the issue is not in that set, and `parked` carries the record shape of the `parked` array and is `null` when the issue is not parked. `pending_reactions` is always present and holds the issue's rows in the record shape and order of the `pending_reactions` array, `[]` when the issue has none, whatever the status. An issue that is only parked, or known only through a pending reaction, answers with a `null` workspace, zero attempts, and a `null` `last_error`, as a budget-held one does. `last_error` is the retry row's error, so after the retry timer reschedules a retry it is the reschedule reason.
+  - If the issue is unknown to the current in-memory state, return `404` with an error response (for example `{"error":{"code":"issue_not_found","message":"..."}}`); an issue held by a budget ceiling, parked, or known through a pending reaction is not unknown to it, so this case is distinct from those.
 
 - `POST /api/v1/refresh`
   - Queues an immediate tracker poll + reconciliation cycle (best-effort trigger; implementations may coalesce repeated requests).
@@ -471,7 +532,7 @@ API design notes:
 
 - The JSON shapes above are the recommended baseline for interoperability and debugging ergonomics.
 - Implementations may add fields, but should avoid breaking existing fields within a version.
-- Running, retry, budget-exhausted, and parked rows name their issue in flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`, never in a nested object, and the same rows inside `GET /api/v1/<issue_identifier>` carry them. `issue_title` and `issue_url` are the tracker's title and web link, each omitted when empty; a running row always carries a title, and a retry row lacks it only while the retry holds no read of its issue, and a parked row only while the park holds none. `issue_labels` is on running rows only and always present. Every such string is masked as Section 15.3 states.
+- Running, retry, budget-exhausted, parked, and pending reaction rows name their issue in flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`, never in a nested object, and the same rows inside `GET /api/v1/<issue_identifier>` carry them. `issue_title` and `issue_url` are the tracker's title and web link, each omitted when empty; a running row always carries a title, and a retry row lacks it only while the retry holds no read of its issue, and a parked row only while the park holds none. `issue_labels` is on running rows only and always present. Every such string is masked as Section 15.3 states.
 - On a running row, `api_request_count` is `null` exactly when `api_requests_measured` is false, the five members of `tokens` are `null` exactly when `tokens_measured` is false, and `requests_by_model` is absent on the first condition and when the attribution names no model.
 - Sortie deviates from the field-stability note above for those figures, narrowing each from an integer to a nullable one, because a consumer reading a number cannot tell a measured zero from an unmeasured one. A typed consumer is forced to handle the null; an untyped one, in a language where `null` coerces to `0` in arithmetic, is no worse off than it was.
 - A running row, and the `running` object of the per-issue response, which serves the same keys, carries the issue's spend and limits in flat keys. The keys are additive; no existing key changes name, type, or meaning.
@@ -496,6 +557,33 @@ API design notes:
   - `issue_title` and `issue_url` are the tracker's title and web link as read when the park was recorded or, for a park recorded or restored without a read, at the first poll tick on which the tracker answers for the issue. Each is omitted when empty and masked.
   - `reason` is `agent_blocked` or `handoff_absence`. `parked_state` is the tracker state observed when the park was recorded, or at the first observation after a park recorded before any read, omitted while unobserved and masked. `label` is the parking label the orchestrator applied, served unmasked because it is configuration, and `label_applied` is true once a read showed the label on the issue. `parked_at` is the time the park was recorded, in UTC.
   - The list is sorted by identifier and then issue ID, and `counts.parked` equals its length. An issue appears in every list whose set holds it: a parked issue with a review continuation queued is in `parked` and `retrying` both.
+- A pending reaction row, on the `pending_reactions` array and in the `pending_reactions` array of the per-issue response, describes one pull request reaction the orchestrator keeps watching. The keys are additive; no existing key changes name, type, or meaning.
+  - `issue_id` and `issue_identifier` are always present. `display_identifier` is omitted when the tracker needs no qualified form. `issue_title` and `issue_url` are the issue's title and link as the run that created the reaction read them, or as startup recovery restored them from run history; each is omitted when empty and masked.
+  - `kind` is `ci`, `review`, `bot-review`, `merge`, `merge-conflict`, `label-review`, `label-fix`, or `merge-completion`. `config_key` is the `reactions` key of WORKFLOW.md the kind is configured under, as a retry row's `reaction_config_key` names it, so a client finds the reaction's settings at `config.reactions[config_key]` and holds no mapping of its own.
+  - `pull_request` is always present. `number` is always present. `repository` is `owner/repo` as the pull request record the run left in its workspace holds them, masked. `url` is the pull request's web page as the provider reported it on the latest read of the pull request, omitted until a read reports one, and masked. `branch` is the head branch that record holds for the run that created the reaction, omitted for `label-review` and `merge-completion`, which keep none, and masked. `head_sha` is the head commit that record holds for that run, omitted when none was recorded and for `label-review`, `label-fix`, and `merge-completion`, and masked; a later push does not change it, and the head a check read is `last_check.head_sha` on the kinds whose check reads one.
+  - The link comes from the pull request read each source-control adapter already performs, and no adapter builds one from its configured endpoint, because a forge can serve its web pages from another host. A pass that does not otherwise read the pull request (`review`, `bot-review`, `label-review`, and `label-fix`) reads it once for an entry that holds no link and repeats the read on later due passes only while the link is missing. A failed read is logged at `Debug` and changes nothing else: no backoff, no wait reason, no counted try.
+  - `created_at` is when this process created the reaction: at the worker exit that seeded it, or at the startup that restored it. A retry-slot deferral leaves it unchanged; a watch window that a deferral restarts keeps its own mark.
+  - `next_poll_at` is when the next check is due. Every arm of every pass schedules one instant, and the check runs on the first reconcile pass (poll tick or refresh) at or after it, so a value at or before `generated_at` means the next pass checks the reaction. The tick loop records no next tick, so the value is a due time, as a retry row's `due_at` is. An entry no pass has taken yet is due at its creation time.
+  - `wait` says why the reaction waits for that check, by the cause the pass that last returned it to the pending set chose, not by the delay formula: the CI pass grows its delay alike for a pending verdict and a fetch error, and only the cause tells them apart. It is omitted until a pass first returns the reaction, because a reaction no pass has taken has had no check and is due at once.
+    - `poll_interval`: the pass completed its check and found nothing to act on yet, or acted and keeps watching; the kind checks again at its poll cadence.
+    - `debounce`: for `review`, the check found new actionable comments within `debounce_ms` of the newest; `next_poll_at` ends the window, and the reaction dispatches then unless a newer comment arrives.
+    - `backoff`: the pass could not complete its check, because a provider, tracker, or store call failed or the provider answered without an identifier the check needs.
+    - `retry_slot`: the pass found work to dispatch while another retry holds the issue's retry slot; for `merge-completion`, while a run or retry claims the issue.
+    - `triage`: the reaction waits on its triage command, because a run for the current subject is in flight, was just started, or waits for a free run slot.
+  - `used_attempts` is an integer counting what the kind counts, and `null` for `label-review` and `label-fix`, which count nothing. `max_attempts` is the ceiling the kind's pass applies as of the latest poll tick, and `null` when it applies none. A kind counts as follows.
+    - `ci` counts CI-fix continuations dispatched since a passing verdict, or a head change attributed to someone else, last reset the count. The ceiling is `reactions.ci_failure.max_retries` and the next failing verdict at the ceiling escalates, so the count exceeds the ceiling only after a reload lowers `max_retries` below the fixes already dispatched.
+    - `review` and `bot-review` count review-fix and bot-review-fix continuations dispatched, against `max_continuation_turns`. At the ceiling the next set holding a new comment (for `bot-review`, a new comment on the code) escalates.
+    - `merge-conflict` counts rebase continuations dispatched since the conflict episode began, against `max_retries`. At the ceiling the next new conflicting head escalates.
+    - `merge` counts merge calls made, against `max_retries`, and `max_attempts` is `null` at `0`. At the ceiling the next check escalates.
+    - `merge-completion` counts tracker transitions that failed, against `max_retries`. At the ceiling the next failed transition escalates.
+  - `escalated_at` is always present: when the reaction escalated for its current head, and `null` otherwise. The label a client shows is `config.reactions[config_key].escalation_label`. Only `ci` stays pending after it escalates, because the escalation is a soft stop that keeps watching the pull request; every other kind's escalation deletes its entry, so for those kinds the value is `null` for as long as the row exists. A head change clears the value, and a new head escalates again.
+  - `last_check` is always present: what the latest completed check observed, `null` before the first check completes and always `null` for `merge`, `merge-completion`, `label-review`, and `label-fix`. A result replaces the previous one and leaves with its entry. A head change clears a CI result, because a result for an earlier head describes nothing the reaction now evaluates. It is a flat object whose members follow the kind.
+    - `observed_at` is when the check completed, in UTC, on every kind that records a result.
+    - `head_sha` is the head commit the check read, on `ci` and `merge-conflict`, omitted when the provider reported none, and masked.
+    - On `ci`, `status` is the verdict the reaction acted on, `passing`, `pending`, or `failing`, as the provider reported it; an empty check set is `pending`, so a client never reads it as passing. `failing_checks` holds the names of the check runs the verdict counts as failing, in the provider's order and uncapped, `[]` when none, and masked. `failing`, `pending`, and `passing` count the check runs by outcome, each run once in the class the verdict reads it as, so the counts and the verdict cannot disagree. The log excerpt and each check's details link are never served.
+    - On `review` and `bot-review`, `actionable_comments` counts the comments the check found actionable: current, and for `review` outside `bot_usernames`. A comment a run was already given counts until the forge reports it outdated. `new_comments` counts those the reaction acts on next, meaning no run was given them, the reaction has not already reported them, and the running turn does not carry them. It is `0` whenever `wait` is `poll_interval`, since the check then found nothing to act on. Without it a client would read every healthy fix lap as comments still to answer, because a forge keeps a comment a run answered in the set until it reports it outdated, and `new_comments` follows the pass's outcome rather than set membership.
+    - On `merge-conflict`, `mergeable` is `false` when the provider reports merge conflicts, `true` when it reports none, and `null` while it has not computed mergeability; a branch-protection block is not a conflict.
+  - The list holds one row per issue and kind, sorted by `issue_identifier`, then `issue_id`, then `kind`, and `counts.pending_reactions` counts rows, not issues, so it equals the list's length. An issue appears in every list whose set holds it: an issue with a CI fix queued and review comments pending is in `retrying` and `pending_reactions` both. The per-issue response lists the issue's rows in the same order.
 - `active_estimated_cost_usd`, an implementation extension beyond the baseline shape above, sums the estimated cost of running, measured sessions whose agent kind has a configured token rate; it is omitted when no running, measured session prices. `cost_unpriced_running` sits beside it and counts the running, measured sessions the sum leaves out for want of a rate. It is present, zero included, whenever `token_rates` holds an entry for any agent kind, complete or not, and omitted otherwise, so its presence alone tells a consumer whether cost pricing is configured at all. While `token_rates` holds an entry for any agent kind, `active_estimated_cost_usd` equals the sum of `estimated_cost_usd` over the running rows whose `cost_status` is `estimated` (and is absent when no row is), and `cost_unpriced_running` equals the count of rows whose `cost_status` is `unpriced`.
 - `config` on `GET /api/v1/state` is the workflow shape in effect, so a client draws the rules, stages, and reactions the workflow has and assumes none it lacks. The key is additive; no existing key changes name, type, or meaning.
   - `config` reports the configuration promoted at the last successful load, kept when a reload fails. A setting whose change needs a restart reports what the process applies: every reaction except `ci_failure` is the one built at startup, and `token_rates` are the rates the process started with. So `config` names no reaction a reload added and keeps naming one a reload removed, until the restart that applies the edit.
@@ -507,7 +595,7 @@ API design notes:
   - `dispatch.chains` lists each stage chain the `next` links form, as rule names in `next` order. A chain starts at a rule that carries `next` and that no `next` names, the chains follow the order of the rules that start them, and a walk stops at a rule without `next`, at a `next` that names no rule, or before a repeated rule. Chains that share a tail list it in each chain. A rule that carries no `next` and that no `next` names belongs to no chain. The list is `[]` when no rule carries `next`.
   - `dispatch.max_consecutive_hops` is the value WORKFLOW.md writes and `null` when the key is absent. `dispatch.hop_ceiling` is the limit a worker exit compares: the written value, or the larger of 10 and the hop count of the longest chain. With no chain no hop occurs, and `hop_ceiling` reports the ceiling a reload that adds `next` would apply.
   - `usage_arrival` appears on `agent` for the workflow-wide fallback, on `dispatch.default`, and on each rule. It is resolved the way a session resolves it at its start: the kind's declaration, the selection's settings block, and the launch mode, so one kind can report under one rule and report nothing under another. Its values are those of a running row: `incremental`, `turn_end`, `none`, or `""` for a kind the registry does not hold or that declares nothing. A selection reports token usage exactly when the value is `incremental` or `turn_end`. The launch mode is remote exactly when `worker.ssh_hosts` is non-empty, because with hosts configured every dispatch takes one, so a kind that reports nothing over SSH serves `none` while hosts are configured. `worker.ssh_hosts` lists each host once, in the order written, and is `[]` in local mode.
-  - `reactions` holds a member per reaction kind the process applies, keyed as in WORKFLOW.md, and is `{}` when it applies none; its key order carries no meaning. A retry row's `reaction_config_key` names a member of it. `ci_failure` is present exactly while the process runs the CI check, which needs both a CI provider and a source-control adapter. Every other kind is present exactly when it was configured at startup, and `label_commands` when the review command or the fix command was. Each member carries the limits and timing its kind applies: `max_retries` for `ci_failure`, `merge_conflicts`, `auto_merge`, and `merge_completion`; `max_continuation_turns` for `review_comments` and `bot_review`; `debounce_ms` for `review_comments`; `bot_usernames` for `bot_review`; `strategy`, `require_ci`, and `delete_branch` for `auto_merge`; `target_state` for `merge_completion`; and `poll_interval_ms` for every kind except `ci_failure`.
+  - `reactions` holds a member per reaction kind the process applies, keyed as in WORKFLOW.md, and is `{}` when it applies none; its key order carries no meaning. A retry row's `reaction_config_key` and a pending reaction row's `config_key` name a member of it. `ci_failure` is present exactly while the process runs the CI check, which needs both a CI provider and a source-control adapter. Every other kind is present exactly when it was configured at startup, and `label_commands` when the review command or the fix command was. Each member carries the limits and timing its kind applies: `max_retries` for `ci_failure`, `merge_conflicts`, `auto_merge`, and `merge_completion`; `max_continuation_turns` for `review_comments` and `bot_review`; `debounce_ms` for `review_comments`; `bot_usernames` for `bot_review`; `strategy`, `require_ci`, and `delete_branch` for `auto_merge`; `target_state` for `merge_completion`; and `poll_interval_ms` for every kind except `ci_failure`.
   - `escalation` is the mode a reaction applies: `label`, `comment`, or `none`. `escalation_label` is present exactly when `escalation` is `label`, and holds the label the reaction applies: the configured value, or `needs-human` where the block writes none. `ci_failure` reads its block on every tick, so when the configuration in force carries no `ci_failure` block while the CI check still runs from startup, it serves `escalation` `none` and `max_retries` `0`, which is what the check applies. `label_commands` has no escalation members; it carries `review_label` while the review command is configured and `fix_label` while the fix command is, and both commands share its one `poll_interval_ms`.
   - `config.token_rates` is `null` when the process started with no entry, which is how the shape says `token_rates` is not configured. Otherwise it holds a member per entry keyed by the agent kind as written, with each `*_per_mtok` rate (`null` when not set) and `complete`, true exactly when `input_per_mtok` and `output_per_mtok` are both set, the condition under which a session is priced. An unset cache rate prices that class at the input rate, and `config` serves the configured `null`, never the substituted rate.
   - `config` is an allowlist of typed settings and holds no credential: it carries no tracker endpoint, key, or query filter, no agent command, hook, workspace or database path, or notification destination, no reaction extra key or triage script, and no settings block. Its configuration strings are served unmasked, as the parked `label` is, because they are configuration.

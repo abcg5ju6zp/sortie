@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -28,6 +29,8 @@ type mockSCMAdapter struct {
 	botComments []domain.ReviewComment
 	botErr      error
 	botCalls    int
+
+	mergeURL string
 }
 
 var _ domain.SCMAdapter = (*mockSCMAdapter)(nil)
@@ -57,7 +60,7 @@ func (m *mockSCMAdapter) GetCIStatus(_ context.Context, _ int, _, _ string) (str
 }
 
 func (m *mockSCMAdapter) GetMergeability(_ context.Context, _ int, _, _ string) (domain.PRMergeStatus, error) {
-	return domain.PRMergeStatus{}, nil
+	return domain.PRMergeStatus{URL: m.mergeURL}, nil
 }
 
 func (m *mockSCMAdapter) MergePR(_ context.Context, _ int, _, _ string, _ domain.MergeStrategy, _, _, _ string) (domain.MergeResult, error) {
@@ -1050,7 +1053,6 @@ func TestReconcileReviewComments_DebounceWindowActive(t *testing.T) {
 	state := stateWithReviewReaction(t, "ISS-R-9", 10)
 	rkey := ReactionKey("ISS-R-9", ReactionKindReview)
 
-	// Comment submitted 10 seconds ago; debounce window is 30s (defaultReviewConfig).
 	recentTime := reviewBaseTime.Add(-10 * time.Second)
 	comments := []domain.ReviewComment{
 		{ID: "300", Body: "new comment", SubmittedAt: recentTime},
@@ -1060,23 +1062,31 @@ func TestReconcileReviewComments_DebounceWindowActive(t *testing.T) {
 		getFingerprintDispatched: false,
 	}
 	metrics := newReviewMetricsSpy()
-	scm := &mockSCMAdapter{comments: comments}
+	scm := &mockSCMAdapter{comments: comments, mergeURL: "https://forge.example.com/acme/widgets/pull/10"}
 	params := reviewParams(store, scm, nil)
 
 	reconcileReviewComments(state, params, discardLogger(), context.Background(), metrics)
 
-	// Debounced: re-enqueued, no retry scheduled.
 	if _, ok := state.PendingReactions[rkey]; !ok {
 		t.Error("PendingReactions entry dropped during debounce; want re-enqueued")
 	}
 	if _, ok := state.RetryAttempts["ISS-R-9"]; ok {
 		t.Error("retry scheduled during debounce window; want none")
 	}
-	// PendingRetryAt should be set to LastEventAt + debounceMS.
-	entry := state.PendingReactions[rkey]
+	row := pendingRow(t, state, "ISS-R-9", ReactionKindReview)
+	if row.PullRequest.URL != scm.mergeURL {
+		t.Errorf("row PullRequest.URL = %q, want %q", row.PullRequest.URL, scm.mergeURL)
+	}
+	if row.Wait != "debounce" {
+		t.Errorf("row Wait = %q, want %q", row.Wait, "debounce")
+	}
 	expectedRetryAt := recentTime.Add(time.Duration(defaultReviewConfig().DebounceMS) * time.Millisecond)
-	if !entry.PendingRetryAt.Equal(expectedRetryAt) {
-		t.Errorf("PendingRetryAt = %v, want %v", entry.PendingRetryAt, expectedRetryAt)
+	if !row.NextPollAt.Equal(expectedRetryAt) {
+		t.Errorf("row NextPollAt = %v, want %v", row.NextPollAt, expectedRetryAt)
+	}
+	wantComments := &CommentCheck{Actionable: len(comments), New: len(comments)}
+	if row.LastCheck == nil || !reflect.DeepEqual(row.LastCheck.Comments, wantComments) {
+		t.Errorf("row LastCheck = %+v, want Comments %+v", row.LastCheck, wantComments)
 	}
 }
 
@@ -1166,6 +1176,7 @@ func TestReconcileReviewComments_TurnCapExceeded_CrossKindIsolation(t *testing.T
 	}
 	state.ReactionAttempts[mcKey] = 1
 	seedHandedOff(state, ReactionKey(issueID, ReactionKindBotReview), "bc-1")
+	state.Running[issueID] = &RunningEntry{Identifier: issueID + "-ident", ReactionKind: ReactionKindCI}
 
 	store := &reviewReconcileStore{}
 	metrics := newReviewMetricsSpy()
@@ -1178,6 +1189,9 @@ func TestReconcileReviewComments_TurnCapExceeded_CrossKindIsolation(t *testing.T
 
 	if _, ok := state.PendingReactions[rkey]; ok {
 		t.Error("review PendingReactions entry present after escalation; want consumed")
+	}
+	if _, ok := state.Claimed[issueID]; !ok {
+		t.Error("claim released by review escalation while a CI worker runs; want held so the worker's exit can seed its watch")
 	}
 	if _, ok := state.PendingReactions[mcKey]; !ok {
 		t.Error("sibling merge-completion PendingReactions entry removed by review escalation; want untouched")
@@ -1832,16 +1846,14 @@ func TestComputeReviewPendingDelay(t *testing.T) {
 	}
 }
 
-// TestReconcileReviewComments_ForeignIncumbentDefers verifies that a
-// foreign incumbent occupying the retry slot leaves the review pending
-// entry re-enqueued rather than dispatched, and that
-// state.ReactionAttempts for the review kind is left unchanged.
 func TestReconcileReviewComments_ForeignIncumbentDefers(t *testing.T) {
 	t.Parallel()
 
 	const issueID = "ISS-R-DEFER"
 	state := stateWithReviewReaction(t, issueID, 10)
 	rkey := ReactionKey(issueID, ReactionKindReview)
+	seededAt := reviewBaseTime.Add(-5 * time.Minute)
+	state.PendingReactions[rkey].CreatedAt = seededAt
 	state.RetryAttempts[issueID] = &RetryEntry{
 		IssueID:      issueID,
 		Attempt:      1,
@@ -1863,8 +1875,8 @@ func TestReconcileReviewComments_ForeignIncumbentDefers(t *testing.T) {
 	if !ok {
 		t.Fatal("PendingReactions entry dropped on a defer; want re-enqueued")
 	}
-	if !entry.CreatedAt.Equal(reviewBaseTime) {
-		t.Errorf("CreatedAt = %v, want refreshed to %v", entry.CreatedAt, reviewBaseTime)
+	if !entry.CreatedAt.Equal(seededAt) {
+		t.Errorf("CreatedAt = %v, want %v (a deferral leaves it unchanged)", entry.CreatedAt, seededAt)
 	}
 	incumbent := state.RetryAttempts[issueID]
 	if incumbent.ReactionKind != ReactionKindLabelReview {
@@ -2434,6 +2446,10 @@ func TestReconcileReviewComments_SpentBudget_NoNewComment(t *testing.T) {
 			if want := reviewBaseTime.Add(time.Minute); !entry.PendingRetryAt.Equal(want) {
 				t.Errorf("PendingRetryAt = %v, want %v", entry.PendingRetryAt, want)
 			}
+			wantComments := &CommentCheck{Actionable: tt.wantCount}
+			if row := pendingRow(t, state, "ISS-R-SPENT", ReactionKindReview); row.LastCheck == nil || !reflect.DeepEqual(row.LastCheck.Comments, wantComments) {
+				t.Errorf("row LastCheck = %+v, want Comments %+v", row.LastCheck, wantComments)
+			}
 			if scm.calls != 1 {
 				t.Errorf("FetchPendingReviews calls = %d, want 1", scm.calls)
 			}
@@ -2523,8 +2539,8 @@ func TestReconcileReviewComments_SpentBudget_NoDecisionBeforeObservation(t *test
 			},
 			check: func(t *testing.T, entry *PendingReaction, _ *reviewMetricsSpy) {
 				t.Helper()
-				if !entry.CreatedAt.Equal(reviewBaseTime) {
-					t.Errorf("CreatedAt = %v, want refreshed to %v", entry.CreatedAt, reviewBaseTime)
+				if want := reviewBaseTime.Add(-5 * time.Minute); !entry.CreatedAt.Equal(want) {
+					t.Errorf("CreatedAt = %v, want %v (a deferral leaves it unchanged)", entry.CreatedAt, want)
 				}
 			},
 		},
@@ -3119,6 +3135,7 @@ func (c *reactionCycle) freshRun(comments ...domain.ReviewComment) map[string]an
 	c.state.Running[c.issueID].ContinuationContext = seed
 	exitParams := workerExitParams(c.store)
 	exitParams.SCMAdapter = c.scm
+	exitParams.ReviewReactionConfigured = true
 	exitParams.BotReviewReactionConfigured = true
 
 	HandleWorkerExit(c.state, WorkerResult{
@@ -3761,19 +3778,19 @@ func TestSettleHandedOffCommentSet(t *testing.T) {
 		listErr       error
 		markErr       error
 		comments      []domain.ReviewComment
-		want          bool
+		want          settleOutcome
 		wantMarks     int
 		wantListCalls int
 		wantMsg       string
 	}{
-		{name: "a load failure defers without marking", kind: ReactionKindReview, listErr: errors.New("unavailable"), comments: []domain.ReviewComment{summaryComment("a")}, want: true, wantListCalls: 1, wantMsg: loadMsg},
-		{name: "rows covering the set settle and mark", kind: ReactionKindReview, rows: []string{"a", "b"}, comments: []domain.ReviewComment{summaryComment("a")}, want: true, wantMarks: 1, wantListCalls: 1, wantMsg: settledMsg},
-		{name: "a cached key is not reloaded", kind: ReactionKindReview, cached: []string{"a"}, comments: []domain.ReviewComment{summaryComment("a")}, want: true, wantMarks: 1, wantMsg: settledMsg},
-		{name: "reported IDs settle and mark", kind: ReactionKindBotReview, rows: []string{"a"}, reported: []string{"r"}, comments: []domain.ReviewComment{summaryComment("a"), summaryComment("r")}, want: true, wantMarks: 1, wantListCalls: 1, wantMsg: settledMsg},
-		{name: "running IDs hold the set unmarked", kind: ReactionKindReview, running: []string{"a"}, comments: []domain.ReviewComment{summaryComment("a")}, want: true, wantListCalls: 1, wantMsg: heldMsg},
-		{name: "a set covered partly by rows and partly by running IDs is held", kind: ReactionKindReview, rows: []string{"a"}, running: []string{"b"}, comments: []domain.ReviewComment{summaryComment("a"), summaryComment("b")}, want: true, wantListCalls: 1, wantMsg: heldMsg},
+		{name: "a load failure defers without marking", kind: ReactionKindReview, listErr: errors.New("unavailable"), comments: []domain.ReviewComment{summaryComment("a")}, want: settleLoadFailed, wantListCalls: 1, wantMsg: loadMsg},
+		{name: "rows covering the set settle and mark", kind: ReactionKindReview, rows: []string{"a", "b"}, comments: []domain.ReviewComment{summaryComment("a")}, want: settleSettled, wantMarks: 1, wantListCalls: 1, wantMsg: settledMsg},
+		{name: "a cached key is not reloaded", kind: ReactionKindReview, cached: []string{"a"}, comments: []domain.ReviewComment{summaryComment("a")}, want: settleSettled, wantMarks: 1, wantMsg: settledMsg},
+		{name: "reported IDs settle and mark", kind: ReactionKindBotReview, rows: []string{"a"}, reported: []string{"r"}, comments: []domain.ReviewComment{summaryComment("a"), summaryComment("r")}, want: settleSettled, wantMarks: 1, wantListCalls: 1, wantMsg: settledMsg},
+		{name: "running IDs hold the set unmarked", kind: ReactionKindReview, running: []string{"a"}, comments: []domain.ReviewComment{summaryComment("a")}, want: settleSettled, wantListCalls: 1, wantMsg: heldMsg},
+		{name: "a set covered partly by rows and partly by running IDs is held", kind: ReactionKindReview, rows: []string{"a"}, running: []string{"b"}, comments: []domain.ReviewComment{summaryComment("a"), summaryComment("b")}, want: settleSettled, wantListCalls: 1, wantMsg: heldMsg},
 		{name: "a new comment does not settle", kind: ReactionKindReview, rows: []string{"a"}, comments: []domain.ReviewComment{summaryComment("a"), summaryComment("n")}, wantListCalls: 1},
-		{name: "a failed mark still settles", kind: ReactionKindReview, rows: []string{"a"}, markErr: errors.New("write failed"), comments: []domain.ReviewComment{summaryComment("a")}, want: true, wantMarks: 1, wantListCalls: 1, wantMsg: markMsg},
+		{name: "a failed mark still settles", kind: ReactionKindReview, rows: []string{"a"}, markErr: errors.New("write failed"), comments: []domain.ReviewComment{summaryComment("a")}, want: settleSettled, wantMarks: 1, wantListCalls: 1, wantMsg: markMsg},
 	}
 
 	for _, tt := range tests {

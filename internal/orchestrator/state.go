@@ -431,25 +431,36 @@ func watchWindowMS(extra map[string]any, def int) (int, error) {
 	return n, nil
 }
 
+// attemptCounting classifies whether a kind's pass counts tries in
+// [State.ReactionAttempts]. It is a named type rather than a bool so a
+// registry literal cannot swap it with pinsWorkspace and still compile.
+type attemptCounting bool
+
+const (
+	countsAttempts   attemptCounting = true
+	countsNoAttempts attemptCounting = false
+)
+
 // reactionKindSpec classifies one registered reaction kind.
 type reactionKindSpec struct {
-	configKey     string // key of the reactions section of WORKFLOW.md the kind is configured under
-	pinsWorkspace bool   // a pending entry of the kind excludes its workspace from sweep candidacy
+	configKey     string          // key of the reactions section of WORKFLOW.md the kind is configured under
+	pinsWorkspace bool            // a pending entry of the kind excludes its workspace from sweep candidacy
+	attempts      attemptCounting // the kind's pass counts tries in State.ReactionAttempts
 }
 
 // reactionKinds is the single registry of reaction kinds. Presence in the
 // map means the kind is known. Every entry is an unkeyed literal so the
-// compiler rejects a kind registered without its configuration key or its
-// pin classification.
+// compiler rejects a kind registered without its configuration key, its
+// pin classification, or its attempt counting.
 var reactionKinds = map[string]reactionKindSpec{
-	ReactionKindCI:              {"ci_failure", true},
-	ReactionKindReview:          {"review_comments", true},
-	ReactionKindBotReview:       {"bot_review", true},
-	ReactionKindAutoMerge:       {"auto_merge", true},
-	ReactionKindMergeConflict:   {"merge_conflicts", true},
-	ReactionKindLabelReview:     {"label_commands", false},
-	ReactionKindLabelFix:        {"label_commands", false},
-	ReactionKindMergeCompletion: {"merge_completion", false},
+	ReactionKindCI:              {"ci_failure", true, countsAttempts},
+	ReactionKindReview:          {"review_comments", true, countsAttempts},
+	ReactionKindBotReview:       {"bot_review", true, countsAttempts},
+	ReactionKindAutoMerge:       {"auto_merge", true, countsAttempts},
+	ReactionKindMergeConflict:   {"merge_conflicts", true, countsAttempts},
+	ReactionKindLabelReview:     {"label_commands", false, countsNoAttempts},
+	ReactionKindLabelFix:        {"label_commands", false, countsNoAttempts},
+	ReactionKindMergeCompletion: {"merge_completion", false, countsAttempts},
 }
 
 func isKnownReactionKind(kind string) bool {
@@ -507,6 +518,8 @@ type PendingReaction struct {
 	// preference on fix redispatch.
 	LastSSHHost string
 
+	// CreatedAt is when the worker exit or startup recovery created the
+	// entry; never rewritten.
 	CreatedAt time.Time
 
 	// PendingAttempts counts consecutive passes that reached no dispatch,
@@ -524,11 +537,25 @@ type PendingReaction struct {
 	// is the pull request head.
 	HeadRecordedAt time.Time
 
-	// EscalatedForCurrentHead reports whether escalation has been applied
-	// for the recorded commit. Cleared when a different head is recorded,
-	// so an exhausted budget escalates at most once per commit. Read only
-	// by kinds whose subject is the pull request head.
-	EscalatedForCurrentHead bool
+	// EscalatedAt is when the escalation for the recorded head was applied;
+	// zero when none was. Cleared when a different head is recorded.
+	EscalatedAt time.Time
+
+	// WatchRestartedAt is when a retry-slot deferral last restarted the
+	// entry's watch window; zero when none has.
+	WatchRestartedAt time.Time
+
+	// PullRequestURL is the pull request's web page as the latest read of
+	// it reported; empty until a read reports one.
+	PullRequestURL string
+
+	// Wait is why the entry waits for its next check, as the pass that last
+	// returned it to the pending set recorded it; empty until one has.
+	Wait string
+
+	// LastCheck is what the latest completed check observed; nil until one
+	// completes, and always nil for kinds that record no result.
+	LastCheck *ReactionCheck
 
 	// KindData holds kind-specific typed data (CI uses [*CIReactionData]).
 	// Each kind's reconcile function asserts the type once.
@@ -555,6 +582,36 @@ type PendingReaction struct {
 	// Runtime-only.
 	Triage *ReactionTriageRun
 }
+
+// ReactionCheck is what one completed check of a pending reaction observed.
+// Exactly one of CI, Comments, and Mergeability is set.
+type ReactionCheck struct {
+	ObservedAt   time.Time
+	HeadSHA      string // the head commit the check read; ci and merge-conflict only
+	CI           *CICheck
+	Comments     *CommentCheck
+	Mergeability *MergeabilityCheck
+}
+
+// CICheck is a CI verdict and its check runs by outcome.
+type CICheck struct {
+	Status        string   // the verdict the reaction acted on
+	FailingChecks []string // names of the failing runs in the provider's order; never nil
+	Failing       int
+	Pending       int
+	Passing       int
+}
+
+// CommentCheck counts the comments a review check found actionable and, of
+// those, the ones the reaction acts on next.
+type CommentCheck struct {
+	Actionable int
+	New        int
+}
+
+// MergeabilityCheck reports whether the pull request merges without
+// conflicts; a nil Mergeable means the provider had not computed it.
+type MergeabilityCheck struct{ Mergeable *bool }
 
 // CIReactionData holds CI-specific fields for a pending CI reaction,
 // stored in [PendingReaction.KindData] for Kind == [ReactionKindCI].
@@ -917,6 +974,12 @@ type State struct {
 	// tick. 0 means unlimited. Written only on the event-loop goroutine.
 	MaxSessions int
 
+	// ReactionMaxAttempts maps a reaction kind to the ceiling its pass
+	// applies to [State.ReactionAttempts]; a kind with none is absent. Set
+	// before the event loop serves a snapshot and replaced every poll tick.
+	// Written only on the event-loop goroutine.
+	ReactionMaxAttempts map[string]int
+
 	// TokenWarningThreshold mirrors config.Agent.TokenWarningThreshold()
 	// for the in-flight token warning, refreshed on every poll tick. 0
 	// disables the warning. Written only on the event-loop goroutine.
@@ -1238,6 +1301,35 @@ type SnapshotBudgetEntry struct {
 	ExhaustedAt        time.Time `json:"exhausted_at"`
 }
 
+// SnapshotPendingReaction is a read-only view of one pending reaction,
+// produced by [RuntimeSnapshot]. Every runtime-derived string is masked.
+type SnapshotPendingReaction struct {
+	IssueID      string              `json:"issue_id"`
+	Identifier   string              `json:"issue_identifier"`
+	DisplayID    string              `json:"display_identifier,omitempty"`
+	IssueTitle   string              `json:"issue_title,omitempty"`
+	IssueURL     string              `json:"issue_url,omitempty"`
+	Kind         string              `json:"kind"`
+	ConfigKey    string              `json:"config_key"`
+	PullRequest  SnapshotPullRequest `json:"pull_request"`
+	CreatedAt    time.Time           `json:"created_at"`
+	NextPollAt   time.Time           `json:"next_poll_at"`
+	Wait         string              `json:"wait,omitempty"`
+	UsedAttempts *int                `json:"used_attempts"`
+	MaxAttempts  *int                `json:"max_attempts"`
+	EscalatedAt  *time.Time          `json:"escalated_at"`
+	LastCheck    *ReactionCheck      `json:"last_check"`
+}
+
+// SnapshotPullRequest is the pull request a pending reaction watches.
+type SnapshotPullRequest struct {
+	Number     int    `json:"number"`
+	Repository string `json:"repository"`
+	URL        string `json:"url,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	HeadSHA    string `json:"head_sha,omitempty"`
+}
+
 // SnapshotAgentTotals holds aggregate token counts and runtime seconds at a
 // point in time. Unlike [AgentTotals], SecondsRunning includes active
 // sessions' elapsed time.
@@ -1270,6 +1362,9 @@ type RuntimeSnapshotResult struct {
 	BudgetExhausted      []SnapshotBudgetEntry  `json:"budget_exhausted"`
 	ParkedCount          int                    `json:"parked_count"`
 	Parked               []SnapshotParkedEntry  `json:"parked"`
+
+	// PendingReactions is never nil.
+	PendingReactions []SnapshotPendingReaction `json:"pending_reactions"`
 
 	// MaxTokens and MaxSessions are the token ceiling and session budget in
 	// force at capture; 0 means no limit.
@@ -1359,7 +1454,7 @@ func snapshotIssueUsage(usage *persistence.IssueTokenUsage) *SnapshotIssueUsage 
 // RuntimeSnapshot captures a point-in-time view of the orchestrator's
 // runtime state. now is normalized to UTC internally.
 //
-// Running, Retrying, Parked, and AgentTotals are copied out and may be retained
+// Running, Retrying, Parked, PendingReactions, and AgentTotals are copied out and may be retained
 // without synchronization. RateLimits is shallow-copied and may alias
 // nested mutable values; callers must treat it and its referents as
 // read-only.
@@ -1538,11 +1633,99 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	})
 	snap.Parked = parked
 
+	snap.PendingReactions = snapshotPendingReactions(state)
+
 	if state.AgentRateLimits != nil {
 		snap.RateLimits = maps.Clone(state.AgentRateLimits.Data)
 	}
 
 	return snap
+}
+
+// snapshotPendingReactions builds the pending-reaction rows sorted by issue
+// identifier, issue ID, and kind. It shares no slice, map, or pointer with
+// state and masks every runtime-derived string.
+func snapshotPendingReactions(state *State) []SnapshotPendingReaction {
+	rows := make([]SnapshotPendingReaction, 0, len(state.PendingReactions))
+	for _, entry := range state.PendingReactions {
+		pr := pullRequestOf(entry)
+		identity := maskedIdentity(entry.IssueIdentity)
+		row := SnapshotPendingReaction{
+			IssueID:    entry.IssueID,
+			Identifier: entry.Identifier,
+			DisplayID:  entry.DisplayID,
+			IssueTitle: identity.Title,
+			IssueURL:   identity.URL,
+			Kind:       entry.Kind,
+			ConfigKey:  reactionConfigKey(entry.Kind),
+			PullRequest: SnapshotPullRequest{
+				Number:     pr.Number,
+				Repository: redact.Mask(pr.Owner + "/" + pr.Repo),
+				URL:        redact.Mask(entry.PullRequestURL),
+				Branch:     redact.Mask(pr.Branch),
+				HeadSHA:    redact.Mask(pr.HeadSHA),
+			},
+			CreatedAt:  entry.CreatedAt,
+			NextPollAt: cmp.Or(entry.PendingRetryAt, entry.CreatedAt),
+			Wait:       entry.Wait,
+			LastCheck:  snapshotReactionCheck(entry.LastCheck),
+		}
+		if reactionKinds[entry.Kind].attempts == countsAttempts {
+			used := state.ReactionAttempts[ReactionKey(entry.IssueID, entry.Kind)]
+			row.UsedAttempts = &used
+		}
+		if ceiling, ok := state.ReactionMaxAttempts[entry.Kind]; ok {
+			row.MaxAttempts = &ceiling
+		}
+		if !entry.EscalatedAt.IsZero() {
+			escalatedAt := entry.EscalatedAt
+			row.EscalatedAt = &escalatedAt
+		}
+		rows = append(rows, row)
+	}
+	slices.SortFunc(rows, func(a, b SnapshotPendingReaction) int {
+		return cmp.Or(
+			cmp.Compare(a.Identifier, b.Identifier),
+			cmp.Compare(a.IssueID, b.IssueID),
+			cmp.Compare(a.Kind, b.Kind),
+		)
+	})
+	return rows
+}
+
+// snapshotReactionCheck deep-copies check with the head and failing check
+// names masked. A nil check stays nil; FailingChecks of a CI check is never
+// nil.
+func snapshotReactionCheck(check *ReactionCheck) *ReactionCheck {
+	if check == nil {
+		return nil
+	}
+	out := &ReactionCheck{
+		ObservedAt: check.ObservedAt,
+		HeadSHA:    redact.Mask(check.HeadSHA),
+	}
+	if check.CI != nil {
+		failing := make([]string, len(check.CI.FailingChecks))
+		for i, name := range check.CI.FailingChecks {
+			failing[i] = redact.Mask(name)
+		}
+		ci := *check.CI
+		ci.FailingChecks = failing
+		out.CI = &ci
+	}
+	if check.Comments != nil {
+		comments := *check.Comments
+		out.Comments = &comments
+	}
+	if check.Mergeability != nil {
+		mergeability := MergeabilityCheck{}
+		if check.Mergeability.Mergeable != nil {
+			mergeable := *check.Mergeability.Mergeable
+			mergeability.Mergeable = &mergeable
+		}
+		out.Mergeability = &mergeability
+	}
+	return out
 }
 
 // BuildReviewReactionConfig extracts and validates review-specific

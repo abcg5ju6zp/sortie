@@ -1005,6 +1005,14 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	state.Parked["ISS-3"] = &ParkedEntry{
 		Identifier: "PROJ-3", IssueIdentity: IssueIdentity{Title: "rotate " + value},
 	}
+	state.PendingReactions[ReactionKey("ISS-4", ReactionKindCI)] = &PendingReaction{
+		IssueID:        "ISS-4",
+		Identifier:     "PROJ-4",
+		Kind:           ReactionKindCI,
+		PullRequestURL: "https://forge.example.com/" + value,
+		KindData:       &CIReactionData{PRNumber: 7, Owner: "acme", Repo: "widgets", Branch: "feature/" + value},
+		LastCheck:      &ReactionCheck{CI: &CICheck{Status: "failing", FailingChecks: []string{"build-" + value}, Failing: 1}},
+	}
 
 	result := RuntimeSnapshot(state, now)
 
@@ -1024,6 +1032,19 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	}
 	if want := "rotate " + redact.Marker; result.Parked[0].IssueTitle != want {
 		t.Errorf("Parked[0].IssueTitle = %q, want %q", result.Parked[0].IssueTitle, want)
+	}
+	if len(result.PendingReactions) != 1 {
+		t.Fatalf("len(PendingReactions) = %d, want 1", len(result.PendingReactions))
+	}
+	row := result.PendingReactions[0]
+	if want := "feature/" + redact.Marker; row.PullRequest.Branch != want {
+		t.Errorf("PendingReactions[0].PullRequest.Branch = %q, want %q", row.PullRequest.Branch, want)
+	}
+	if want := "https://forge.example.com/" + redact.Marker; row.PullRequest.URL != want {
+		t.Errorf("PendingReactions[0].PullRequest.URL = %q, want %q", row.PullRequest.URL, want)
+	}
+	if want := []string{"build-" + redact.Marker}; !slices.Equal(row.LastCheck.CI.FailingChecks, want) {
+		t.Errorf("PendingReactions[0].LastCheck.CI.FailingChecks = %q, want %q", row.LastCheck.CI.FailingChecks, want)
 	}
 }
 
@@ -1773,6 +1794,41 @@ func TestReactionKindPins(t *testing.T) {
 
 		if isKnownReactionKind("totally-unregistered-kind") {
 			t.Error(`isKnownReactionKind("totally-unregistered-kind") = true, want false (unregistered kind)`)
+		}
+	})
+
+	t.Run("pullRequestOf reads the pull request of exactly the registered kinds", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			kind   string
+			data   any
+			number int
+		}{
+			{ReactionKindCI, &CIReactionData{PRNumber: 1}, 1},
+			{ReactionKindReview, &ReviewReactionData{PRNumber: 2}, 2},
+			{ReactionKindBotReview, &BotReviewReactionData{PRNumber: 3}, 3},
+			{ReactionKindAutoMerge, &AutoMergeReactionData{PRNumber: 4}, 4},
+			{ReactionKindMergeConflict, &MergeConflictReactionData{PRNumber: 5}, 5},
+			{ReactionKindLabelReview, &LabelReviewReactionData{PRNumber: 6}, 6},
+			{ReactionKindLabelFix, &LabelFixReactionData{PRNumber: 7}, 7},
+			{ReactionKindMergeCompletion, &MergeCompletionReactionData{PRNumber: 8}, 8},
+		}
+
+		covered := make(map[string]bool, len(tests))
+		for _, tt := range tests {
+			covered[tt.kind] = true
+			if _, ok := reactionKinds[tt.kind]; !ok {
+				t.Errorf("table kind %q is not registered in reactionKinds", tt.kind)
+			}
+			if got := pullRequestOf(&PendingReaction{Kind: tt.kind, KindData: tt.data}).Number; got != tt.number {
+				t.Errorf("pullRequestOf(%q data).Number = %d, want %d", tt.kind, got, tt.number)
+			}
+		}
+		for kind := range reactionKinds {
+			if !covered[kind] {
+				t.Errorf("registered kind %q has no pullRequestOf table row", kind)
+			}
 		}
 	})
 

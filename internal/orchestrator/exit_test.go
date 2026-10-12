@@ -4499,6 +4499,7 @@ func TestHandleWorkerExit_HandoffTransitionSucceeds_PopulatesReviewPendingReacti
 	params.HandoffState = "In Review"
 	params.ActiveStates = []string{"In Progress"}
 	params.SCMAdapter = &scmAdapterStubExit{}
+	params.ReviewReactionConfigured = true
 
 	HandleWorkerExit(state, WorkerResult{
 		IssueID:       "HO-R1",
@@ -4565,6 +4566,7 @@ func TestHandleWorkerExit_HandoffTransitionFails_PopulatesReviewPendingReaction(
 	params.HandoffState = "In Review"
 	params.ActiveStates = []string{"In Progress"}
 	params.SCMAdapter = &scmAdapterStubExit{}
+	params.ReviewReactionConfigured = true
 
 	HandleWorkerExit(state, WorkerResult{
 		IssueID:       "HO-R2",
@@ -6372,6 +6374,9 @@ func TestHandleWorkerExit_CIProvider_PopulatesPendingReaction(t *testing.T) {
 	}
 	if entry.IssueID != "CI-ISS-1" {
 		t.Errorf("PendingReaction.IssueID = %q, want %q", entry.IssueID, "CI-ISS-1")
+	}
+	if _, ok := state.PendingReactions[ReactionKey("CI-ISS-1", ReactionKindReview)]; ok {
+		t.Error("PendingReactions[CI-ISS-1:review] present, want absent without the review reaction configured")
 	}
 }
 

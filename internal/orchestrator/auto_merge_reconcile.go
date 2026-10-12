@@ -127,9 +127,11 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 			continue
 		}
 
+		notePullRequestURL(pending, mergeStatus)
+
 		if mergeStatus.Draft {
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			entryLog.Debug("auto_merge skipped: PR is draft",
 				slog.Int("pr_number", autoMergeData.PRNumber),
 			)
@@ -138,7 +140,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 
 		if mergeStatus.Mergeability == domain.MergeabilityUnknown {
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			entryLog.Debug("auto_merge deferred: mergeability unknown",
 				slog.Int("pr_number", autoMergeData.PRNumber),
 			)
@@ -147,7 +149,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 
 		if mergeStatus.Mergeability != domain.MergeabilityClean && mergeStatus.Mergeability != domain.MergeabilityUnstable {
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			entryLog.Debug("auto_merge deferred: PR not mergeable",
 				slog.String("state", string(mergeStatus.Mergeability)),
 				slog.Int("pr_number", autoMergeData.PRNumber),
@@ -169,7 +171,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 
 		if reviewDecision != domain.ReviewDecisionApproved && reviewDecision != domain.ReviewDecisionNotRequired {
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			entryLog.Debug("auto_merge deferred: review decision not approved",
 				slog.String("decision", string(reviewDecision)),
 				slog.Int("pr_number", autoMergeData.PRNumber),
@@ -191,7 +193,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 			}
 			if ciConclusion == "pending" {
 				pending.PendingRetryAt = now.Add(pollInterval)
-				state.PendingReactions[key] = pending
+				requeueReaction(state, key, pending, waitPollInterval)
 				entryLog.Debug("auto_merge deferred: CI pending",
 					slog.Int("pr_number", autoMergeData.PRNumber),
 				)
@@ -199,7 +201,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 			}
 			if ciConclusion != "success" && ciConclusion != "" {
 				pending.PendingRetryAt = now.Add(pollInterval)
-				state.PendingReactions[key] = pending
+				requeueReaction(state, key, pending, waitPollInterval)
 				entryLog.Debug("auto_merge deferred: CI not green",
 					slog.String("conclusion", ciConclusion),
 					slog.Int("pr_number", autoMergeData.PRNumber),
@@ -210,7 +212,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 
 		if mergeStatus.HeadSHA == "" {
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			entryLog.Debug("auto_merge deferred: missing head sha",
 				slog.Int("pr_number", autoMergeData.PRNumber),
 			)
@@ -227,7 +229,7 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 		storedFP, dispatched, fpErr := params.Store.GetReactionFingerprint(ctx, pending.IssueID, ReactionKindAutoMerge)
 		if fpErr == nil && storedFP == fingerprint && dispatched {
 			pending.PendingRetryAt = now.Add(pollInterval)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			entryLog.Debug("auto_merge already attempted for this fingerprint",
 				slog.Int("pr_number", autoMergeData.PRNumber),
 			)
@@ -274,15 +276,15 @@ func reconcileAutoMerge(state *State, params ReconcileParams, log *slog.Logger, 
 	}
 }
 
-// applyAutoMergeBackoff applies exponential-backoff delay and rewrites
-// the pending entry to state.PendingReactions on a transient failure.
+// applyAutoMergeBackoff applies exponential-backoff delay and requeues the
+// pending entry with the backoff reason on a transient failure.
 // Returns the chosen delay so the caller can populate the structured
 // log it emits at its own (stable, literal) message.
 func applyAutoMergeBackoff(state *State, key string, pending *PendingReaction, now time.Time, pollInterval time.Duration) time.Duration {
 	pending.PendingAttempts++
 	delay := max(computeAutoMergePendingDelay(pending.PendingAttempts), pollInterval)
 	pending.PendingRetryAt = now.Add(delay)
-	state.PendingReactions[key] = pending
+	requeueReaction(state, key, pending, waitBackoff)
 	return delay
 }
 
@@ -422,7 +424,7 @@ func handleMergeError(state *State, params ReconcileParams, key string, pending 
 			return
 		}
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitPollInterval)
 		log.Warn("auto_merge conflict, retrying after poll interval",
 			slog.Any("error", scmErr),
 			slog.Int("pr_number", autoMergeData.PRNumber),

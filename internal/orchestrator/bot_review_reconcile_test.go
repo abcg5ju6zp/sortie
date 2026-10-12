@@ -1559,6 +1559,8 @@ func TestReconcileBotReviewComments_CoexistsWithReview(t *testing.T) {
 	state.PendingReactions[reviewKey] = newReviewPendingEntry(issueID, 55)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	state.PendingReactions[botKey] = makeBotReviewPendingEntry(t, issueID, 55)
+	seededAt := botReviewBaseTime.Add(-5 * time.Minute)
+	state.PendingReactions[botKey].CreatedAt = seededAt
 	state.Claimed[issueID] = struct{}{}
 
 	scm := &mockSCMAdapter{
@@ -1641,8 +1643,8 @@ func TestReconcileBotReviewComments_CoexistsWithReview(t *testing.T) {
 	if !botReenqueued {
 		t.Fatal("bot-review PendingReactions entry missing; want re-enqueued by the deferral")
 	}
-	if botPending.CreatedAt != botReviewBaseTime {
-		t.Errorf("bot-review PendingReactions.CreatedAt = %v, want %v (refreshed to the tick's now)", botPending.CreatedAt, botReviewBaseTime)
+	if !botPending.CreatedAt.Equal(seededAt) {
+		t.Errorf("bot-review PendingReactions.CreatedAt = %v, want %v (a deferral leaves it unchanged)", botPending.CreatedAt, seededAt)
 	}
 
 	reviewFingerprint := store.fingerprints[reviewKey].fingerprint
@@ -2154,8 +2156,8 @@ func TestReconcileBotReviewComments_SpentBudget_NoDecisionBeforeObservation(t *t
 			},
 			check: func(t *testing.T, entry *PendingReaction, _ *botReviewMetricsSpy) {
 				t.Helper()
-				if !entry.CreatedAt.Equal(botReviewBaseTime) {
-					t.Errorf("CreatedAt = %v, want refreshed to %v", entry.CreatedAt, botReviewBaseTime)
+				if want := botReviewBaseTime.Add(-5 * time.Minute); !entry.CreatedAt.Equal(want) {
+					t.Errorf("CreatedAt = %v, want %v (a deferral leaves it unchanged)", entry.CreatedAt, want)
 				}
 			},
 		},

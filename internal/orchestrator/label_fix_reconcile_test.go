@@ -810,9 +810,6 @@ func TestReconcileLabelFixCommands_DispatchLogsActorAndPRNumber(t *testing.T) {
 	}
 }
 
-// TestReconcileLabelFixCommands_JournalSubstrateNotSnapshot verifies that
-// detection uses only ListLabelEvents (the journal substrate); no other
-// SCMAdapter method is ever called for label-fix detection or dispatch.
 func TestReconcileLabelFixCommands_JournalSubstrateNotSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -867,17 +864,14 @@ func TestBuildLabelFixMap_FieldMapping(t *testing.T) {
 	}
 }
 
-// TestReconcileLabelFixCommands_ForeignIncumbentDefers mirrors
-// TestReconcileLabelReviewCommands_ForeignIncumbentDefers for the
-// label-fix kind: a confirmed command with a foreign incumbent occupying
-// the retry slot defers instead of dispatching, leaving the fingerprint
-// mark, the high-water mark, and the label untouched.
 func TestReconcileLabelFixCommands_ForeignIncumbentDefers(t *testing.T) {
 	t.Parallel()
 
 	const issueID = "LF-FOREIGN"
 	state := stateWithLabelFixPending(t, issueID, 10, "feature/lf-foreign")
 	rkey := ReactionKey(issueID, ReactionKindLabelFix)
+	seededAt := labelReviewBaseTime.Add(-5 * time.Minute)
+	state.PendingReactions[rkey].CreatedAt = seededAt
 	state.RetryAttempts[issueID] = &RetryEntry{
 		IssueID:      issueID,
 		Attempt:      1,
@@ -898,8 +892,8 @@ func TestReconcileLabelFixCommands_ForeignIncumbentDefers(t *testing.T) {
 	if !ok {
 		t.Fatal("PendingReactions entry dropped on a defer; want re-enqueued")
 	}
-	if !entry.CreatedAt.Equal(labelReviewBaseTime) {
-		t.Errorf("CreatedAt = %v, want refreshed to %v", entry.CreatedAt, labelReviewBaseTime)
+	if !entry.CreatedAt.Equal(seededAt) {
+		t.Errorf("CreatedAt = %v, want %v (a deferral leaves it unchanged)", entry.CreatedAt, seededAt)
 	}
 	incumbent := state.RetryAttempts[issueID]
 	if incumbent.ReactionKind != ReactionKindCI {

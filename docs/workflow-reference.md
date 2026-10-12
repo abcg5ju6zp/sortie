@@ -642,7 +642,7 @@ The `reactions` section configures feedback loops that respond to external event
 
 To get a comment on the issue and no label, write `escalation: none` and list the event in a `tracker_comment` entry. A reaction block that omits `escalation` resolves to `label`, `auto_merge` included, and draws no warning.
 
-**Escalation recurrence:** `escalation: label` is idempotent (re-applying a present label is a no-op); a comment on the issue, whether it comes from `escalation: comment` or from a `tracker_comment` subscription to the escalation event, posts a new comment each time the escalation fires. Two conditions fire it: the kind's own budget is exhausted, or a `triage` command answers `escalate`. For `review_comments` and `bot_review`, an exhausted budget fires the escalation only together with a new comment that no earlier run of the issue was given (for `bot_review`, a comment on the code). Recurrence depends on the kind rather than on which condition fired. For kinds whose escalation releases the issue claim (`ci_failure`, `review_comments`), escalation fires once and the reaction stops. For kinds whose escalation is scoped and keeps the claim (`auto_merge`, `bot_review`), the reaction re-arms if its condition recurs and escalates again, so on a long-lived PR a comment can accumulate repeated entries while `escalation: label` stays a single mark. Prefer `label` for kinds that may escalate repeatedly, and list the event in a `tracker_comment` entry only when you want each recurrence on the issue. A triage escalation is not re-posted for a subject already escalated: the answer is retained for as long as the subject's fingerprint stands, and a retained `escalate` re-applies without invoking the escalation a second time.
+**Escalation recurrence:** `escalation: label` is idempotent (re-applying a present label is a no-op); a comment on the issue, whether it comes from `escalation: comment` or from a `tracker_comment` subscription to the escalation event, posts a new comment each time the escalation fires. Two conditions fire it: the kind's own budget is exhausted, or a `triage` command answers `escalate`. For `review_comments` and `bot_review`, an exhausted budget fires the escalation only together with a new comment that no earlier run of the issue was given (for `bot_review`, a comment on the code). Recurrence depends on the kind rather than on which condition fired. For kinds whose escalation releases the issue claim when no worker runs for the issue (`ci_failure`, `review_comments`), `review_comments` escalates once and the reaction stops, while `ci_failure` escalates once per pull request head and keeps watching, and a new head re-arms it. For kinds whose escalation is scoped and keeps the claim (`auto_merge`, `bot_review`), the reaction re-arms if its condition recurs and escalates again, so on a long-lived PR a comment can accumulate repeated entries while `escalation: label` stays a single mark. Prefer `label` for kinds that may escalate repeatedly, and list the event in a `tracker_comment` entry only when you want each recurrence on the issue. A triage escalation is not re-posted for a subject already escalated: the answer is retained for as long as the subject's fingerprint stands, and a retained `escalate` re-applies without invoking the escalation a second time.
 
 **Release on terminal state:** each reconcile pass reads tracker state for every running issue and for every issue holding a pending reaction entry, whether or not a worker is still running for it. When the tracker reports an issue in a state from `tracker.terminal_states`, the pass releases that issue's pending reaction entries, its reaction attempt counters, its pending retry, and its dispatch claim. Polling for that issue stops on the same pass. The release is scoped to in-memory state and leaves the `reaction_fingerprints` rows and the stored record of the review comments each run was given untouched.
 
@@ -761,7 +761,7 @@ Additional fields (via Extra):
 | `poll_interval_ms`       | integer | `120000` | Requires restart | Polling interval for review comments. Minimum: `30000` (30 sec).                                           |
 | `debounce_ms`            | integer | `60000`  | Requires restart | Debounce window after the last detected comment before dispatching. Must be non-negative.                  |
 | `max_continuation_turns` | integer | `3`      | Requires restart | Maximum review-fix continuation dispatches per issue before escalation. Must be positive.                  |
-| `watch_window_ms`        | integer | `1800000` | Requires restart | Bounds a pending entry's age, measured from the entry's creation. `0` removes the bound. Must be non-negative and must not exceed `9223372036854`. |
+| `watch_window_ms`        | integer | `1800000` | Requires restart | Bounds a pending entry's age, measured from the entry's creation or from the last time it waited for the issue's retry slot. `0` removes the bound. Must be non-negative and must not exceed `9223372036854`. |
 
 **Activation:** The `reactions.review_comments` block is active when `provider` is present and non-empty. Agent-created PRs MUST write `pr_number`, `owner`, and `repo` to `.sortie/scm.json` in the workspace for review polling to activate.
 
@@ -777,7 +777,7 @@ Additional fields (via Extra):
 
 **Bot exclusion:** Human-loop selection drops a comment whose author the platform reports as an automated bot account, and separately drops a comment whose author matches `reactions.bot_review.bot_usernames`. The allowlist half takes effect only while `reactions.bot_review` is configured with a provider, because that is the only condition under which the allowlist is built; a deployment running `review_comments` alone sees no allowlist exclusion.
 
-**Escalation:** When `max_continuation_turns` is exhausted, the orchestrator escalates when a review comment arrives that no earlier run was given. It applies the configured escalation (`label`, `comment`, or `none`) and releases the claim. Comments that a run already received, including ones the last turn left in place, do not escalate, and neither does a poll that finds the review resolved. A review summary that no run was given counts as a new comment. An escalation records nothing in the stored set, so comments an earlier run was given stay given.
+**Escalation:** When `max_continuation_turns` is exhausted, the orchestrator escalates when a review comment arrives that no earlier run was given. It applies the configured escalation (`label`, `comment`, or `none`) and releases the claim unless a worker runs for the issue, in which case that worker's exit decides the claim. Comments that a run already received, including ones the last turn left in place, do not escalate, and neither does a poll that finds the review resolved. A review summary that no run was given counts as a new comment. An escalation records nothing in the stored set, so comments an earlier run was given stay given.
 
 Example:
 
@@ -851,7 +851,7 @@ Additional fields (via Extra):
 | ------------------------ | ------------ | ------- | ----------------- | --------------------------------------------------------------------------------------------------------- |
 | `bot_usernames`          | list[string] | _(empty)_ | Requires restart | Allowlist of bot logins. A comment is bot-authored when the platform reports a bot user type OR its author login matches an entry here (case-insensitive). An entry here is also excluded from `review_comments`, so an allowlisted author does not drive both loops. |
 | `poll_interval_ms`       | integer      | `60000` | Requires restart | Polling interval for bot comments. Minimum: `30000` (30 sec). The default is tighter than `review_comments` because bot comments arrive in bulk on push.  |
-| `watch_window_ms`        | integer      | `1800000` | Requires restart | Bounds a pending entry's age, measured from the entry's creation. `0` removes the bound. Must be non-negative and must not exceed `9223372036854`. |
+| `watch_window_ms`        | integer      | `1800000` | Requires restart | Bounds a pending entry's age, measured from the entry's creation or from the last time it waited for the issue's retry slot. `0` removes the bound. Must be non-negative and must not exceed `9223372036854`. |
 | `max_continuation_turns` | integer      | `5`     | Requires restart | Maximum bot-fix continuation dispatches per issue before escalation. Must be positive. Higher than `review_comments` because bot fixes are mechanical.    |
 
 **Activation:** The `reactions.bot_review` block is active when `provider` is present and non-empty, on its own, with no `reactions.review_comments` or `reactions.auto_merge` block required. When `provider` is absent or empty, the block is inactive. Agent-created PRs MUST write `pr_number` (positive integer), `owner`, `repo`, and `branch` (all non-empty) to `.sortie/scm.json` in the workspace for bot-review polling to activate.
@@ -897,7 +897,7 @@ Fields:
 | `escalation`       | string  | `label`       | Requires restart | Escalation action when retries are exhausted. One of `label`, `comment` (deprecated), or `none`.          |
 | `escalation_label` | string  | `needs-human` | Requires restart | Label applied when `escalation` is `label`.                                                               |
 | `poll_interval_ms` | integer | `60000`       | Requires restart | Polling interval for the conflict-detection state machine. Minimum: `30000` (30 sec).                     |
-| `watch_window_ms`  | integer | `1800000`     | Requires restart | Bounds a pending entry's age, measured from the entry's creation rather than from the last recorded head. `0` removes the bound. Must be non-negative and must not exceed `9223372036854`. |
+| `watch_window_ms`  | integer | `1800000`     | Requires restart | Bounds a pending entry's age, measured from the entry's creation or from the last time it waited for the issue's retry slot, rather than from the last recorded head. `0` removes the bound. Must be non-negative and must not exceed `9223372036854`. |
 
 **Activation:** The `reactions.merge_conflicts` block is active when `provider` is present and non-empty, on its own, with no other `reactions` block required. Agent-created PRs MUST write `pr_number` (positive integer), `owner`, `repo`, and `branch` (all non-empty) to `.sortie/scm.json` in the workspace for merge-conflict polling to activate. To disable the reaction, omit the `merge_conflicts` block; setting `max_retries: 0` does not disable it but escalates on the first detected conflict.
 
@@ -1876,8 +1876,8 @@ Sortie starts an HTTP server by default on `127.0.0.1:7678` for runtime observab
 | GET    | `/`                      | HTML dashboard — server-rendered status page with running sessions, retry queue, token totals, timing breakdown, and recent events. Auto-refreshes. |
 | GET    | `/livez`                 | Liveness probe. Returns 200 while the process is running and not draining, 503 during graceful shutdown. No I/O. |
 | GET    | `/readyz`                | Readiness probe. Returns 200 when database, preflight, and workflow are healthy. Returns 503 with per-check status when any dependency fails. |
-| GET    | `/api/v1/state`          | System-wide runtime snapshot (running sessions, retry queue, parked issues, aggregate token/runtime totals, rate limits, and the effective workflow shape). |
-| GET    | `/api/v1/{identifier}`   | Per-issue detail for a specific issue identifier, including a parked one. Returns 404 for unknown issues. |
+| GET    | `/api/v1/state`          | System-wide runtime snapshot (running sessions, retry queue, pending pull request reactions, parked issues, aggregate token/runtime totals, rate limits, and the effective workflow shape). |
+| GET    | `/api/v1/{identifier}`   | Per-issue detail for a specific issue identifier, including a parked one and one that only waits on a pending pull request reaction. Returns 404 for unknown issues. |
 | POST   | `/api/v1/refresh`        | Trigger an immediate poll+reconciliation cycle. Returns 202 Accepted normally, 409 Conflict during graceful shutdown. Best-effort; repeated requests are coalesced. |
 | GET    | `/metrics`               | Prometheus exposition-format scrape endpoint. Present only when `github.com/prometheus/client_golang` metrics are enabled (always co-located with the HTTP server). |
 
@@ -1933,7 +1933,7 @@ When a check fails, the overall status is `"fail"` and the failing check is iden
 
 #### `GET /api/v1/state` — Runtime Snapshot
 
-Returns the system-wide runtime state including running sessions, retry queue, budget-exhausted and parked issues, aggregate token/runtime totals, rate limits, and the effective workflow shape (`config`).
+Returns the system-wide runtime state including running sessions, retry queue, budget-exhausted and parked issues, pending pull request reactions, aggregate token/runtime totals, rate limits, and the effective workflow shape (`config`).
 
 ```json
 {
@@ -1942,7 +1942,8 @@ Returns the system-wide runtime state including running sessions, retry queue, b
     "running": 2,
     "retrying": 1,
     "budget_exhausted": 1,
-    "parked": 1
+    "parked": 1,
+    "pending_reactions": 2
   },
   "running": [
     {
@@ -2043,6 +2044,64 @@ Returns the system-wide runtime state including running sessions, retry queue, b
       "label": "needs-human",
       "label_applied": true,
       "parked_at": "2026-02-24T20:05:00Z"
+    }
+  ],
+  "pending_reactions": [
+    {
+      "issue_id": "mno345",
+      "issue_identifier": "MT-653",
+      "issue_title": "Add the export button",
+      "issue_url": "https://tracker.example.com/browse/MT-653",
+      "kind": "ci",
+      "config_key": "ci_failure",
+      "pull_request": {
+        "number": 931,
+        "repository": "acme/web",
+        "url": "https://github.com/acme/web/pull/931",
+        "branch": "sortie/MT-653",
+        "head_sha": "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b"
+      },
+      "created_at": "2026-02-24T20:09:30Z",
+      "next_poll_at": "2026-02-24T20:17:40Z",
+      "wait": "poll_interval",
+      "used_attempts": 2,
+      "max_attempts": 2,
+      "escalated_at": "2026-02-24T20:12:40Z",
+      "last_check": {
+        "observed_at": "2026-02-24T20:12:40Z",
+        "head_sha": "9b7e3d1c0a2f4e6b8d0c1a3e5f7b9d2c4e6a8f0b",
+        "status": "failing",
+        "failing_checks": ["Test"],
+        "failing": 1,
+        "pending": 0,
+        "passing": 4
+      }
+    },
+    {
+      "issue_id": "mno345",
+      "issue_identifier": "MT-653",
+      "issue_title": "Add the export button",
+      "issue_url": "https://tracker.example.com/browse/MT-653",
+      "kind": "review",
+      "config_key": "review_comments",
+      "pull_request": {
+        "number": 931,
+        "repository": "acme/web",
+        "url": "https://github.com/acme/web/pull/931",
+        "branch": "sortie/MT-653",
+        "head_sha": "4f1c2a9e8b7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b"
+      },
+      "created_at": "2026-02-24T20:09:30Z",
+      "next_poll_at": "2026-02-24T20:16:05Z",
+      "wait": "debounce",
+      "used_attempts": 1,
+      "max_attempts": 3,
+      "escalated_at": null,
+      "last_check": {
+        "observed_at": "2026-02-24T20:15:10Z",
+        "actionable_comments": 3,
+        "new_comments": 1
+      }
     }
   ],
   "agent_totals": {
@@ -2194,6 +2253,73 @@ Each record of `parked`, and the `parked` object of the per-issue response, carr
 
 Sortie stores the title and link with the park and restores them at startup. A park stored by an earlier release holds no read; it takes one from the first poll tick on which the tracker answers for its issue, through the candidate list or, where the candidates omit the issue, one single-issue read, and a read already held is never replaced.
 
+**Pending reaction fields:**
+
+Each row of `pending_reactions`, on both routes, describes one pull request reaction that Sortie keeps watching after a run hands off. The list is always present, `[]` when none, with one row per issue and kind, sorted by `issue_identifier`, then `issue_id`, then `kind`; `counts.pending_reactions` equals its length. An issue appears in every list that holds it, so an issue with a CI fix queued and review comments pending is in `retrying` and `pending_reactions` both. Pending reactions are runtime-only: after a restart Sortie rebuilds the rows without a pull request link, wait reason, check result, or escalation time, and they fill in as the reactions are checked.
+
+| Field                | Type                 | Description |
+| -------------------- | -------------------- | ----------- |
+| `issue_id`           | string               | The tracker-internal issue ID. |
+| `issue_identifier`   | string               | The human-readable issue key. |
+| `display_identifier` | string or absent     | The qualified form of the key. Omitted when the tracker needs none. |
+| `issue_title`        | string or absent     | The issue's title as the run that created the reaction read it, or as startup recovery restored it from run history. Omitted when empty. Masked. |
+| `issue_url`          | string or absent     | The issue's tracker link under the same rule as `issue_title`. Omitted when empty. Masked. |
+| `kind`               | string               | `ci`, `review`, `bot-review`, `merge`, `merge-conflict`, `label-review`, `label-fix`, or `merge-completion`. |
+| `config_key`         | string               | The `reactions` key of `WORKFLOW.md` the kind is configured under, as a retry row's `reaction_config_key` names it: `ci_failure`, `review_comments`, `bot_review`, `auto_merge`, `merge_conflicts`, `label_commands` (for both `label-review` and `label-fix`), or `merge_completion`. The reaction's settings are at `config.reactions[config_key]`. |
+| `pull_request`       | object               | Always present. Keys below. |
+| `created_at`         | string               | When this process created the reaction, at the worker exit that seeded it or at the startup that restored it, as an RFC 3339 timestamp in UTC. A retry-slot deferral leaves it unchanged. |
+| `next_poll_at`       | string               | When the next check is due, in UTC. The check runs on the first reconcile pass (poll tick or refresh) at or after it, so a value at or before `generated_at` means the next pass checks the reaction. |
+| `wait`               | string or absent     | Why the reaction waits for that check (table below). Omitted until a pass first returns the reaction to the pending set, because a reaction no pass has taken has had no check and is due at once. |
+| `used_attempts`      | integer or `null`    | What the kind counts (table below). `null` for `label-review` and `label-fix`, which count nothing. |
+| `max_attempts`       | integer or `null`    | The ceiling the kind's pass applies, as of the latest poll tick. `null` when the pass applies none. |
+| `escalated_at`       | string or `null`     | Always present. When the reaction escalated for its current head, in UTC; `null` otherwise. Only `ci` stays pending after it escalates, so for every other kind the value is `null` for as long as the row exists. A head change clears it. The label the escalation applies is `config.reactions[config_key].escalation_label`. |
+| `last_check`         | object or `null`     | Always present. What the latest completed check observed (keys below). `null` before the first check completes, and always `null` for `merge`, `merge-completion`, `label-review`, and `label-fix`. A result replaces the previous one, leaves with its entry, and for `ci` is cleared when the head changes. |
+
+`pull_request` keys:
+
+| Field        | Type             | Description |
+| ------------ | ---------------- | ----------- |
+| `number`     | integer          | The pull request number. Always present. |
+| `repository` | string           | `owner/repo` as the pull request record the run left in its workspace holds them. Masked. |
+| `url`        | string or absent | The pull request's web page as the provider reported it on the latest read of the pull request. Omitted until a read reports one. Masked. Sortie never builds the link from the configured API endpoint, because a forge can serve its web pages from another host. |
+| `branch`     | string or absent | The head branch that record holds for the run that created the reaction. Omitted for `label-review` and `merge-completion`, which keep none. Masked. |
+| `head_sha`   | string or absent | The head commit that record holds for that run. Omitted when none was recorded and for `label-review`, `label-fix`, and `merge-completion`. Masked. A later push does not change it. |
+
+`last_check` keys, a flat object whose members follow the kind:
+
+| Field                 | Kinds                      | Description |
+| --------------------- | -------------------------- | ----------- |
+| `observed_at`         | every kind that records    | When the check completed, in UTC. |
+| `head_sha`            | `ci`, `merge-conflict`     | The head commit the check read. Omitted when the provider reported none. Masked. |
+| `status`              | `ci`                       | The verdict the reaction acted on, `passing`, `pending`, or `failing`, as the provider reported it. An empty check set is `pending`, not `passing`. |
+| `failing_checks`      | `ci`                       | The names of the check runs the verdict counts as failing, in the provider's order, uncapped. `[]` when none. Masked. The log excerpt and each check's details link are never served. |
+| `failing`, `pending`, `passing` | `ci`             | The check runs by outcome. Each run counts once, in the class the verdict reads it as, so the counts and `status` cannot disagree. |
+| `actionable_comments` | `review`, `bot-review`     | The comments the check found actionable: current, and for `review` outside `bot_usernames`. A comment a run was already given counts until the forge reports it outdated. |
+| `new_comments`        | `review`, `bot-review`     | Those of `actionable_comments` the reaction acts on next: no run was given them, the reaction has not already reported them, and the running turn does not carry them. `0` whenever `wait` is `poll_interval`, since the check then found nothing to act on. |
+| `mergeable`           | `merge-conflict`           | `false` when the provider reports merge conflicts, `true` when it reports none, and `null` while it has not computed mergeability. A branch-protection block is not a conflict. |
+
+`wait` values, by the pass that last returned the reaction to the pending set:
+
+| `wait`          | Meaning |
+| --------------- | ------- |
+| `poll_interval` | The pass completed its check and found nothing to act on yet, or acted and keeps watching. The kind checks again at its poll cadence. |
+| `debounce`      | For `review`: the check found new actionable comments within `debounce_ms` of the newest. `next_poll_at` ends the window, and the reaction dispatches then unless a newer comment arrives. |
+| `backoff`       | The pass could not complete its check: a provider, tracker, or store call failed, or the provider answered without an identifier the check needs. |
+| `retry_slot`    | The pass found work to dispatch while another retry holds the issue's retry slot. For `merge-completion`, while a run or retry claims the issue. |
+| `triage`        | The reaction waits on its triage command: a run for the current subject is in flight, was just started, or waits for a free run slot. |
+
+`used_attempts` and `max_attempts` by kind:
+
+| `kind`                       | `used_attempts` counts | `max_attempts` | At the ceiling |
+| ---------------------------- | ---------------------- | -------------- | -------------- |
+| `ci`                         | CI-fix continuations dispatched since a passing verdict, or a head change attributed to someone else, last reset the count. | `reactions.ci_failure.max_retries` | The next failing verdict escalates. The count exceeds the ceiling only after a reload lowers `max_retries` below the fixes already dispatched. |
+| `review`                     | Review-fix continuations dispatched. | `max_continuation_turns` | The next set holding a new comment escalates. |
+| `bot-review`                 | Bot-review-fix continuations dispatched. | `max_continuation_turns` | The next new comment on the code escalates. |
+| `merge-conflict`             | Rebase continuations dispatched since the conflict episode began. | `max_retries` | The next new conflicting head escalates. |
+| `merge`                      | Merge calls made. | `max_retries`; `null` at `0` | The next check escalates. |
+| `merge-completion`           | Tracker transitions that failed. | `max_retries` | The next failed transition escalates. |
+| `label-review`, `label-fix`  | `null` | `null` | None. |
+
 **Aggregate totals:**
 
 | Field               | Type    | Description                                                                                             |
@@ -2329,13 +2455,14 @@ Returns issue-specific runtime and debug details for a single issue. Returns `40
   "retry": null,
   "budget_exhausted": null,
   "parked": null,
+  "pending_reactions": [],
   "recent_events": [],
   "last_error": null,
   "tracked": {}
 }
 ```
 
-The `running` object uses the same per-session field schema as `GET /api/v1/state` (see the per-session fields table above). `status` is `"running"` when the issue has a running session, `"retrying"` when it does not but has a pending retry, `"budget_exhausted"` when it has neither but is held out of dispatch by a per-issue budget ceiling, and `"parked"` when it is none of those but is parked. The fields for whichever cases do not apply are `null`. `budget_exhausted` carries the same record shape as the `budget_exhausted` array on `GET /api/v1/state`, and `parked` the record shape of the `parked` array. A parked-only response carries a `null` `workspace`, zero `attempts`, and a `null` `last_error`, as a budget-exhausted one does. `last_error` is the retry's `error`, so after a reschedule it is the reschedule reason.
+The `running` object uses the same per-session field schema as `GET /api/v1/state` (see the per-session fields table above). `status` is `"running"` when the issue has a running session, `"retrying"` when it does not but has a pending retry, `"budget_exhausted"` when it has neither but is held out of dispatch by a per-issue budget ceiling, `"parked"` when it is none of those but is parked, and `"pending_reactions"` when it is none of those but a pending pull request reaction holds it. The fields for whichever cases do not apply are `null`. `budget_exhausted` carries the same record shape as the `budget_exhausted` array on `GET /api/v1/state`, and `parked` the record shape of the `parked` array. `pending_reactions` is always present: the issue's rows in the record shape and order of the `pending_reactions` array on `GET /api/v1/state`, `[]` when the issue has none, whatever the status. A parked-only or pending-reaction-only response carries a `null` `workspace`, zero `attempts`, and a `null` `last_error`, as a budget-exhausted one does. `last_error` is the retry's `error`, so after a reschedule it is the reschedule reason.
 
 #### `POST /api/v1/refresh`
 

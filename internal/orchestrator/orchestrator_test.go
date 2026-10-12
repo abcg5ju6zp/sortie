@@ -5865,6 +5865,7 @@ func TestHandleTick_TokenWarningThreshold(t *testing.T) {
 
 		wm := budgetTickConfigTokens(0, 1000)
 		wm.config.Agent.TokenWarningPercent = 80
+		wm.config.CIFeedback.MaxRetries = 4
 		store := &stubStore{}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
 		tracker := &candidateTrackerAdapter{mockTrackerAdapter: &mockTrackerAdapter{}}
@@ -5876,6 +5877,12 @@ func TestHandleTick_TokenWarningThreshold(t *testing.T) {
 		}
 		if state.TokenWarningThreshold != 800 {
 			t.Errorf("state.TokenWarningThreshold = %d, want 800 (cfg.Agent.TokenWarningThreshold())", state.TokenWarningThreshold)
+		}
+		if got, ok := state.ReactionMaxAttempts[ReactionKindCI]; !ok || got != 4 {
+			t.Errorf("state.ReactionMaxAttempts[%q] = %d, %v, want 4, true (loaded max_retries)", ReactionKindCI, got, ok)
+		}
+		if got, ok := state.ReactionMaxAttempts[ReactionKindAutoMerge]; ok {
+			t.Errorf("state.ReactionMaxAttempts[%q] = %d, want absent at max_retries 0", ReactionKindAutoMerge, got)
 		}
 	})
 

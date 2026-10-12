@@ -551,6 +551,7 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 			CIProvider:                        o.ciProvider,
 			SCMAdapter:                        o.scmAdapter,
 			AutoMergeReactionConfigured:       o.autoMergeReactionConfigured,
+			ReviewReactionConfigured:          o.reviewReactionConfigured,
 			BotReviewReactionConfigured:       o.botReviewReactionConfigured,
 			MergeConflictReactionConfigured:   o.mergeConflictReactionConfigured,
 			LabelReviewReactionConfigured:     o.labelReviewReactionConfigured,
@@ -571,7 +572,9 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	// A past-due recovered retry can dispatch on the first pass, ahead of
 	// the first tick, so the worker settings it launches under must be in
 	// force before it is activated.
-	o.applyWorkerConfig(o.workflowManager.Config())
+	startCfg := o.workflowManager.Config()
+	o.applyWorkerConfig(startCfg)
+	o.state.ReactionMaxAttempts = o.reactionMaxAttempts(startCfg)
 	o.activateReconstructedRetries()
 
 	tickTimer := time.NewTimer(0)
@@ -697,6 +700,22 @@ func (o *Orchestrator) applyWorkerConfig(cfg config.ServiceConfig) []config.Advi
 	return wc.Warnings
 }
 
+// reactionMaxAttempts returns the ceiling each counting reaction kind's pass
+// applies under cfg; a kind with none is absent.
+func (o *Orchestrator) reactionMaxAttempts(cfg config.ServiceConfig) map[string]int {
+	ceilings := map[string]int{
+		ReactionKindCI:              cfg.CIFeedback.MaxRetries,
+		ReactionKindReview:          o.reviewConfig.MaxContinuationTurns,
+		ReactionKindBotReview:       o.botReviewConfig.MaxContinuationTurns,
+		ReactionKindMergeConflict:   o.mergeConflictConfig.MaxRetries,
+		ReactionKindMergeCompletion: o.mergeCompletionConfig.MaxRetries,
+	}
+	if o.autoMergeConfig.MaxRetries > 0 {
+		ceilings[ReactionKindAutoMerge] = o.autoMergeConfig.MaxRetries
+	}
+	return ceilings
+}
+
 // handleTick executes a single poll-and-dispatch cycle: preflight, config
 // read, reconcile, fetch, sort, dispatch.
 //
@@ -727,6 +746,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	o.state.MaxConcurrentAgents = cfg.Agent.MaxConcurrentAgents
 	o.state.MaxTokens = cfg.Agent.MaxTokens
 	o.state.MaxSessions = cfg.Agent.MaxSessions
+	o.state.ReactionMaxAttempts = o.reactionMaxAttempts(cfg)
 	o.state.TokenWarningThreshold = cfg.Agent.TokenWarningThreshold()
 	o.state.MaxConcurrentByState = cfg.Agent.MaxConcurrentByState
 
@@ -1706,6 +1726,7 @@ func (o *Orchestrator) drainRunningWorkers() {
 				CIProvider:                        o.ciProvider,
 				SCMAdapter:                        o.scmAdapter,
 				AutoMergeReactionConfigured:       o.autoMergeReactionConfigured,
+				ReviewReactionConfigured:          o.reviewReactionConfigured,
 				BotReviewReactionConfigured:       o.botReviewReactionConfigured,
 				MergeConflictReactionConfigured:   o.mergeConflictReactionConfigured,
 				LabelReviewReactionConfigured:     o.labelReviewReactionConfigured,

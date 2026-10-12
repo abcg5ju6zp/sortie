@@ -175,8 +175,10 @@ function reconcile_review_comments(state):
     rkey = reaction_key(pending.issue_id, "review")
 
     # Watch window; a spent counter survives the drop. The cached
-    # handed-off set is dropped at any counter value, its rows are kept
-    if review_config.watch_window_ms > 0 and now - pending.created_at > review_config.watch_window_ms:
+    # handed-off set is dropped at any counter value, its rows are kept.
+    # watch_start is watch_restarted_at when a retry-slot deferral set it,
+    # else created_at
+    if review_config.watch_window_ms > 0 and now - watch_start(pending) > review_config.watch_window_ms:
       cancel_triage(pending)
       if state.reaction_attempts[rkey] < review_config.max_continuation_turns:
         delete(state.reaction_attempts, rkey)
@@ -251,7 +253,7 @@ function reconcile_review_comments(state):
 
     # Retry slot arbitration
     if retry_slot_incumbent(state, pending.issue_id) is not nil:
-      pending.created_at = now
+      pending.watch_restarted_at = now
       state.pending_reactions[key] = pending
       continue
 

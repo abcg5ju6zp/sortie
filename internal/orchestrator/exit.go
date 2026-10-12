@@ -133,6 +133,8 @@ type HandleWorkerExitParams struct {
 	// SCMAdapter.
 	AutoMergeReactionConfigured bool
 
+	ReviewReactionConfigured bool
+
 	BotReviewReactionConfigured bool
 
 	MergeConflictReactionConfigured bool
@@ -989,9 +991,12 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 			}
 		}
 
-		// Seed a pending review check when the SCM adapter is configured and
-		// the workspace has PR metadata with repository identity.
-		if params.SCMAdapter != nil && workerResult.WorkspacePath != "" {
+		// Seed a pending review check when the SCM adapter is configured, the
+		// review reaction is enabled (ReviewReactionConfigured), and the
+		// workspace has PR metadata with repository identity. Without the
+		// flag any other SCM-backed reaction would also seed a review entry,
+		// whose zero-valued config escalates the first actionable comment.
+		if params.SCMAdapter != nil && params.ReviewReactionConfigured && workerResult.WorkspacePath != "" {
 			if reactionEnqueueAllowed {
 				scm := workspace.ReadSCMMetadata(workerResult.WorkspacePath, log)
 				if scm.PRNumber > 0 && scm.Branch != "" && scm.Owner != "" && scm.Repo != "" {

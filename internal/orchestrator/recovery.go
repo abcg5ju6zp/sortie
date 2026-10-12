@@ -95,6 +95,7 @@ type PendingReactionRecoveryParams struct {
 	CIProvider                        domain.CIStatusProvider
 	SCMAdapter                        domain.SCMAdapter
 	AutoMergeReactionConfigured       bool
+	ReviewReactionConfigured          bool
 	BotReviewReactionConfigured       bool
 	MergeConflictReactionConfigured   bool
 	LabelReviewReactionConfigured     bool
@@ -309,7 +310,7 @@ func recoverPendingReactionKinds(
 ) int {
 	added := 0
 
-	if params.SCMAdapter != nil && meta.PRNumber > 0 && meta.Owner != "" && meta.Repo != "" && meta.Branch != "" {
+	if params.SCMAdapter != nil && params.ReviewReactionConfigured && meta.PRNumber > 0 && meta.Owner != "" && meta.Repo != "" && meta.Branch != "" {
 		key := ReactionKey(run.IssueID, ReactionKindReview)
 		if _, exists := state.PendingReactions[key]; !exists {
 			state.PendingReactions[key] = &PendingReaction{

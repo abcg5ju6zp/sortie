@@ -116,10 +116,10 @@ A verdict that withholds the write is, immediately before any of its effects, ch
   - Kill the worker unconditionally, then either schedule an exponential-backoff retry when the retry slot (Section 7.5) is free, or defer to the incumbent already occupying it.
 
 - `CI Status Failing`
-  - Consult the retry slot (Section 7.5) first. If an incumbent occupies it, defer: re-enqueue the pending entry with a refreshed `CreatedAt` and take none of the actions below on this tick — no run-history row, no counter increment, no dispatch, and no escalation.
-  - On a free slot: persist CI failure run history and increment the CI fix attempt counter.
-  - If within `reactions.ci_failure.max_retries`: schedule a CI-fix dispatch with failure context injected into the prompt.
-  - If retries exhausted: escalate (apply the label or emit the escalation event per the `escalation` posture, Section 5.3.8), cancel retry, release claim.
+  - Consult the retry slot (Section 7.5) first. If an incumbent occupies it, defer: re-enqueue the pending entry with backoff, leaving its creation time unchanged, and take none of the actions below on this tick: no run-history row, no counter increment, no dispatch, and no escalation.
+  - On a free slot: persist CI failure run history, except on a pass over an already-escalated head whose CI fix counter is at the budget, which appends no row (Section 11A.6).
+  - If the CI fix counter is below `reactions.ci_failure.max_retries`: increment it and schedule a CI-fix dispatch with failure context injected into the prompt.
+  - If the counter has reached `reactions.ci_failure.max_retries`: escalate with that count of fixes dispatched (apply the label or emit the escalation event per the `escalation` posture, Section 5.3.8), cancel retry, release the claim unless a worker runs for the issue (that worker's exit decides it). The counter stays at the budget.
 
 - `Review Comments Detected`
   - Compute fingerprint from non-outdated review comment IDs.
@@ -128,7 +128,7 @@ A verdict that withholds the write is, immediately before any of its effects, ch
   - If within debounce window: defer to next tick.
   - If the retry slot is occupied by an incumbent, defer instead (Section 7.5).
   - On a free slot, decide the continuation budget after the slot arbitration. Below `reactions.review_comments.max_continuation_turns`, schedule a review-fix dispatch with review comment context injected into the prompt.
-  - If continuation turns are exhausted: escalate (apply the label or emit the escalation event per the `escalation` posture, Section 5.3.8), cancel retry, release claim, recording nothing in the handed-off set. The set holds a new comment, because the check above settles every other set. For `reactions.bot_review`, only a new inline comment escalates, and its escalation leaves the claim and the retry in place (Section 11D.5).
+  - If continuation turns are exhausted: escalate (apply the label or emit the escalation event per the `escalation` posture, Section 5.3.8), cancel retry, release the claim unless a worker runs for the issue (that worker's exit decides it), recording nothing in the handed-off set. The set holds a new comment, because the check above settles every other set. For `reactions.bot_review`, only a new inline comment escalates, and its escalation leaves the claim and the retry in place (Section 11D.5).
 
 - `Merge Completion Observed`
   - Observed on the reconcile tick for an issue still parked in `tracker.handoff_state` and not currently claimed by the orchestrator.

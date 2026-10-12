@@ -175,7 +175,7 @@ func processMergeCompletionEntry(
 	}
 	if _, claimed := state.Claimed[pending.IssueID]; claimed {
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitRetrySlot)
 		return
 	}
 	if !strings.EqualFold(stateName, params.HandoffState) {
@@ -203,6 +203,7 @@ func processMergeCompletionEntry(
 		)
 		return
 	}
+	notePullRequestURL(pending, status)
 
 	if !status.Merged {
 		clearMergeCompletionMissingSHAObservationForChangedPR(
@@ -213,7 +214,7 @@ func processMergeCompletionEntry(
 			ctx,
 		)
 		pending.PendingRetryAt = now.Add(pollInterval)
-		state.PendingReactions[key] = pending
+		requeueReaction(state, key, pending, waitPollInterval)
 		return
 	}
 	if status.MergeCommitSHA == "" {
@@ -389,12 +390,12 @@ func clearMergeCompletionMissingSHAObservationForChangedPR(
 
 // backoffMergeCompletionReenqueue increments the pending entry's attempt
 // counter, applies exponential backoff floored at pollInterval, and
-// reinserts the entry into state.PendingReactions.
+// requeues the entry with the backoff reason.
 func backoffMergeCompletionReenqueue(state *State, key string, pending *PendingReaction, now time.Time, pollInterval time.Duration) {
 	pending.PendingAttempts++
 	delay := max(computeReactionPendingDelay(pending.PendingAttempts), pollInterval)
 	pending.PendingRetryAt = now.Add(delay)
-	state.PendingReactions[key] = pending
+	requeueReaction(state, key, pending, waitBackoff)
 }
 
 // routeTransitionFailure routes a failing TransitionIssue call: a

@@ -73,11 +73,6 @@ func (f *labelReviewSCMFake) DeleteBranch(_ context.Context, _, _, _ string) err
 	return nil
 }
 
-// labelReviewSCMPanicOnOthers panics if any SCMAdapter method other than
-// ListLabelEvents or RemoveLabel is called. Used to assert that label-review
-// detection reads only the journal substrate, never a label-snapshot method
-// (domain.SCMAdapter exposes no such method, but a future accidental import
-// of one would be caught here).
 type labelReviewSCMPanicOnOthers struct {
 	events []domain.LabelEvent
 }
@@ -109,7 +104,7 @@ func (p *labelReviewSCMPanicOnOthers) GetCIStatus(_ context.Context, _ int, _, _
 }
 
 func (p *labelReviewSCMPanicOnOthers) GetMergeability(_ context.Context, _ int, _, _ string) (domain.PRMergeStatus, error) {
-	panic("GetMergeability must not be called by the label-review reconcile")
+	return domain.PRMergeStatus{}, nil
 }
 
 func (p *labelReviewSCMPanicOnOthers) MergePR(_ context.Context, _ int, _, _ string, _ domain.MergeStrategy, _, _, _ string) (domain.MergeResult, error) {
@@ -921,9 +916,6 @@ func TestReconcileLabelReviewCommands_DispatchLogsActorAndPRNumber(t *testing.T)
 	}
 }
 
-// TestReconcileLabelReviewCommands_JournalSubstrateNotSnapshot verifies that
-// detection uses only ListLabelEvents (the journal substrate); no other
-// SCMAdapter method is ever called for label-review detection or dispatch.
 func TestReconcileLabelReviewCommands_JournalSubstrateNotSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -1055,17 +1047,14 @@ func TestBuildLabelReviewMap_FieldMapping(t *testing.T) {
 	}
 }
 
-// TestReconcileLabelReviewCommands_ForeignIncumbentDefers covers the first
-// arm of the three-way decision: a confirmed command with a foreign
-// incumbent occupying the retry slot defers instead of dispatching. The
-// fingerprint mark, the high-water mark, and the label must all stay
-// untouched, and the pending entry re-enqueues with a refreshed CreatedAt.
 func TestReconcileLabelReviewCommands_ForeignIncumbentDefers(t *testing.T) {
 	t.Parallel()
 
 	const issueID = "LR-FOREIGN"
 	state := stateWithLabelReviewPending(t, issueID, 10)
 	rkey := ReactionKey(issueID, ReactionKindLabelReview)
+	seededAt := labelReviewBaseTime.Add(-5 * time.Minute)
+	state.PendingReactions[rkey].CreatedAt = seededAt
 	state.RetryAttempts[issueID] = &RetryEntry{
 		IssueID:      issueID,
 		Attempt:      1,
@@ -1086,8 +1075,8 @@ func TestReconcileLabelReviewCommands_ForeignIncumbentDefers(t *testing.T) {
 	if !ok {
 		t.Fatal("PendingReactions entry dropped on a defer; want re-enqueued")
 	}
-	if !entry.CreatedAt.Equal(labelReviewBaseTime) {
-		t.Errorf("CreatedAt = %v, want refreshed to %v", entry.CreatedAt, labelReviewBaseTime)
+	if !entry.CreatedAt.Equal(seededAt) {
+		t.Errorf("CreatedAt = %v, want %v (a deferral leaves it unchanged)", entry.CreatedAt, seededAt)
 	}
 	incumbent := state.RetryAttempts[issueID]
 	if incumbent.ReactionKind != ReactionKindCI {

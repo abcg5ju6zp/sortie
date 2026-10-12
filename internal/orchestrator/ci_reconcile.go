@@ -110,7 +110,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 		// backoff counter is untouched: waiting is not a fetch error.
 		if pending.Triage != nil && !triageRunFinished(pending.Triage) {
 			pending.PendingRetryAt = now
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitTriage)
 			continue
 		}
 
@@ -133,9 +133,10 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 				slog.Int("pending_attempts", pending.PendingAttempts),
 				slog.Int64("retry_after_ms", int64(delay/time.Millisecond)),
 			)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			continue
 		}
+		notePullRequestURL(pending, status)
 
 		// The merged check runs before the closed check so a provider
 		// whose closed state subsumes merging still ends the watch
@@ -165,7 +166,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			entryLog.Debug("ci deferred: empty head sha",
 				slog.Int("pr_number", ciData.PRNumber),
 			)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			continue
 		}
 
@@ -207,7 +208,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 					slog.Int("pending_attempts", pending.PendingAttempts),
 					slog.Int64("retry_after_ms", int64(delay/time.Millisecond)),
 				)
-				state.PendingReactions[key] = pending
+				requeueReaction(state, key, pending, waitBackoff)
 				continue
 			}
 			// The epoch transition already clears dispatched through the
@@ -222,7 +223,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			entryLog.Debug("CI reaction already dispatched for this head, skipping",
 				slog.String("head_sha", status.HeadSHA),
 			)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			continue
 		}
 
@@ -238,11 +239,16 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 				slog.Int64("retry_after_ms", int64(delay/time.Millisecond)),
 			)
 			metrics.IncCIStatusChecks("error")
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 			continue
 		}
 
 		metrics.IncCIStatusChecks(string(result.Status))
+
+		switch result.Status {
+		case domain.CIStatusPassing, domain.CIStatusPending, domain.CIStatusFailing:
+			pending.LastCheck = ciReactionCheck(result, status.HeadSHA, now)
+		}
 
 		switch result.Status {
 		case domain.CIStatusPassing:
@@ -259,13 +265,13 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			entryLog.Info("CI passing on current head, continuing to watch",
 				slog.String("head_sha", status.HeadSHA),
 			)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 
 		case domain.CIStatusPending:
 			pending.PendingAttempts++
 			delay := computeCIPendingDelay(base, pending.PendingAttempts)
 			pending.PendingRetryAt = now.Add(delay)
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitPollInterval)
 			entryLog.Debug("CI pending, will re-check after backoff",
 				slog.String("head_sha", status.HeadSHA),
 				slog.Int("pending_attempts", pending.PendingAttempts),
@@ -278,7 +284,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 				pending.PendingAttempts++
 				delay := computeCIPendingDelay(base, pending.PendingAttempts)
 				pending.PendingRetryAt = now.Add(delay)
-				state.PendingReactions[key] = pending
+				requeueReaction(state, key, pending, waitRetrySlot)
 				continue
 			}
 
@@ -302,7 +308,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			switch triageVerdict {
 			case triageWait:
 				pending.PendingRetryAt = now.Add(computeCIPendingDelay(base, pending.PendingAttempts))
-				state.PendingReactions[key] = pending
+				requeueReaction(state, key, pending, waitTriage)
 
 			case triageHandled:
 				// Re-enqueued exactly as the already-dispatched branch
@@ -310,7 +316,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 				// indistinguishable from the next pass onward.
 				pending.PendingAttempts++
 				pending.PendingRetryAt = now.Add(computeCIPendingDelay(base, pending.PendingAttempts))
-				state.PendingReactions[key] = pending
+				requeueReaction(state, key, pending, waitPollInterval)
 
 			case triageEscalate:
 				escalateCIFailure(state, params, pending, result, status.HeadSHA, state.ReactionAttempts[rkey],
@@ -328,14 +334,37 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			metrics.IncCIStatusChecks("error")
 			pending.PendingAttempts++
 			pending.PendingRetryAt = now.Add(computeCIPendingDelay(base, pending.PendingAttempts))
-			state.PendingReactions[key] = pending
+			requeueReaction(state, key, pending, waitBackoff)
 		}
 	}
 }
 
+// ciReactionCheck records what a CI status read observed on head. It copies
+// check names and outcome counts only, never a log excerpt or a details link.
+func ciReactionCheck(result domain.CIResult, head string, observedAt time.Time) *ReactionCheck {
+	failingChecks := []string{}
+	for _, run := range result.CheckRuns {
+		if scmcore.IsFailingConclusion(run.Conclusion) {
+			failingChecks = append(failingChecks, run.Name)
+		}
+	}
+	tally := scmcore.TallyCheckRuns(result.CheckRuns)
+	return &ReactionCheck{
+		ObservedAt: observedAt,
+		HeadSHA:    head,
+		CI: &CICheck{
+			Status:        string(result.Status),
+			FailingChecks: failingChecks,
+			Failing:       tally.Failing,
+			Pending:       tally.Pending,
+			Passing:       tally.Passing,
+		},
+	}
+}
+
 // applyCIEpochTransition applies the runtime consequences of a detected
-// pull request head change: it resets the backoff counter and the
-// per-head escalation flag unconditionally, resets the CI retry budget
+// pull request head change: it resets the backoff counter, the per-head
+// escalation time, and the last CI result unconditionally, resets the CI retry budget
 // only when [classifyHeadChange] positively establishes that the change
 // is not the orchestrator's own work, and records the new head as the
 // boundary for the next attribution query.
@@ -357,7 +386,8 @@ func applyCIEpochTransition(
 
 	// Unconditional: a changed head voids every prior conclusion.
 	pending.PendingAttempts = 0
-	pending.EscalatedForCurrentHead = false
+	pending.EscalatedAt = time.Time{}
+	pending.LastCheck = nil
 
 	// Conditional: a needless reset costs an unbounded loop.
 	resetAttempts := attribution == headChangeNotOurs
@@ -375,9 +405,8 @@ func applyCIEpochTransition(
 	)
 }
 
-// handleCIFailure records a CI failure in run_history, increments the
-// CI fix attempt counter, and either schedules a CI-fix dispatch or
-// escalates if max retries is exceeded.
+// handleCIFailure either schedules a CI-fix dispatch or, once the fixes
+// dispatched have reached max retries, escalates.
 func handleCIFailure(
 	state *State,
 	params ReconcileParams,
@@ -390,36 +419,41 @@ func handleCIFailure(
 	ctx context.Context,
 	metrics domain.Metrics,
 ) {
-	ciRunHistory := persistence.RunHistory{
-		IssueID:        pending.IssueID,
-		Identifier:     pending.Identifier,
-		DisplayID:      pending.DisplayID,
-		IssueTitle:     pending.IssueIdentity.Title,
-		IssueURL:       pending.IssueIdentity.URL,
-		Attempt:        pending.Attempt,
-		StartedAt:      now.Format(time.RFC3339),
-		CompletedAt:    now.Format(time.RFC3339),
-		Status:         "ci_failed",
-		Error:          stringPtr("CI checks failed on ref " + ref),
-		TokensMeasured: true,
-		ChainID:        pending.StageLineage.ChainID,
-	}
-	if _, err := params.Store.AppendRunHistory(ctx, ciRunHistory); err != nil {
-		log.Error("failed to persist CI failure run history",
-			slog.Any("error", err),
-		)
-	}
-
 	rkey := ReactionKey(pending.IssueID, ReactionKindCI)
-	state.ReactionAttempts[rkey]++
 	attempts := state.ReactionAttempts[rkey]
-
 	maxRetries := params.CIFeedback.MaxRetries
+	spent := attempts >= maxRetries
 
-	if attempts > maxRetries {
+	// Each row counts against agent.max_sessions, and a red head that already
+	// escalated is rechecked at every CI poll, so a recheck that neither
+	// dispatches nor escalates anew must not add one.
+	if !spent || pending.EscalatedAt.IsZero() {
+		ciRunHistory := persistence.RunHistory{
+			IssueID:        pending.IssueID,
+			Identifier:     pending.Identifier,
+			DisplayID:      pending.DisplayID,
+			IssueTitle:     pending.IssueIdentity.Title,
+			IssueURL:       pending.IssueIdentity.URL,
+			Attempt:        pending.Attempt,
+			StartedAt:      now.Format(time.RFC3339),
+			CompletedAt:    now.Format(time.RFC3339),
+			Status:         "ci_failed",
+			Error:          stringPtr("CI checks failed on ref " + ref),
+			TokensMeasured: true,
+			ChainID:        pending.StageLineage.ChainID,
+		}
+		if _, err := params.Store.AppendRunHistory(ctx, ciRunHistory); err != nil {
+			log.Error("failed to persist CI failure run history",
+				slog.Any("error", err),
+			)
+		}
+	}
+
+	if spent {
 		escalateCIFailure(state, params, pending, result, ref, attempts, EscalationTriggerBudget, now, base, log, ctx, metrics)
 		return
 	}
+	state.ReactionAttempts[rkey] = attempts + 1
 
 	ciContext := result.ToTemplateMap()
 
@@ -452,7 +486,7 @@ func handleCIFailure(
 	log.Info("CI failure detected, scheduling CI fix dispatch",
 		slog.String("ref", ref),
 		slog.Int("failing_count", result.FailingCount),
-		slog.Int("ci_fix_attempt", attempts),
+		slog.Int("ci_fix_attempt", attempts+1),
 		slog.Int("max_retries", maxRetries),
 	)
 }
@@ -460,14 +494,13 @@ func handleCIFailure(
 // escalateCIFailure handles the case where the CI retry budget has been
 // spent for the commit currently recorded. It applies the configured
 // escalation action (label, comment, or none) at most once per recorded head,
-// cancels the retry, and releases the claim so the issue does not stay
-// reserved by a reaction that has stopped dispatching. The pending
-// entry, its attempt counter, and its fingerprint row all survive: the
-// counter must stay over budget so no further continuation dispatches
-// until a new epoch resets it, and the row is the epoch record. The
-// entry is re-enqueued with backoff so the watch continues past
-// exhaustion. Sibling reaction kinds for the same issue are left
-// untouched.
+// cancels the retry, and releases the claim unless a worker runs for the
+// issue, so the issue does not stay reserved by a reaction that has stopped
+// dispatching. The pending
+// entry, its attempt counter, and its fingerprint row all survive; the
+// row is the epoch record. The entry is re-enqueued with backoff so the
+// watch continues past exhaustion. Sibling reaction kinds for the same
+// issue are left untouched.
 func escalateCIFailure(
 	state *State,
 	params ReconcileParams,
@@ -482,7 +515,7 @@ func escalateCIFailure(
 	ctx context.Context,
 	metrics domain.Metrics,
 ) {
-	if !pending.EscalatedForCurrentHead {
+	if pending.EscalatedAt.IsZero() {
 		if trigger == EscalationTriggerTriage {
 			log.Warn("CI triage requested escalation",
 				slog.String("ref", ref),
@@ -544,7 +577,7 @@ func escalateCIFailure(
 
 	// Set regardless of the tracker write's outcome: the write runs in
 	// a detached goroutine whose result this pass cannot observe.
-	pending.EscalatedForCurrentHead = true
+	pending.EscalatedAt = now
 
 	CancelRetry(state, pending.IssueID)
 
@@ -554,7 +587,7 @@ func escalateCIFailure(
 		)
 	}
 
-	delete(state.Claimed, pending.IssueID)
+	releaseClaimUnlessRunning(state, pending.IssueID)
 
 	// The entry, its attempt counter, and its fingerprint row are left
 	// untouched: this scope is limited to this kind's own slot, so a
@@ -564,7 +597,7 @@ func escalateCIFailure(
 	pending.PendingAttempts++
 	delay := computeCIPendingDelay(base, pending.PendingAttempts)
 	pending.PendingRetryAt = now.Add(delay)
-	state.PendingReactions[ReactionKey(pending.IssueID, ReactionKindCI)] = pending
+	requeueReaction(state, ReactionKey(pending.IssueID, ReactionKindCI), pending, waitPollInterval)
 }
 
 // buildCIEscalationComment builds a plain-text escalation comment for

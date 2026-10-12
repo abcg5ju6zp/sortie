@@ -20,6 +20,7 @@ type stateResponse struct {
 	Retrying               []retryEntryResponse             `json:"retrying"`
 	BudgetExhausted        []budgetExhaustedResponse        `json:"budget_exhausted"`
 	Parked                 []parkedEntryResponse            `json:"parked"`
+	PendingReactions       []pendingReactionResponse        `json:"pending_reactions"`
 	AgentTotals            orchestrator.SnapshotAgentTotals `json:"agent_totals"`
 	RateLimits             map[string]any                   `json:"rate_limits"`
 	ActiveEstimatedCostUSD *float64                         `json:"active_estimated_cost_usd,omitempty"`
@@ -34,10 +35,11 @@ type stateResponse struct {
 }
 
 type stateCounts struct {
-	Running         int `json:"running"`
-	Retrying        int `json:"retrying"`
-	BudgetExhausted int `json:"budget_exhausted"`
-	Parked          int `json:"parked"`
+	Running          int `json:"running"`
+	Retrying         int `json:"retrying"`
+	BudgetExhausted  int `json:"budget_exhausted"`
+	Parked           int `json:"parked"`
+	PendingReactions int `json:"pending_reactions"`
 }
 
 type runningEntryResponse struct {
@@ -152,6 +154,82 @@ type parkedEntryResponse struct {
 	ParkedAt          time.Time `json:"parked_at"`
 }
 
+// pendingReactionResponse is the JSON wire format for one pending pull
+// request reaction. Used by GET /api/v1/state and GET /api/v1/{identifier}.
+type pendingReactionResponse struct {
+	IssueID           string                 `json:"issue_id"`
+	IssueIdentifier   string                 `json:"issue_identifier"`
+	DisplayIdentifier string                 `json:"display_identifier,omitempty"`
+	IssueTitle        string                 `json:"issue_title,omitempty"`
+	IssueURL          string                 `json:"issue_url,omitempty"`
+	Kind              string                 `json:"kind"`
+	ConfigKey         string                 `json:"config_key"`
+	PullRequest       pullRequestResponse    `json:"pull_request"`
+	CreatedAt         time.Time              `json:"created_at"`
+	NextPollAt        time.Time              `json:"next_poll_at"`
+	Wait              string                 `json:"wait,omitempty"`
+	UsedAttempts      *int                   `json:"used_attempts"`
+	MaxAttempts       *int                   `json:"max_attempts"`
+	EscalatedAt       *time.Time             `json:"escalated_at"`
+	LastCheck         *reactionCheckResponse `json:"last_check"`
+}
+
+// pullRequestResponse is the JSON wire format for the pull request a pending
+// reaction watches.
+type pullRequestResponse struct {
+	Number     int    `json:"number"`
+	Repository string `json:"repository"`
+	URL        string `json:"url,omitempty"`
+	Branch     string `json:"branch,omitempty"`
+	HeadSHA    string `json:"head_sha,omitempty"`
+}
+
+// reactionCheckResponse is the JSON wire format for what a pending
+// reaction's latest check observed. It serializes the members of the kind's
+// result as one flat object, which struct tags cannot express: a count of
+// zero and a mergeable of null must appear for the kinds that record them
+// and not at all for the others.
+type reactionCheckResponse orchestrator.ReactionCheck
+
+type reactionCheckHeader struct {
+	ObservedAt time.Time `json:"observed_at"`
+	HeadSHA    string    `json:"head_sha,omitempty"`
+}
+
+// MarshalJSON writes observed_at, then head_sha when the check read a head,
+// then the members of the one result the check holds.
+func (c reactionCheckResponse) MarshalJSON() ([]byte, error) {
+	header := reactionCheckHeader{ObservedAt: c.ObservedAt.UTC(), HeadSHA: c.HeadSHA}
+	switch {
+	case c.CI != nil:
+		failingChecks := c.CI.FailingChecks
+		if failingChecks == nil {
+			failingChecks = []string{}
+		}
+		return json.Marshal(struct {
+			reactionCheckHeader
+			Status        string   `json:"status"`
+			FailingChecks []string `json:"failing_checks"`
+			Failing       int      `json:"failing"`
+			Pending       int      `json:"pending"`
+			Passing       int      `json:"passing"`
+		}{header, c.CI.Status, failingChecks, c.CI.Failing, c.CI.Pending, c.CI.Passing})
+	case c.Comments != nil:
+		return json.Marshal(struct {
+			reactionCheckHeader
+			ActionableComments int `json:"actionable_comments"`
+			NewComments        int `json:"new_comments"`
+		}{header, c.Comments.Actionable, c.Comments.New})
+	case c.Mergeability != nil:
+		return json.Marshal(struct {
+			reactionCheckHeader
+			Mergeable *bool `json:"mergeable"`
+		}{header, c.Mergeability.Mergeable})
+	default:
+		return json.Marshal(header)
+	}
+}
+
 // budgetExhaustedResponse is the JSON wire format for one issue held out
 // of dispatch by a budget ceiling. Used by GET /api/v1/state and
 // GET /api/v1/{identifier}.
@@ -172,18 +250,19 @@ type budgetExhaustedResponse struct {
 }
 
 type issueDetailResponse struct {
-	IssueIdentifier string                   `json:"issue_identifier"`
-	IssueID         string                   `json:"issue_id"`
-	Status          string                   `json:"status"`
-	Workspace       *workspaceInfo           `json:"workspace"`
-	Attempts        *attemptsInfo            `json:"attempts"`
-	Running         *runningEntryResponse    `json:"running"`
-	Retry           *retryEntryResponse      `json:"retry"`
-	BudgetExhausted *budgetExhaustedResponse `json:"budget_exhausted"`
-	Parked          *parkedEntryResponse     `json:"parked"`
-	RecentEvents    []any                    `json:"recent_events"`
-	LastError       *string                  `json:"last_error"`
-	Tracked         map[string]any           `json:"tracked"`
+	IssueIdentifier  string                    `json:"issue_identifier"`
+	IssueID          string                    `json:"issue_id"`
+	Status           string                    `json:"status"`
+	Workspace        *workspaceInfo            `json:"workspace"`
+	Attempts         *attemptsInfo             `json:"attempts"`
+	Running          *runningEntryResponse     `json:"running"`
+	Retry            *retryEntryResponse       `json:"retry"`
+	BudgetExhausted  *budgetExhaustedResponse  `json:"budget_exhausted"`
+	Parked           *parkedEntryResponse      `json:"parked"`
+	PendingReactions []pendingReactionResponse `json:"pending_reactions"`
+	RecentEvents     []any                     `json:"recent_events"`
+	LastError        *string                   `json:"last_error"`
+	Tracked          map[string]any            `json:"tracked"`
 }
 
 type workspaceInfo struct {
@@ -364,6 +443,43 @@ func toParkedEntryResponse(e orchestrator.SnapshotParkedEntry) parkedEntryRespon
 	}
 }
 
+func toPendingReactionResponse(e orchestrator.SnapshotPendingReaction) pendingReactionResponse {
+	resp := pendingReactionResponse{
+		IssueID:           e.IssueID,
+		IssueIdentifier:   e.Identifier,
+		DisplayIdentifier: e.DisplayID,
+		IssueTitle:        e.IssueTitle,
+		IssueURL:          e.IssueURL,
+		Kind:              e.Kind,
+		ConfigKey:         e.ConfigKey,
+		PullRequest: pullRequestResponse{
+			Number:     e.PullRequest.Number,
+			Repository: e.PullRequest.Repository,
+			URL:        e.PullRequest.URL,
+			Branch:     e.PullRequest.Branch,
+			HeadSHA:    e.PullRequest.HeadSHA,
+		},
+		CreatedAt:    e.CreatedAt.UTC(),
+		NextPollAt:   e.NextPollAt.UTC(),
+		Wait:         e.Wait,
+		UsedAttempts: e.UsedAttempts,
+		MaxAttempts:  e.MaxAttempts,
+		LastCheck:    (*reactionCheckResponse)(e.LastCheck),
+	}
+	if e.EscalatedAt != nil {
+		resp.EscalatedAt = new(e.EscalatedAt.UTC())
+	}
+	return resp
+}
+
+func toPendingReactionResponses(rows []orchestrator.SnapshotPendingReaction) []pendingReactionResponse {
+	responses := make([]pendingReactionResponse, 0, len(rows))
+	for _, e := range rows {
+		responses = append(responses, toPendingReactionResponse(e))
+	}
+	return responses
+}
+
 func toBudgetExhaustedResponse(e orchestrator.SnapshotBudgetEntry) budgetExhaustedResponse {
 	return budgetExhaustedResponse{
 		IssueID:            e.IssueID,
@@ -403,6 +519,8 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, tokenRates TokenRa
 		parked = append(parked, toParkedEntryResponse(e))
 	}
 
+	pendingReactions := toPendingReactionResponses(snap.PendingReactions)
+
 	rateLimits := snap.RateLimits
 	if rateLimits == nil {
 		rateLimits = map[string]any{}
@@ -411,17 +529,19 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, tokenRates TokenRa
 	resp := stateResponse{
 		GeneratedAt: snap.GeneratedAt.UTC(),
 		Counts: stateCounts{
-			Running:         len(running),
-			Retrying:        len(retrying),
-			BudgetExhausted: len(budgetExhausted),
-			Parked:          len(parked),
+			Running:          len(running),
+			Retrying:         len(retrying),
+			BudgetExhausted:  len(budgetExhausted),
+			Parked:           len(parked),
+			PendingReactions: len(pendingReactions),
 		},
-		Running:         running,
-		Retrying:        retrying,
-		BudgetExhausted: budgetExhausted,
-		Parked:          parked,
-		AgentTotals:     snap.AgentTotals,
-		RateLimits:      rateLimits,
+		Running:          running,
+		Retrying:         retrying,
+		BudgetExhausted:  budgetExhausted,
+		Parked:           parked,
+		PendingReactions: pendingReactions,
+		AgentTotals:      snap.AgentTotals,
+		RateLimits:       rateLimits,
 	}
 
 	if len(tokenRates) > 0 {
@@ -640,7 +760,14 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 		}
 	}
 
-	if runEntry == nil && retryEntry == nil && budgetEntry == nil && parkedEntry == nil {
+	var pendingRows []orchestrator.SnapshotPendingReaction
+	for _, e := range snap.PendingReactions {
+		if e.Identifier == identifier {
+			pendingRows = append(pendingRows, e)
+		}
+	}
+
+	if runEntry == nil && retryEntry == nil && budgetEntry == nil && parkedEntry == nil && len(pendingRows) == 0 {
 		return nil
 	}
 
@@ -660,6 +787,9 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 	case parkedEntry != nil:
 		status = "parked"
 		issueID = parkedEntry.IssueID
+	case len(pendingRows) > 0:
+		status = "pending_reactions"
+		issueID = pendingRows[0].IssueID
 	default:
 		status = "unknown"
 	}
@@ -689,18 +819,19 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 	}
 
 	return &issueDetailResponse{
-		IssueIdentifier: identifier,
-		IssueID:         issueID,
-		Status:          status,
-		Workspace:       ws,
-		Attempts:        attempts,
-		Running:         runEntry,
-		Retry:           retryEntry,
-		BudgetExhausted: budgetEntry,
-		Parked:          parkedEntry,
-		RecentEvents:    []any{},
-		LastError:       lastError,
-		Tracked:         map[string]any{},
+		IssueIdentifier:  identifier,
+		IssueID:          issueID,
+		Status:           status,
+		Workspace:        ws,
+		Attempts:         attempts,
+		Running:          runEntry,
+		Retry:            retryEntry,
+		BudgetExhausted:  budgetEntry,
+		Parked:           parkedEntry,
+		PendingReactions: toPendingReactionResponses(pendingRows),
+		RecentEvents:     []any{},
+		LastError:        lastError,
+		Tracked:          map[string]any{},
 	}
 }
 
