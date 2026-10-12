@@ -132,8 +132,9 @@ Sortie's security model is documented in the
 - **Secret handling**: API tokens and secret values support `$VAR` indirection
   and are never logged or expanded beyond a single level.
 - **Minimal dependency surface**: the binary is statically linked with zero
-  runtime dependencies. No CGo. Uses a small set of direct dependencies, with
-  Prometheus metrics support remaining optional.
+  runtime dependencies. No CGo. The Go code uses a small set of direct
+  dependencies, with Prometheus metrics support remaining optional. Tooling
+  used only to develop or build Sortie never ships in the binary.
 
 ## Security Announcements
 
