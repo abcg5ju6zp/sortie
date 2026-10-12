@@ -110,13 +110,8 @@ func ResolveRule(issue domain.Issue, dispatch config.DispatchConfig, hop HopRout
 		return ruleResolution(rule, dispatch, defaultAgentKind, defaultTemplateID)
 	}
 
-	if dispatch.Default.AgentKind != "" || dispatch.Default.TemplateID != "" {
-		return DispatchResolution{
-			AgentKind:  coalesce(dispatch.Default.AgentKind, defaultAgentKind),
-			TemplateID: coalesce(dispatch.Default.TemplateID, defaultTemplateID),
-			RuleName:   "default",
-			MatchedAt:  ResolvedFromDefault,
-		}
+	if resolution, ok := defaultSelection(dispatch, defaultAgentKind, defaultTemplateID); ok {
+		return resolution
 	}
 
 	return DispatchResolution{
@@ -125,6 +120,20 @@ func ResolveRule(issue domain.Issue, dispatch config.DispatchConfig, hop HopRout
 		RuleName:   "",
 		MatchedAt:  ResolvedFromFallback,
 	}
+}
+
+// defaultSelection returns the dispatch default block's resolution and true
+// when the block names an agent kind or a template.
+func defaultSelection(dispatch config.DispatchConfig, defaultAgentKind, defaultTemplateID string) (DispatchResolution, bool) {
+	if dispatch.Default.AgentKind == "" && dispatch.Default.TemplateID == "" {
+		return DispatchResolution{}, false
+	}
+	return DispatchResolution{
+		AgentKind:  coalesce(dispatch.Default.AgentKind, defaultAgentKind),
+		TemplateID: coalesce(dispatch.Default.TemplateID, defaultTemplateID),
+		RuleName:   "default",
+		MatchedAt:  ResolvedFromDefault,
+	}, true
 }
 
 func ruleResolution(rule config.DispatchRule, dispatch config.DispatchConfig, defaultAgentKind, defaultTemplateID string) DispatchResolution {

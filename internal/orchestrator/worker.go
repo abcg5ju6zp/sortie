@@ -1121,10 +1121,9 @@ func RunWorkerAttempt(ctx context.Context, issue domain.Issue, attempt *int, dep
 
 	sessionStartedAt = time.Now().UTC()
 
-	maxTurns := cfg.Agent.MaxTurns
-	if maxTurns < 1 {
+	maxTurns := cfg.Agent.TurnLimit()
+	if cfg.Agent.MaxTurns < 1 {
 		logger.Warn("clamped agent max_turns to 1", slog.Int("configured_max_turns", cfg.Agent.MaxTurns))
-		maxTurns = 1
 	}
 	turnNumber := 1
 	activeStates := cfg.Tracker.ActiveStates

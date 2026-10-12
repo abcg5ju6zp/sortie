@@ -29,6 +29,8 @@ type stateResponse struct {
 	// Present, zero included, when any agent kind has a rate
 	// configured; omitted otherwise.
 	CostUnpricedRunning *int `json:"cost_unpriced_running,omitempty"`
+
+	Config *configResponse `json:"config,omitempty"`
 }
 
 type stateCounts struct {
@@ -496,6 +498,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := toStateResponse(snap, s.tokenRates)
+	if s.workflowShapeFn != nil {
+		resp.Config = toConfigResponse(s.workflowShapeFn(), s.tokenRates)
+	}
 	writeJSON(w, s.logger, http.StatusOK, resp)
 
 	s.logger.Debug("request served",

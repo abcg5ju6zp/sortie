@@ -1876,7 +1876,7 @@ Sortie starts an HTTP server by default on `127.0.0.1:7678` for runtime observab
 | GET    | `/`                      | HTML dashboard — server-rendered status page with running sessions, retry queue, token totals, timing breakdown, and recent events. Auto-refreshes. |
 | GET    | `/livez`                 | Liveness probe. Returns 200 while the process is running and not draining, 503 during graceful shutdown. No I/O. |
 | GET    | `/readyz`                | Readiness probe. Returns 200 when database, preflight, and workflow are healthy. Returns 503 with per-check status when any dependency fails. |
-| GET    | `/api/v1/state`          | System-wide runtime snapshot (running sessions, retry queue, parked issues, aggregate token/runtime totals, rate limits). |
+| GET    | `/api/v1/state`          | System-wide runtime snapshot (running sessions, retry queue, parked issues, aggregate token/runtime totals, rate limits, and the effective workflow shape). |
 | GET    | `/api/v1/{identifier}`   | Per-issue detail for a specific issue identifier, including a parked one. Returns 404 for unknown issues. |
 | POST   | `/api/v1/refresh`        | Trigger an immediate poll+reconciliation cycle. Returns 202 Accepted normally, 409 Conflict during graceful shutdown. Best-effort; repeated requests are coalesced. |
 | GET    | `/metrics`               | Prometheus exposition-format scrape endpoint. Present only when `github.com/prometheus/client_golang` metrics are enabled (always co-located with the HTTP server). |
@@ -1933,7 +1933,7 @@ When a check fails, the overall status is `"fail"` and the failing check is iden
 
 #### `GET /api/v1/state` — Runtime Snapshot
 
-Returns the system-wide runtime state including running sessions, retry queue, budget-exhausted and parked issues, aggregate token/runtime totals, and rate limits.
+Returns the system-wide runtime state including running sessions, retry queue, budget-exhausted and parked issues, aggregate token/runtime totals, rate limits, and the effective workflow shape (`config`).
 
 ```json
 {
@@ -2056,7 +2056,39 @@ Returns the system-wide runtime state including running sessions, retry queue, b
     "running_unreported": 1,
     "running_non_reporting": 0
   },
-  "rate_limits": {}
+  "rate_limits": {},
+  "config": {
+    "tracker": {"kind": "jira", "active_states": ["To Do", "In Progress"], "in_progress_state": "In Progress", "handoff_state": "In Review", "terminal_states": ["Done"]},
+    "polling": {"interval_ms": 30000},
+    "agent": {
+      "kind": "claude-code", "usage_arrival": "incremental", "max_turns": 20, "stall_timeout_ms": 300000,
+      "max_retry_backoff_ms": 300000, "max_sessions": 6, "max_tokens": null,
+      "max_concurrent_agents": 6, "max_concurrent_agents_by_state": {}
+    },
+    "worker": {"ssh_hosts": [], "max_concurrent_agents_per_host": null},
+    "dispatch": {
+      "rules": [
+        {"name": "specify", "selected_by": "match", "match": {"issue_type": ["Story"]}, "next": "implement", "agent_kind": "claude-code", "usage_arrival": "incremental"},
+        {"name": "implement", "selected_by": "stage", "stage": "stage-implement", "agent_kind": "claude-code", "usage_arrival": "incremental"},
+        {"name": "deps", "selected_by": "match", "match": {"labels": ["dependencies"], "priority": {"op": "lte", "value": 2}}, "agent_kind": "codex", "usage_arrival": "incremental"},
+        {"name": "everything", "selected_by": "catch_all", "agent_kind": "claude-code", "usage_arrival": "incremental"}
+      ],
+      "default": null,
+      "chains": [["specify", "implement"]],
+      "max_consecutive_hops": null,
+      "hop_ceiling": 10
+    },
+    "reactions": {
+      "ci_failure": {"max_retries": 2, "escalation": "label", "escalation_label": "needs-human"},
+      "review_comments": {"max_continuation_turns": 3, "debounce_ms": 60000, "poll_interval_ms": 120000, "escalation": "label", "escalation_label": "needs-human"},
+      "bot_review": {"max_continuation_turns": 5, "poll_interval_ms": 60000, "bot_usernames": ["review-bot"], "escalation": "none"},
+      "auto_merge": {"strategy": "squash", "require_ci": true, "delete_branch": true, "poll_interval_ms": 60000, "max_retries": null, "escalation": "label", "escalation_label": "needs-human"}
+    },
+    "token_rates": {
+      "claude-code": {"input_per_mtok": 3.0, "output_per_mtok": 15.0, "cache_read_per_mtok": 0.3, "cache_write_per_mtok": null, "complete": true},
+      "codex": {"input_per_mtok": 2.5, "output_per_mtok": null, "cache_read_per_mtok": null, "cache_write_per_mtok": null, "complete": false}
+    }
+  }
 }
 ```
 
@@ -2179,6 +2211,60 @@ Sortie stores the title and link with the park and restores them at startup. A p
 A session whose `usage_arrival` is `none` contributes nothing to the token totals, even when its runtime reports a figure.
 
 `cost_unpriced_running` is a top-level field, present, zero included, whenever `token_rates` holds an entry for any agent kind, complete or not, and omitted otherwise. It counts the running, measured sessions that `active_estimated_cost_usd` leaves out because their agent kind has no rate, or an incomplete one. `active_estimated_cost_usd` sums the estimated USD cost of the running, measured sessions that have one, and is omitted when none of them prices.
+
+**Workflow shape (`config`):**
+
+`config` describes the workflow in effect, so a client draws the rules, stages, and reactions the workflow has and assumes none it lacks. It reports the configuration promoted at the last successful load, kept when a reload fails. A setting whose change needs a restart reports what the process applies: every reaction except `ci_failure` is the one built at startup, and `token_rates` are the rates the process started with. So `config` names no reaction a reload added and keeps naming one a reload removed, until the restart that applies the edit. A member reports the WORKFLOW.md key of its name; the derived members are `selected_by`, `agent_kind`, `usage_arrival`, `chains`, `hop_ceiling`, and `complete`. A member whose setting imposes no ceiling is `null`, present and never `0`. An optional string is omitted when unset, and a list member is `[]` when empty.
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `tracker.kind` | string | The tracker adapter kind. |
+| `tracker.active_states` | array of strings | `tracker.active_states` as written. |
+| `tracker.in_progress_state` | string or absent | The state Sortie writes at dispatch. Omitted when unset. |
+| `tracker.handoff_state` | string or absent | The state Sortie writes after a successful run. Omitted when unset. |
+| `tracker.no_change_state` | string or absent | The state a successful run ends at when its agent declared that nothing needed changing. Omitted when unset. |
+| `tracker.terminal_states` | array of strings | `tracker.terminal_states` as written. |
+| `polling.interval_ms` | integer | The poll interval. |
+| `agent.kind` | string | The workflow-wide agent kind, which serves every issue that no rule and no `dispatch.default` selects. |
+| `agent.usage_arrival` | string | Whether sessions on the workflow-wide agent report token usage: `incremental`, `turn_end`, `none`, or `""` for a kind that is not registered or declares nothing. Resolved the way a session resolves it at its start, with the launch mode of `worker.ssh_hosts`. |
+| `agent.max_turns` | integer | The most turns a session runs: `agent.max_turns`, or `1` when it is below `1`. |
+| `agent.stall_timeout_ms` | integer or `null` | `agent.stall_timeout_ms` when positive. `null` when stall detection is off. |
+| `agent.max_retry_backoff_ms` | integer | `agent.max_retry_backoff_ms`. |
+| `agent.max_sessions` | integer or `null` | `agent.max_sessions` when positive. `null` means no session budget. A running row's `budget_sessions` is the value as of the latest poll tick, so for at most one poll interval after a reload this member can lead it. Show a row's own `budget_sessions` on that row and this member where the workflow is described. |
+| `agent.max_tokens` | integer or `null` | `agent.max_tokens` when positive. `null` means no token ceiling. The same display rule applies against a running row's `budget_tokens`. |
+| `agent.max_concurrent_agents` | integer | `agent.max_concurrent_agents`. |
+| `agent.max_concurrent_agents_by_state` | object | The per-state caps, keyed by lowercase state with positive values. `{}` when none. |
+| `worker.ssh_hosts` | array of strings | The configured SSH hosts, each once, in the order written. `[]` in local mode. The launch mode is remote exactly when this list is non-empty, because with hosts configured every dispatch takes one. |
+| `worker.max_concurrent_agents_per_host` | integer or `null` | The per-host cap when hosts are configured and the cap is positive. `null` otherwise. |
+| `dispatch.rules` | array of objects | The dispatch rules in configuration order, which is the order match rules are tried; a rule selected by its stage label is chosen ahead of them. `[]` when there are none. |
+| `dispatch.rules[].name` | string or absent | The rule's name. Omitted when it has none. |
+| `dispatch.rules[].selected_by` | string | `stage` for a rule that carries a stage label, `catch_all` for a rule with no `match` block, and `match` otherwise. |
+| `dispatch.rules[].stage` | string or absent | The stage label as written. Present only when `selected_by` is `stage`. |
+| `dispatch.rules[].match` | object or absent | Present exactly when `selected_by` is `match`. Holds each non-empty key of the rule's `match` block: `labels`, `issue_type`, `title`, `identifier`, and `assignee` as lists in the order written, and `priority` as `{"op": "<op>", "value": n}` for `eq`, `lt`, `lte`, `gt`, and `gte`, or `{"op": "in", "values": [...]}` for `in`. |
+| `dispatch.rules[].next` | string or absent | The rule that follows this one. Omitted when the rule has none. |
+| `dispatch.rules[].agent_kind` | string | The agent kind dispatch resolves for the rule. |
+| `dispatch.rules[].usage_arrival` | string | The rule's usage-reporting arrival, resolved like `agent.usage_arrival` with the rule's settings block laid over its kind's block, so one kind can report under one rule and report nothing under another. |
+| `dispatch.default` | object or `null` | `{"agent_kind", "usage_arrival"}` of the `dispatch.default` block when it names an agent or a template. `null` otherwise. Running, retry, and run-history rows name this selection `default`; a row with no `rule_name` ran on the workflow-wide fallback, which `agent` describes. A catch-all rule takes every issue that no stage rule and no earlier match rule takes, so while one is configured neither `dispatch.default` nor the workflow-wide fallback selects an issue. `config` still serves both, and a client draws no dispatch path through them. |
+| `dispatch.chains` | array of arrays of strings | Each stage chain the `next` links form, as rule names in `next` order, in the order of the rules that start them. A chain starts at a rule that carries `next` and that no `next` names, and ends at a rule without `next`. Chains that share a tail list it in each chain. A rule that carries no `next` and that no `next` names belongs to no chain. `[]` when no rule carries `next`. |
+| `dispatch.max_consecutive_hops` | integer or `null` | The value `dispatch.max_consecutive_hops` writes. `null` when the key is absent. |
+| `dispatch.hop_ceiling` | integer | The limit a worker exit compares with an issue's hop count: the written `dispatch.max_consecutive_hops`, or the larger of `10` and the hops of the longest chain. With no chain no hop occurs, and the value is the ceiling a reload that adds `next` would apply. |
+| `reactions` | object | A member per reaction kind the process applies, keyed as in `reactions` of WORKFLOW.md. `{}` when it applies none. Key order carries no meaning. |
+| `reactions.ci_failure` | object or absent | Present exactly while the CI check runs, which needs both a CI provider and a source-control adapter. Holds `max_retries` and the escalation members. |
+| `reactions.review_comments` | object or absent | Present when the reaction was configured at startup. Holds `max_continuation_turns`, `debounce_ms`, `poll_interval_ms`, and the escalation members. |
+| `reactions.bot_review` | object or absent | Present when the reaction was configured at startup. Holds `max_continuation_turns`, `poll_interval_ms`, `bot_usernames` (`[]` when empty), and the escalation members. |
+| `reactions.merge_conflicts` | object or absent | Present when the reaction was configured at startup. Holds `max_retries`, `poll_interval_ms`, and the escalation members. `max_retries` of `0` escalates on the first detection. |
+| `reactions.auto_merge` | object or absent | Present when the reaction was configured at startup. Holds `strategy`, `require_ci`, `delete_branch`, `poll_interval_ms`, `max_retries`, and the escalation members. `max_retries` is `null` at `0`, because `0` turns count-based escalation off. |
+| `reactions.merge_completion` | object or absent | Present when the reaction was configured at startup. Holds `target_state`, `max_retries`, `poll_interval_ms`, and the escalation members. |
+| `reactions.label_commands` | object or absent | Present when the review command or the fix command was configured at startup. Holds `review_label` while the review command is configured, `fix_label` while the fix command is, and the one `poll_interval_ms` both share. It has no escalation members. |
+| `escalation` | string | A member of every reaction that escalates: the mode the reaction applies, `label`, `comment`, or `none`. For `ci_failure`, a configuration in force that carries no `ci_failure` block while the CI check still runs from startup serves `none` and a `max_retries` of `0`. |
+| `escalation_label` | string or absent | Present exactly when `escalation` is `label`. The label the reaction applies: the configured value, or `needs-human` where the block writes none. |
+| `token_rates` | object or `null` | The rates the process started with. `null` when it holds no entry. Otherwise a member per entry, keyed by the agent kind as written. |
+| `token_rates.<kind>.input_per_mtok`, `output_per_mtok`, `cache_read_per_mtok`, `cache_write_per_mtok` | number or `null` | The rate as configured, `null` when not set. An unset cache rate prices that class at the input rate, and `config` serves the configured `null`, never the substituted rate. |
+| `token_rates.<kind>.complete` | boolean | `true` exactly when `input_per_mtok` and `output_per_mtok` are both set, the condition under which a session of the kind is priced. |
+
+`config` holds no credential. It is an allowlist of typed settings: it carries no tracker endpoint, key, or query filter, no agent command, hook, workspace or database path, or notification destination, no reaction extra key or triage script, and no settings block. Its configuration strings are served unmasked, as the parked record's `label` is, because they are configuration.
+
+A row's `rule_name`, `stage_lineage.previous`, and `reaction_config_key` are those in force when its run was dispatched or the row was stored, while `config` follows the rule above, so each can name a member `config` does not hold. A reload that renames or removes a rule leaves running and retry rows naming it, as does a restart on the edited file for the retry rows it restores, and a row whose `rule_name` is `default` keeps it while `dispatch.default` serves `null`. Draw such a row from its own keys.
 
 #### `GET /api/v1/{identifier}` — Per-Issue Detail
 
@@ -2473,6 +2559,8 @@ One rate set prices every model of a kind alike: two models of one kind run unde
 
 When `token_rates` is absent or empty, the dashboard shows raw token counts without cost estimates, every measured running row of the JSON API carries `cost_status` `unpriced`, and `sortie stats` reports no cost figures.
 
+The `config.token_rates` member of `GET /api/v1/state` serves the rates the process started with: an entry per agent kind keyed as written, each rate `null` when not set, and `complete`, `true` exactly when both `input_per_mtok` and `output_per_mtok` are set. It is `null` when `token_rates` is absent or empty.
+
 An entry keyed to a kind whose usage-reporting declaration resolves to no token usage for the sessions a configuration produces has no effect: no cost can be estimated for it. `sortie validate` reports this under the check `agent.kind.no_cost_estimate`, naming the kind, so an operator who prices a non-reporting kind learns why the dashboard's Est. Cost column stays blank rather than discovering it by reading source.
 
 | Field | Type | Default | Description |
@@ -2494,7 +2582,7 @@ An entry keyed to a kind whose usage-reporting declaration resolves to no token 
 - An entry keyed to the empty string is dropped and produces a warning; it prices no kind.
 - Every warning above is a configuration advisory under check `token_rates` (Section 8): it reaches the run log once per configuration change, `sortie validate`'s diagnostics without affecting `valid` or the exit status, and the dry run. `sortie stats` also lists its own `token_rates` warnings in its report, because they decide which runs it prices.
 
-**Reload behavior:** Token rates do not reload dynamically. Changes require a process restart, consistent with `server.port` and `server.host`.
+**Reload behavior:** Token rates do not reload dynamically. Changes require a process restart, consistent with `server.port` and `server.host`, so `config.token_rates` keeps serving the rates the process started with until then.
 
 ### 4.5 Adapter-Specific Pass-Through Config
 

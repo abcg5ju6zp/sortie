@@ -1690,68 +1690,31 @@ func TestRunWorkerAttempt(t *testing.T) {
 		}
 	})
 
-	t.Run("max_turns_clamped", func(t *testing.T) {
-		t.Parallel()
+	for _, maxTurns := range []int{0, -5} {
+		t.Run(fmt.Sprintf("max_turns_clamped_from_%d", maxTurns), func(t *testing.T) {
+			t.Parallel()
 
-		tmpDir := t.TempDir()
-		cfg := defaultWorkerConfig(tmpDir)
-		cfg.Agent.MaxTurns = 0
+			cfg := defaultWorkerConfig(t.TempDir())
+			cfg.Agent.MaxTurns = maxTurns
+			ec := newExitCapture()
+			deps := WorkerDeps{
+				TrackerAdapter:         &mockTrackerAdapter{},
+				AgentAdapter:           &mockAgentAdapter{},
+				ConfigFunc:             func() config.ServiceConfig { return cfg },
+				PromptTemplateByIDFunc: func(_ string) *prompt.Template { return mustParseTemplate(t, "{{ .issue.title }}") },
+				OnEvent:                func(_ string, _ domain.AgentEvent) {},
+				OnExit:                 ec.onExit,
+				Logger:                 discardLogger(),
+			}
 
-		ec := newExitCapture()
+			RunWorkerAttempt(context.Background(), workerTestIssue(), nil, deps)
 
-		deps := WorkerDeps{
-			TrackerAdapter:         &mockTrackerAdapter{},
-			AgentAdapter:           &mockAgentAdapter{},
-			ConfigFunc:             func() config.ServiceConfig { return cfg },
-			PromptTemplateByIDFunc: func(_ string) *prompt.Template { return mustParseTemplate(t, "{{ .issue.title }}") },
-			OnEvent:                func(_ string, _ domain.AgentEvent) {},
-			OnExit:                 ec.onExit,
-			Logger:                 discardLogger(),
-		}
-
-		RunWorkerAttempt(context.Background(), workerTestIssue(), nil, deps)
-
-		result := ec.waitResult(t)
-		if result.ExitKind != WorkerExitNormal {
-			t.Errorf("ExitKind = %q, want %q", result.ExitKind, WorkerExitNormal)
-		}
-		if result.TurnsCompleted != 1 {
-			t.Errorf("TurnsCompleted = %d, want 1 (max_turns clamped from 0)", result.TurnsCompleted)
-		}
-		if result.Error != nil {
-			t.Errorf("Error = %v, want nil", result.Error)
-		}
-	})
-
-	t.Run("max_turns_clamped_negative", func(t *testing.T) {
-		t.Parallel()
-
-		tmpDir := t.TempDir()
-		cfg := defaultWorkerConfig(tmpDir)
-		cfg.Agent.MaxTurns = -5
-
-		ec := newExitCapture()
-
-		deps := WorkerDeps{
-			TrackerAdapter:         &mockTrackerAdapter{},
-			AgentAdapter:           &mockAgentAdapter{},
-			ConfigFunc:             func() config.ServiceConfig { return cfg },
-			PromptTemplateByIDFunc: func(_ string) *prompt.Template { return mustParseTemplate(t, "{{ .issue.title }}") },
-			OnEvent:                func(_ string, _ domain.AgentEvent) {},
-			OnExit:                 ec.onExit,
-			Logger:                 discardLogger(),
-		}
-
-		RunWorkerAttempt(context.Background(), workerTestIssue(), nil, deps)
-
-		result := ec.waitResult(t)
-		if result.ExitKind != WorkerExitNormal {
-			t.Errorf("ExitKind = %q, want %q", result.ExitKind, WorkerExitNormal)
-		}
-		if result.TurnsCompleted != 1 {
-			t.Errorf("TurnsCompleted = %d, want 1 (max_turns clamped from -5)", result.TurnsCompleted)
-		}
-	})
+			result := ec.waitResult(t)
+			if result.ExitKind != WorkerExitNormal || result.TurnsCompleted != 1 || result.Error != nil {
+				t.Errorf("RunWorkerAttempt(max_turns %d) = exit %q, turns %d, error %v, want normal exit after 1 turn", maxTurns, result.ExitKind, result.TurnsCompleted, result.Error)
+			}
+		})
+	}
 
 	t.Run("panic_with_turns_completed", func(t *testing.T) {
 		t.Parallel()

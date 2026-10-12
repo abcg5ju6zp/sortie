@@ -303,6 +303,12 @@ type AgentConfig struct {
 	MaxConsecutiveAbsences int
 }
 
+// TurnLimit returns the most turns a session runs: MaxTurns, or 1 when
+// MaxTurns is below 1.
+func (a AgentConfig) TurnLimit() int {
+	return max(a.MaxTurns, 1)
+}
+
 // TokenWarningThreshold returns the token count at which the warning
 // threshold fires: the least integer not below MaxTokens times
 // TokenWarningPercent divided by 100. It returns 0, disabling the

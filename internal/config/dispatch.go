@@ -35,6 +35,11 @@ type DispatchConfig struct {
 	// null. Zero when the workflow has no dispatch section.
 	MaxConsecutiveHops int
 
+	// MaxConsecutiveHopsWritten is true when dispatch.max_consecutive_hops
+	// carried a value, which MaxConsecutiveHops cannot tell from the
+	// default it stores when the key is absent.
+	MaxConsecutiveHopsWritten bool
+
 	// Partials lists the files dispatch.partials selects, in load order,
 	// each file once. Empty when the key is absent.
 	Partials []DispatchPartial
@@ -206,6 +211,28 @@ func (d DispatchConfig) LongestChain() []string {
 		return nil
 	}
 	return d.ruleNames(longest)
+}
+
+// Chains returns each stage chain the next links form, in the order of the
+// rules that start them; nil when no rule carries next. A rule starts a
+// chain when it carries next and no rule's next names it, so chains that
+// share a tail list the tail in each.
+func (d DispatchConfig) Chains() [][]string {
+	named := make(map[string]struct{}, len(d.Rules))
+	for _, rule := range d.Rules {
+		if rule.Next != "" {
+			named[rule.Next] = struct{}{}
+		}
+	}
+
+	var chains [][]string
+	for i, rule := range d.Rules {
+		if _, isNamed := named[rule.Name]; rule.Next == "" || isNamed {
+			continue
+		}
+		chains = append(chains, d.ruleNames(d.walkNext(i)))
+	}
+	return chains
 }
 
 // HopCeiling returns the per-issue ceiling on consecutive automatic hops in
@@ -421,10 +448,11 @@ func BuildDispatchConfig(raw map[string]any, workflowDir string, agentKindProbe 
 	}
 
 	return DispatchConfig{
-		Rules:              rules,
-		Default:            defaultSel,
-		MaxConsecutiveHops: maxHops,
-		Partials:           partials,
+		Rules:                     rules,
+		Default:                   defaultSel,
+		MaxConsecutiveHops:        maxHops,
+		MaxConsecutiveHopsWritten: dispatchMap["max_consecutive_hops"] != nil,
+		Partials:                  partials,
 	}, nil
 }
 
