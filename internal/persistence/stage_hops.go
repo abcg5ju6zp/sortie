@@ -19,6 +19,20 @@ type StageHop struct {
 	TargetObserved   bool   // a read has shown TargetLabel on the issue
 	HoppedAt         string // RFC 3339
 	ChainID          string // chain of the run whose exit made the hop; empty for rows written before migration 024
+
+	// DisplayID, IssueTitle, and IssueURL name the issue to a person; each
+	// is empty when the hop was recorded without a read of the issue.
+	DisplayID  string
+	IssueTitle string
+	IssueURL   string
+
+	// DispatchedAt is the RFC 3339 start of the first run of the pass
+	// ChainID names; empty when the pass could not be dated.
+	DispatchedAt string
+
+	// RunDispatched is true once a run of the issue was dispatched after
+	// the hop.
+	RunDispatched bool
 }
 
 // RecordStageHop upserts the hop record for hop.IssueID and deletes the
@@ -33,8 +47,8 @@ func (s *Store) RecordStageHop(ctx context.Context, hop StageHop) error {
 	defer tx.Rollback() //nolint:errcheck // rollback on error path; no-op after commit
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO stage_hops (issue_id, identifier, hop_count, source_rule, target_rule, target_label, previous_outcome, source_dispatch_id, target_observed, hopped_at, chain_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO stage_hops (issue_id, identifier, hop_count, source_rule, target_rule, target_label, previous_outcome, source_dispatch_id, target_observed, hopped_at, chain_id, display_identifier, issue_title, issue_url, dispatched_at, run_dispatched)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (issue_id) DO UPDATE SET
 			identifier         = excluded.identifier,
 			hop_count          = CASE WHEN stage_hops.source_dispatch_id = excluded.source_dispatch_id
@@ -46,9 +60,15 @@ func (s *Store) RecordStageHop(ctx context.Context, hop StageHop) error {
 			source_dispatch_id = excluded.source_dispatch_id,
 			target_observed    = excluded.target_observed,
 			hopped_at          = excluded.hopped_at,
-			chain_id           = excluded.chain_id`,
+			chain_id           = excluded.chain_id,
+			display_identifier = excluded.display_identifier,
+			issue_title        = excluded.issue_title,
+			issue_url          = excluded.issue_url,
+			dispatched_at      = excluded.dispatched_at,
+			run_dispatched     = excluded.run_dispatched`,
 		hop.IssueID, hop.Identifier, hop.HopCount, hop.SourceRule, hop.TargetRule, hop.TargetLabel,
 		hop.PreviousOutcome, hop.SourceDispatchID, hop.TargetObserved, hop.HoppedAt, hop.ChainID,
+		hop.DisplayID, hop.IssueTitle, hop.IssueURL, hop.DispatchedAt, hop.RunDispatched,
 	); err != nil {
 		return fmt.Errorf("upsert stage hop %q: %w", hop.IssueID, err)
 	}
@@ -90,7 +110,8 @@ func (s *Store) DeleteStageHop(ctx context.Context, issueID string) error {
 // Returns an empty slice (not nil) when no records exist.
 func (s *Store) ListStageHops(ctx context.Context) ([]StageHop, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT issue_id, identifier, hop_count, source_rule, target_rule, target_label, previous_outcome, source_dispatch_id, target_observed, hopped_at, chain_id
+		`SELECT issue_id, identifier, hop_count, source_rule, target_rule, target_label, previous_outcome, source_dispatch_id, target_observed, hopped_at, chain_id,
+			display_identifier, issue_title, issue_url, dispatched_at, run_dispatched
 		FROM stage_hops
 		ORDER BY issue_id ASC`)
 	if err != nil {
@@ -102,7 +123,8 @@ func (s *Store) ListStageHops(ctx context.Context) ([]StageHop, error) {
 	for rows.Next() {
 		var h StageHop
 		if err := rows.Scan(&h.IssueID, &h.Identifier, &h.HopCount, &h.SourceRule, &h.TargetRule,
-			&h.TargetLabel, &h.PreviousOutcome, &h.SourceDispatchID, &h.TargetObserved, &h.HoppedAt, &h.ChainID); err != nil {
+			&h.TargetLabel, &h.PreviousOutcome, &h.SourceDispatchID, &h.TargetObserved, &h.HoppedAt, &h.ChainID,
+			&h.DisplayID, &h.IssueTitle, &h.IssueURL, &h.DispatchedAt, &h.RunDispatched); err != nil {
 			return nil, fmt.Errorf("scan stage hop: %w", err)
 		}
 		hops = append(hops, h)

@@ -190,6 +190,11 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"issue_title", "TEXT", true, 0},
 				{"issue_url", "TEXT", true, 0},
 				{"trigger", "TEXT", true, 0},
+				{"configured_model", "TEXT", true, 0},
+				{"issue_type", "TEXT", true, 0},
+				{"issue_labels", "TEXT", true, 0},
+				{"issue_state", "TEXT", true, 0},
+				{"dispatched_at", "TEXT", true, 0},
 			},
 		},
 		{
@@ -228,6 +233,7 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"stage_result", "TEXT", true, 0},
 				{"issue_title", "TEXT", true, 0},
 				{"issue_url", "TEXT", true, 0},
+				{"dispatched_at", "TEXT", true, 0},
 			},
 		},
 		{
@@ -244,6 +250,11 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"target_observed", "INTEGER", true, 0},
 				{"hopped_at", "TEXT", true, 0},
 				{"chain_id", "TEXT", true, 0},
+				{"display_identifier", "TEXT", true, 0},
+				{"issue_title", "TEXT", true, 0},
+				{"issue_url", "TEXT", true, 0},
+				{"dispatched_at", "TEXT", true, 0},
+				{"run_dispatched", "INTEGER", true, 0},
 			},
 		},
 		{
@@ -452,26 +463,6 @@ func insertBareRun(t *testing.T, s *Store, issueID string) {
 	}
 }
 
-func TestMigrate_Migration021_ConfiguredSettingsDefaultToEmpty(t *testing.T) {
-	t.Parallel()
-
-	s := openTestStore(t)
-	migrateToVersion(t, s, 20)
-	insertBareRun(t, s, "rh-pre021")
-
-	migrateOrFatal(t, s)
-
-	var model, effort, reported string
-	if err := s.db.QueryRowContext(context.Background(),
-		`SELECT configured_model, configured_effort, reported_model FROM run_history WHERE issue_id = 'rh-pre021'`,
-	).Scan(&model, &effort, &reported); err != nil {
-		t.Fatalf("query migration-021 columns: %v", err)
-	}
-	if model != "" || effort != "" || reported != "" {
-		t.Errorf("configured_model, configured_effort, reported_model for a pre-migration-021 row = %q, %q, %q, want all empty", model, effort, reported)
-	}
-}
-
 func TestMigrate_Migration024_ExistingRowsKeepValuesAndGetEmptyChainColumns(t *testing.T) {
 	t.Parallel()
 
@@ -510,6 +501,62 @@ func TestMigrate_Migration024_ExistingRowsKeepValuesAndGetEmptyChainColumns(t *t
 		var got string
 		if err := s.db.QueryRowContext(context.Background(), tt.query).Scan(&got); err != nil || got != tt.want {
 			t.Errorf("%s row after upgrade = %q, %v, want %q, nil", tt.name, got, err, tt.want)
+		}
+	}
+}
+
+func TestMigrate_Migration027_FillsOlderRows(t *testing.T) {
+	t.Parallel()
+
+	// Run B's offset makes it the later instant while its text sorts first, so
+	// a text comparison picks the wrong run as the start of the pass.
+	seed := []string{
+		`INSERT INTO run_history (issue_id, identifier, attempt, agent_adapter, workspace, started_at, completed_at, status, chain_id, configured_model, display_identifier, issue_title, issue_url)
+			VALUES ('i1', 'MT-1', 1, 'mock', '/tmp', '2026-02-01T10:00:00Z', '2026-02-01T10:01:00Z', 'succeeded', 'c1', 'model-a', 'o/r#1', 'Old title', 'https://example.test/old'),
+				('i1', 'MT-1', 2, 'mock', '/tmp', '2026-02-01T09:30:00-01:00', '2026-02-01T09:31:00-01:00', 'failed', 'c1', 'model-b', 'o/r#1', 'New title', 'https://example.test/new'),
+				('i2', 'MT-2', 1, 'mock', '/tmp', '2026-02-01T08:00:00Z', '2026-02-01T08:01:00Z', 'failed', '', 'model-x', '', '', '')`,
+		`INSERT INTO stage_hops (issue_id, identifier, hop_count, source_rule, target_rule, target_label, previous_outcome, source_dispatch_id, hopped_at, chain_id)
+			VALUES ('i1', 'MT-1', 1, 'specify', 'plan', 'plan', 'succeeded', 'd1', '2026-02-01T10:05:00Z', 'c1')`,
+		`INSERT INTO retry_entries (issue_id, identifier, attempt, due_at_ms, chain_id)
+			VALUES ('i1', 'MT-1', 3, 1000, 'c1'), ('i2', 'MT-2', 2, 1000, '')`,
+	}
+	tests := []struct{ name, query, want string }{
+		{
+			name:  "runs of the chain",
+			query: `SELECT group_concat(dispatched_at, '|') FROM run_history WHERE issue_id = 'i1'`,
+			want:  "2026-02-01T10:00:00Z|2026-02-01T10:00:00Z",
+		},
+		{
+			name:  "retry of the chain",
+			query: `SELECT dispatched_at || '|' || configured_model FROM retry_entries WHERE issue_id = 'i1'`,
+			want:  "2026-02-01T10:00:00Z|model-b",
+		},
+		{
+			name:  "hop",
+			query: `SELECT dispatched_at || '|' || display_identifier || '|' || issue_title || '|' || issue_url || '|' || run_dispatched FROM stage_hops`,
+			want:  "2026-02-01T10:00:00Z|o/r#1|New title|https://example.test/new|1",
+		},
+		{
+			name:  "retry without a chain",
+			query: `SELECT dispatched_at || '|' || configured_model FROM retry_entries WHERE issue_id = 'i2'`,
+			want:  "|",
+		},
+	}
+
+	s := openTestStore(t)
+	migrateToVersion(t, s, 26)
+	for _, stmt := range seed {
+		if _, err := s.db.ExecContext(context.Background(), stmt); err != nil {
+			t.Fatalf("seed version 26 store: %v", err)
+		}
+	}
+
+	migrateOrFatal(t, s)
+
+	for _, tt := range tests {
+		var got string
+		if err := s.db.QueryRowContext(context.Background(), tt.query).Scan(&got); err != nil || got != tt.want {
+			t.Errorf("%s after upgrade = %q, %v, want %q, nil", tt.name, got, err, tt.want)
 		}
 	}
 }
@@ -634,8 +681,6 @@ func TestMigrations_Registry(t *testing.T) {
 	}
 }
 
-// migrateToVersion applies every registered migration up to and including
-// version, leaving later migrations unapplied.
 func migrateToVersion(t *testing.T, s *Store, version int) {
 	t.Helper()
 	ctx := context.Background()

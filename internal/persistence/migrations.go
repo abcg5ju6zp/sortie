@@ -89,6 +89,9 @@ var migration025SQL string
 //go:embed sql/026_retry_trigger_parked_identity.sql
 var migration026SQL string
 
+//go:embed sql/027_dispatch_context.sql
+var migration027SQL string
+
 var migrations = []Migration{
 	{Version: 1, Description: "core persistence tables", SQL: migration001SQL},
 	{Version: 2, Description: "extended token metrics", SQL: migration002SQL},
@@ -116,4 +119,5 @@ var migrations = []Migration{
 	{Version: 24, Description: "stage chain identifier and hop result on run history, retry entries, and stage hops", SQL: migration024SQL},
 	{Version: 25, Description: "issue identity on retry entries and run history", SQL: migration025SQL},
 	{Version: 26, Description: "retry trigger and parked issue identity", SQL: migration026SQL},
+	{Version: 27, Description: "dispatch context on retry entries, run history, and stage hops", SQL: migration027SQL},
 }
