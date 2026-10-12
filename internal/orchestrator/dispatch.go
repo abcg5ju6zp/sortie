@@ -568,6 +568,15 @@ type ScheduleRetryParams struct {
 	// into the new [RetryEntry].
 	AgentKind string
 
+	// ConfiguredModel is the model the dispatch was configured with.
+	// Propagated verbatim into the new [RetryEntry].
+	ConfiguredModel string
+
+	// Continuation names the pull request and try of a reaction
+	// continuation. Propagated verbatim into the new [RetryEntry]; the zero
+	// value for a non-reaction retry.
+	Continuation ContinuationTarget
+
 	// RuleName is the rule name of the dispatch. Propagated verbatim
 	// into the new [RetryEntry].
 	RuleName string
@@ -655,6 +664,8 @@ func ScheduleRetry(state *State, params ScheduleRetryParams, onFire func(issueID
 		RuleSettingsApplied: params.RuleSettingsApplied,
 		TemplateID:          params.TemplateID,
 		AgentKind:           params.AgentKind,
+		ConfiguredModel:     params.ConfiguredModel,
+		Continuation:        params.Continuation,
 		scheduledAt:         scheduledAt,
 		scheduledDelayMS:    delayMS,
 	}

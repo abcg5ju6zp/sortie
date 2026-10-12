@@ -10039,6 +10039,8 @@ const (
 	hopExitChain       = "chain-1"
 )
 
+var hopExitPassAt = time.Date(2026, 3, 19, 9, 0, 0, 0, time.UTC)
+
 type hopExitTracker struct {
 	*mockTrackerAdapter
 	added     []string
@@ -10082,8 +10084,9 @@ func newHopExitFixture(t *testing.T) *hopExitFixture {
 	state := exitStateWithIssue(t, hopExitIssueID, "In Progress")
 	entry := state.Running[hopExitIssueID]
 	entry.RuleName = "specify"
-	entry.StageLineage.ChainID = hopExitChain
+	entry.StageLineage = StageLineage{ChainID: hopExitChain, DispatchedAt: hopExitPassAt}
 	entry.Issue.Labels = []string{"feature", hopExitSourceLabel}
+	entry.Issue.DisplayID, entry.Issue.Title, entry.Issue.URL = "acme/web#1", "Add search", "https://example.test/acme/web/issues/1"
 	t.Cleanup(func() { stopRetryTimer(state, hopExitIssueID) })
 
 	params := defaultExitParams(t, store)
@@ -10209,6 +10212,22 @@ func TestHandleWorkerExit_StageHopOnlyForSuccessfulRun(t *testing.T) {
 			}
 			if len(f.store.recordedStageHops) != 1 || f.store.recordedStageHops[0].HopCount != 1 || f.store.recordedStageHops[0].ChainID != hopExitChain {
 				t.Errorf("RecordStageHop rows = %+v, want one with HopCount 1 and ChainID %q", f.store.recordedStageHops, hopExitChain)
+			}
+			row := f.store.recordedStageHops[0]
+			if row.DisplayID != "acme/web#1" || row.IssueTitle != "Add search" || row.IssueURL != "https://example.test/acme/web/issues/1" || row.DispatchedAt != "2026-03-19T09:00:00Z" || row.RunDispatched {
+				t.Errorf("RecordStageHop row display id, title, url, dispatched at, run dispatched = %q, %q, %q, %q, %v, want the hopping run's identity, its pass time, and false",
+					row.DisplayID, row.IssueTitle, row.IssueURL, row.DispatchedAt, row.RunDispatched)
+			}
+			between := RuntimeSnapshot(f.state, time.Now()).BetweenStages
+			if len(between) != 1 {
+				t.Fatalf("len(BetweenStages) = %d after a made hop, want 1", len(between))
+			}
+			want := SnapshotStageHop{
+				IssueID: hopExitIssueID, Identifier: "HOP-1-ident", DisplayID: "acme/web#1", IssueTitle: "Add search", IssueURL: "https://example.test/acme/web/issues/1",
+				SourceRule: "specify", TargetRule: "implement", TargetLabel: hopExitTargetLabel, HoppedAt: between[0].HoppedAt, DispatchedAt: hopExitPassAt,
+			}
+			if between[0] != want || between[0].HoppedAt.IsZero() {
+				t.Errorf("BetweenStages[0] = %+v, want %+v with a hop time", between[0], want)
 			}
 		})
 	}

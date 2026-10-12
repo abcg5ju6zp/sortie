@@ -504,6 +504,55 @@ func (s *Store) QueryBudgetExhaustedIssues(ctx context.Context, candidateIDs []s
 	return exhausted, nil
 }
 
+// LatestAgentRuns returns, per issue ID, the run_history row with the
+// greatest id among the issue's rows whose agent_adapter is non-empty. An
+// issue with no such row is absent; an empty slice runs no query. Only the
+// columns that describe the dispatch are filled.
+func (s *Store) LatestAgentRuns(ctx context.Context, issueIDs []string) (map[string]RunHistory, error) {
+	runs := map[string]RunHistory{}
+	if len(issueIDs) == 0 {
+		return runs, nil
+	}
+
+	placeholders := strings.Repeat("?,", len(issueIDs))
+	placeholders = placeholders[:len(placeholders)-1]
+
+	args := make([]any, 0, len(issueIDs))
+	for _, id := range issueIDs {
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf( //nolint:gosec // placeholders is "?,?,..." built from len(issueIDs); no user data in format string
+		`SELECT id, issue_id, rule_name, agent_adapter, configured_model, stage_previous, stage_previous_outcome, chain_id, dispatched_at
+		FROM run_history
+		WHERE id IN (
+			SELECT MAX(id) FROM run_history
+			WHERE issue_id IN (%s) AND agent_adapter <> ''
+			GROUP BY issue_id
+		)`,
+		placeholders,
+	)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query latest agent runs: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck // read-only query; close error is non-actionable
+
+	for rows.Next() {
+		var run RunHistory
+		if err := rows.Scan(&run.ID, &run.IssueID, &run.RuleName, &run.AgentAdapter, &run.ConfiguredModel,
+			&run.StagePrevious, &run.StagePreviousOutcome, &run.ChainID, &run.DispatchedAt); err != nil {
+			return nil, fmt.Errorf("scan latest agent run: %w", err)
+		}
+		runs[run.IssueID] = run
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query latest agent runs: %w", err)
+	}
+	return runs, nil
+}
+
 // IssueTokenUsage is the per-issue token spend read by the token ceiling
 // and the cost_budget tool. The ByKind map makes the struct incomparable
 // with ==; compare the scalar fields instead.

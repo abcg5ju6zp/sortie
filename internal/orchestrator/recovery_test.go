@@ -610,6 +610,7 @@ func TestPopulateRetries_RestartKeepsIssueIdentity(t *testing.T) {
 		{"read with no labels", []string{}},
 		{"labels never read", nil},
 	}
+	passAt := time.Date(2026, 3, 19, 9, 0, 0, 123456789, time.UTC)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -627,6 +628,8 @@ func TestPopulateRetries_RestartKeepsIssueIdentity(t *testing.T) {
 				IssueType: "Bug", Labels: tt.labels, State: "In Review",
 			}
 			entry.Trigger = triggerTimer
+			entry.ConfiguredModel = "model-x"
+			entry.StageLineage = StageLineage{DispatchedAt: passAt}
 			persistRetryEntry(ctx, discardLogger(), store, before, "iss-1")
 
 			pending, err := store.LoadRetryEntriesForRecovery(ctx, 0)
@@ -649,14 +652,15 @@ func TestPopulateRetries_RestartKeepsIssueIdentity(t *testing.T) {
 			if !slices.Equal(got.IssueLabels, tt.labels) || (got.IssueLabels == nil) != (tt.labels == nil) {
 				t.Errorf("Retrying[0].IssueLabels = %#v, want %#v", got.IssueLabels, tt.labels)
 			}
+			if got.ConfiguredModel != "model-x" || !got.StageLineage.DispatchedAt.Equal(passAt) {
+				t.Errorf("Retrying[0] model, dispatched at = %q, %v, want %q, %v", got.ConfiguredModel, got.StageLineage.DispatchedAt, "model-x", passAt)
+			}
 		})
 	}
 }
 
 var recoveryNow = time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
 
-// writeRecoverySCM writes meta as .sortie/scm.json inside <wsRoot>/<key>.
-// The directory is created if absent. key is the sanitized identifier (e.g. "PROJ-1").
 func writeRecoverySCM(t *testing.T, wsRoot, key string, meta domain.SCMMetadata) {
 	t.Helper()
 	dir := filepath.Join(wsRoot, key, ".sortie")
@@ -672,12 +676,10 @@ func writeRecoverySCM(t *testing.T, wsRoot, key string, meta domain.SCMMetadata)
 	}
 }
 
-// freshSCMTime returns an RFC3339 timestamp that is within the 30-day lookback.
 func freshSCMTime(daysAgo int) string {
 	return recoveryNow.Add(-time.Duration(daysAgo) * 24 * time.Hour).UTC().Format(time.RFC3339)
 }
 
-// freshRun builds a persistence.RunHistory for recovery tests.
 func freshRun(issueID, identifier, displayID string, attempt int) persistence.RunHistory {
 	return persistence.RunHistory{
 		IssueID:      issueID,
@@ -692,7 +694,6 @@ func freshRun(issueID, identifier, displayID string, attempt int) persistence.Ru
 	}
 }
 
-// recoveryTrackerStub satisfies domain.TrackerAdapter; returns a configurable state map.
 type recoveryTrackerStub struct {
 	states     map[string]string
 	err        error

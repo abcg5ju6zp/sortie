@@ -3336,8 +3336,10 @@ func TestHandleRetryTimer_StageLineage(t *testing.T) {
 	t.Parallel()
 
 	const fresh = "<fresh>"
-	carried := StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: "chain-1"}
-	hop := &StageHopEntry{SourceRule: "plan", TargetRule: "implement", PreviousOutcome: "no_change", ChainID: "chain-hop"}
+	passAt := time.Date(2026, 3, 19, 9, 0, 0, 0, time.UTC)
+	hopPassAt := passAt.Add(-time.Hour)
+	carried := StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: "chain-1", DispatchedAt: passAt}
+	hop := &StageHopEntry{SourceRule: "plan", TargetRule: "implement", PreviousOutcome: "no_change", ChainID: "chain-hop", DispatchedAt: hopPassAt}
 	tests := []struct {
 		name        string
 		lineage     StageLineage
@@ -3345,12 +3347,12 @@ func TestHandleRetryTimer_StageLineage(t *testing.T) {
 		resolveRule string
 		want        StageLineage
 	}{
-		{"a retry keeping its rule carries the chain it was frozen with", carried, nil, "", carried},
+		{"a retry keeping its rule carries the chain and pass time it was frozen with", carried, nil, "", carried},
 		{"an empty carried chain is replaced and the pair is kept", StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded"}, nil, "",
 			StageLineage{PreviousRule: "specify", PreviousOutcome: "succeeded", ChainID: fresh}},
 		{"a retry routed afresh to a rule no hop targeted starts a chain", carried, nil, "implement", StageLineage{ChainID: fresh}},
-		{"a retry routed afresh to the rule a hop targeted inherits the hop's chain", carried, hop, "implement",
-			StageLineage{PreviousRule: "plan", PreviousOutcome: "no_change", ChainID: "chain-hop"}},
+		{"a retry routed afresh to the rule a hop targeted inherits the hop's chain and pass time", carried, hop, "implement",
+			StageLineage{PreviousRule: "plan", PreviousOutcome: "no_change", ChainID: "chain-hop", DispatchedAt: hopPassAt}},
 	}
 
 	for _, tt := range tests {
@@ -3376,12 +3378,16 @@ func TestHandleRetryTimer_StageLineage(t *testing.T) {
 			if running == nil {
 				t.Fatal("Running[id] missing after dispatch")
 			}
+			want := tt.want
+			if want.DispatchedAt.IsZero() {
+				want.DispatchedAt = running.StartedAt
+			}
 			got := running.StageLineage
-			if tt.want.ChainID == fresh && got.ChainID != "" && got.ChainID != tt.lineage.ChainID {
+			if want.ChainID == fresh && got.ChainID != "" && got.ChainID != tt.lineage.ChainID {
 				got.ChainID = fresh
 			}
-			if got != tt.want {
-				t.Errorf("RunningEntry.StageLineage = %+v, want %+v (a fresh chain differs from %q)", got, tt.want, tt.lineage.ChainID)
+			if got != want {
+				t.Errorf("RunningEntry.StageLineage = %+v, want %+v (a fresh chain differs from %q, an unset pass time is the run's start %v)", got, want, tt.lineage.ChainID, running.StartedAt)
 			}
 		})
 	}
@@ -4308,3 +4314,5 @@ func TestHandleRetryTimer_ReactionRetryRecordsNoHandedOffComments(t *testing.T) 
 }
 
 func (m *mockRetryStore) DeleteStageHop(context.Context, string) error { return nil }
+
+func (m *mockRetryStore) MarkStageHopDispatched(context.Context, string) error { return nil }

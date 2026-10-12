@@ -45,6 +45,12 @@ func PopulateRetries(state *State, entries []persistence.PendingRetry, log *slog
 			sessionID = *e.SessionID
 		}
 
+		lineage := StageLineage{
+			PreviousRule:    e.StagePrevious,
+			PreviousOutcome: e.StagePreviousOutcome,
+			ChainID:         e.ChainID,
+			DispatchedAt:    parseDispatchedAt(e.DispatchedAt),
+		}
 		state.RetryAttempts[e.IssueID] = &RetryEntry{
 			IssueID:    e.IssueID,
 			Identifier: e.Identifier,
@@ -61,9 +67,10 @@ func PopulateRetries(state *State, entries []persistence.PendingRetry, log *slog
 			DueAtMS:          e.DueAtMs,
 			Error:            errStr,
 			RuleName:         e.RuleName,
-			StageLineage:     StageLineage{PreviousRule: e.StagePrevious, PreviousOutcome: e.StagePreviousOutcome, ChainID: e.ChainID},
+			StageLineage:     lineage,
 			TemplateID:       e.TemplateID,
 			AgentKind:        e.AgentKind,
+			ConfiguredModel:  e.ConfiguredModel,
 			Trigger:          e.Trigger,
 			scheduledDelayMS: pending.RemainingMs,
 		}
@@ -299,7 +306,12 @@ func validReactionRecoveryRuns(runs []persistence.RunHistory, log *slog.Logger, 
 // stageLineageOf returns the lineage frozen with the dispatch that wrote
 // run.
 func stageLineageOf(run persistence.RunHistory) StageLineage {
-	return StageLineage{PreviousRule: run.StagePrevious, PreviousOutcome: run.StagePreviousOutcome, ChainID: run.ChainID}
+	return StageLineage{
+		PreviousRule:    run.StagePrevious,
+		PreviousOutcome: run.StagePreviousOutcome,
+		ChainID:         run.ChainID,
+		DispatchedAt:    parseDispatchedAt(run.DispatchedAt),
+	}
 }
 
 // issueIdentityOfRun returns the identity run recorded at dispatch: a title
@@ -335,10 +347,11 @@ func recoverPendingReactionKinds(
 					Branch:   meta.Branch,
 					SHA:      meta.SHA,
 				},
-				AgentKind:    run.AgentAdapter,
-				RuleName:     run.RuleName,
-				StageLineage: stageLineageOf(run),
-				TemplateID:   run.TemplateID,
+				AgentKind:       run.AgentAdapter,
+				RuleName:        run.RuleName,
+				StageLineage:    stageLineageOf(run),
+				ConfiguredModel: run.ConfiguredModel,
+				TemplateID:      run.TemplateID,
 
 				IssueIdentity: issueIdentityOfRun(run),
 			}
@@ -364,10 +377,11 @@ func recoverPendingReactionKinds(
 					Branch:   meta.Branch,
 					SHA:      meta.SHA,
 				},
-				AgentKind:    run.AgentAdapter,
-				RuleName:     run.RuleName,
-				StageLineage: stageLineageOf(run),
-				TemplateID:   run.TemplateID,
+				AgentKind:       run.AgentAdapter,
+				RuleName:        run.RuleName,
+				StageLineage:    stageLineageOf(run),
+				ConfiguredModel: run.ConfiguredModel,
+				TemplateID:      run.TemplateID,
 
 				IssueIdentity: issueIdentityOfRun(run),
 			}
@@ -399,10 +413,11 @@ func recoverPendingReactionKinds(
 					Branch:   meta.Branch,
 					SHA:      meta.SHA,
 				},
-				AgentKind:    run.AgentAdapter,
-				RuleName:     run.RuleName,
-				StageLineage: stageLineageOf(run),
-				TemplateID:   run.TemplateID,
+				AgentKind:       run.AgentAdapter,
+				RuleName:        run.RuleName,
+				StageLineage:    stageLineageOf(run),
+				ConfiguredModel: run.ConfiguredModel,
+				TemplateID:      run.TemplateID,
 
 				IssueIdentity: issueIdentityOfRun(run),
 			}
@@ -428,10 +443,11 @@ func recoverPendingReactionKinds(
 					Branch:   meta.Branch,
 					SHA:      meta.SHA,
 				},
-				AgentKind:    run.AgentAdapter,
-				RuleName:     run.RuleName,
-				StageLineage: stageLineageOf(run),
-				TemplateID:   run.TemplateID,
+				AgentKind:       run.AgentAdapter,
+				RuleName:        run.RuleName,
+				StageLineage:    stageLineageOf(run),
+				ConfiguredModel: run.ConfiguredModel,
+				TemplateID:      run.TemplateID,
 
 				IssueIdentity: issueIdentityOfRun(run),
 			}
@@ -457,10 +473,11 @@ func recoverPendingReactionKinds(
 					Branch:   meta.Branch,
 					SHA:      meta.SHA,
 				},
-				AgentKind:    run.AgentAdapter,
-				RuleName:     run.RuleName,
-				StageLineage: stageLineageOf(run),
-				TemplateID:   run.TemplateID,
+				AgentKind:       run.AgentAdapter,
+				RuleName:        run.RuleName,
+				StageLineage:    stageLineageOf(run),
+				ConfiguredModel: run.ConfiguredModel,
+				TemplateID:      run.TemplateID,
 
 				IssueIdentity: issueIdentityOfRun(run),
 			}
@@ -486,10 +503,11 @@ func recoverPendingReactionKinds(
 					Owner:    meta.Owner,
 					Repo:     meta.Repo,
 				},
-				AgentKind:    run.AgentAdapter,
-				RuleName:     run.RuleName,
-				StageLineage: stageLineageOf(run),
-				TemplateID:   run.TemplateID,
+				AgentKind:       run.AgentAdapter,
+				RuleName:        run.RuleName,
+				StageLineage:    stageLineageOf(run),
+				ConfiguredModel: run.ConfiguredModel,
+				TemplateID:      run.TemplateID,
 
 				IssueIdentity: issueIdentityOfRun(run),
 			}
@@ -517,10 +535,11 @@ func recoverPendingReactionKinds(
 					Repo:     meta.Repo,
 					Branch:   meta.Branch,
 				},
-				AgentKind:    run.AgentAdapter,
-				RuleName:     run.RuleName,
-				StageLineage: stageLineageOf(run),
-				TemplateID:   run.TemplateID,
+				AgentKind:       run.AgentAdapter,
+				RuleName:        run.RuleName,
+				StageLineage:    stageLineageOf(run),
+				ConfiguredModel: run.ConfiguredModel,
+				TemplateID:      run.TemplateID,
 
 				IssueIdentity: issueIdentityOfRun(run),
 			}
@@ -547,10 +566,11 @@ func recoverPendingReactionKinds(
 					Owner:    meta.Owner,
 					Repo:     meta.Repo,
 				},
-				AgentKind:    run.AgentAdapter,
-				RuleName:     run.RuleName,
-				StageLineage: stageLineageOf(run),
-				TemplateID:   run.TemplateID,
+				AgentKind:       run.AgentAdapter,
+				RuleName:        run.RuleName,
+				StageLineage:    stageLineageOf(run),
+				ConfiguredModel: run.ConfiguredModel,
+				TemplateID:      run.TemplateID,
 
 				IssueIdentity: issueIdentityOfRun(run),
 			}

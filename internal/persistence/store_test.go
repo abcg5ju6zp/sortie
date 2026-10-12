@@ -219,16 +219,27 @@ func TestRecordStageHop_ChainFollowsLatestHop(t *testing.T) {
 	latest := first
 	latest.SourceDispatchID, latest.ChainID = "d2", "chain-2"
 	latest.DisplayID, latest.IssueTitle, latest.IssueURL = "owner/repo#2", "New title", "https://example.test/new"
-	latest.DispatchedAt, latest.RunDispatched = "2026-03-19T11:00:00Z", true
-	for _, hop := range []StageHop{first, latest} {
+	latest.DispatchedAt = "2026-03-19T11:00:00Z"
+	other := latest
+	other.IssueID = "ISS-2"
+	recorded := other
+	recorded.IssueID, recorded.RunDispatched = "ISS-3", true
+	for _, hop := range []StageHop{first, latest, other, recorded} {
 		if err := s.RecordStageHop(ctx, hop); err != nil {
 			t.Fatalf("RecordStageHop(%+v): %v", hop, err)
 		}
 	}
 
+	for _, issueID := range []string{"ISS-1", "ISS-ABSENT"} {
+		if err := s.MarkStageHopDispatched(ctx, issueID); err != nil {
+			t.Fatalf("MarkStageHopDispatched(%q) = %v, want nil", issueID, err)
+		}
+	}
+	latest.RunDispatched = true
+
 	hops, err := s.ListStageHops(ctx)
-	if err != nil || !reflect.DeepEqual(hops, []StageHop{latest}) {
-		t.Errorf("ListStageHops = %+v, %v, want [%+v], nil", hops, err, latest)
+	if err != nil || !reflect.DeepEqual(hops, []StageHop{latest, other, recorded}) {
+		t.Errorf("ListStageHops = %+v, %v, want [%+v %+v %+v], nil", hops, err, latest, other, recorded)
 	}
 }
 
