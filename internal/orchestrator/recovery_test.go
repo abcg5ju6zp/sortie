@@ -592,6 +592,37 @@ func TestPopulateRetries_RestoredClaimStartsWithoutTheRuleSettingsFlag(t *testin
 	}
 }
 
+func TestPopulateRetries_RestartKeepsIssueIdentity(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := openInMemoryStore(t)
+	before := NewState(5000, 4, 0, nil, AgentTotals{})
+	before.RetryAttempts["iss-1"] = &RetryEntry{IssueID: "iss-1", Identifier: "PROJ-1", Attempt: 1, DueAtMS: 10000}
+	persistRetryEntry(ctx, discardLogger(), store, before, "iss-1")
+	entry := before.RetryAttempts["iss-1"]
+	entry.DisplayID = "acme/web#1"
+	entry.IssueIdentity = IssueIdentity{Title: "Fix the login redirect", URL: "https://example.test/acme/web/issues/1"}
+	persistRetryEntry(ctx, discardLogger(), store, before, "iss-1")
+
+	pending, err := store.LoadRetryEntriesForRecovery(ctx, 0)
+	if err != nil {
+		t.Fatalf("LoadRetryEntriesForRecovery: %v", err)
+	}
+	after := NewState(5000, 4, 0, nil, AgentTotals{})
+	PopulateRetries(after, pending, nil)
+
+	retrying := RuntimeSnapshot(after, recoveryNow).Retrying
+	if len(retrying) != 1 {
+		t.Fatalf("len(Retrying) = %d, want 1", len(retrying))
+	}
+	got := [3]string{retrying[0].DisplayID, retrying[0].IssueTitle, retrying[0].IssueURL}
+	want := [3]string{"acme/web#1", "Fix the login redirect", "https://example.test/acme/web/issues/1"}
+	if got != want {
+		t.Errorf("Retrying[0] display id, title, url = %q, want %q", got, want)
+	}
+}
+
 func TestPopulateRetries_SessionID_Nil(t *testing.T) {
 	t.Parallel()
 

@@ -22,6 +22,9 @@ Sortie uses an embedded SQLite database for durable state. The database file pat
 | `stage_previous` | TEXT | Source rule of the stage hop the frozen selection carries into its `stage.previous`; empty when none (migration 023) |
 | `stage_previous_outcome` | TEXT | Outcome of that hop, `succeeded` or `no_change`; empty when `stage_previous` is empty (migration 023) |
 | `chain_id` | TEXT | Stage chain identifier frozen with the selection; empty on an entry written before migration 024 (migration 024) |
+| `display_identifier` | TEXT | Qualified form of `identifier` (for example `owner/repo#9`); empty when `identifier` suffices, and on an entry written before migration 025 (migration 025) |
+| `issue_title` | TEXT | The tracker's title of the issue as read when the retry was scheduled; empty on an entry written before migration 025, and while the retry holds no read of its issue (migration 025) |
+| `issue_url` | TEXT | The tracker's web link of the issue as read then, under the same rule as `issue_title` (migration 025) |
 
 Note: `timer_handle` is runtime-only and is not stored.
 
@@ -60,6 +63,8 @@ Note: `timer_handle` is runtime-only and is not stored.
 | `chain_id` | TEXT | Stage chain identifier of the run; empty on a row written before migration 024, or on a `ci_failed` row whose pending reaction was recovered from such a row (migration 024) |
 | `stage_target` | TEXT | Dispatch rule the run's hop decision targeted; empty when the run reached no hop decision (migration 024) |
 | `stage_result` | TEXT | Result of that decision: `advanced`, `partial`, `failed`, or `ceiling`; empty exactly when `stage_target` is empty (migration 024) |
+| `issue_title` | TEXT | The tracker's title of the issue as read when the run was dispatched. Reaction recovery restores it; empty on a row written before migration 025, or on a `ci_failed` row whose pending reaction was recovered from such a row (migration 025) |
+| `issue_url` | TEXT | The tracker's web link of the issue as read then, restored and emptied under the same rule as `issue_title` (migration 025) |
 
 A stage chain is the set of runs that share a `chain_id`. Every dispatch freezes a chain identifier with its selection, beside the previous-stage pair. A dispatch that no hop reached starts a chain with a fresh random value that is never a dispatch or session identifier, so a public comment cannot expose session identity. A dispatch a hop reached inherits the chain of the hop record, and a retry or reaction continuation that keeps its rule carries the chain of the run it continues, across restarts. An empty carried chain, from a row written before migration 024, is replaced by a fresh identifier at dispatch. After its hop decision, the exit writes the decision's target rule and result onto the row of the run that reached it. Rows written before migration 024 keep `''` in the new columns and are not backfilled. `sortie stats` groups runs by `chain_id`, leaves out rows without a chain, and lists only chains in which a hop was due or made.
 

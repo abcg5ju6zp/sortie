@@ -796,6 +796,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	sorted := SortForDispatch(issues)
 
 	o.rebuildBudgetExhausted(ctx, cfg, sorted)
+	o.fillRetryIdentity(sorted)
 	o.refreshParkedIssues(ctx, sorted)
 	o.parkExhaustedAbsences(ctx, cfg, sorted)
 
@@ -1229,6 +1230,31 @@ func (o *Orchestrator) maybeWriteIncrementalMetadata(ctx context.Context, issueI
 	entry.MetadataWritePending = false
 }
 
+// fillRetryIdentity gives each queued retry that holds no read of its issue
+// the read this tick's candidates carry. A retry that holds a read, or that
+// no candidate matches, keeps its values. Must run on the event loop.
+func (o *Orchestrator) fillRetryIdentity(candidates []domain.Issue) {
+	if len(o.state.RetryAttempts) == 0 {
+		return
+	}
+
+	candidateByID := make(map[string]domain.Issue, len(candidates))
+	for _, issue := range candidates {
+		candidateByID[issue.ID] = issue
+	}
+	for id, entry := range o.state.RetryAttempts {
+		if entry.IssueIdentity != (IssueIdentity{}) {
+			continue
+		}
+		candidate, ok := candidateByID[id]
+		if !ok {
+			continue
+		}
+		entry.IssueIdentity = issueIdentityOf(candidate)
+		entry.DisplayID = candidate.DisplayID
+	}
+}
+
 // refreshParkedIssues evaluates the release rule against this tick's
 // candidates, then against every parked issue the candidate slice omits,
 // read through one batched, comment-free tracker call. Must run on the
@@ -1361,10 +1387,12 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 	candidateIDs := make([]string, len(sorted))
 	identifierByID := make(map[string]string, len(sorted))
 	displayIDByID := make(map[string]string, len(sorted))
+	identityByID := make(map[string]IssueIdentity, len(sorted))
 	for i, issue := range sorted {
 		candidateIDs[i] = issue.ID
 		identifierByID[issue.ID] = issue.Identifier
 		displayIDByID[issue.ID] = issue.DisplayID
+		identityByID[issue.ID] = issueIdentityOf(issue)
 	}
 
 	prior := o.state.BudgetExhausted
@@ -1403,6 +1431,7 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 				fresh[id] = &BudgetExhaustedEntry{
 					Identifier:     identifierByID[id],
 					DisplayID:      displayIDByID[id],
+					IssueIdentity:  identityByID[id],
 					Reason:         budgetReasonSession,
 					UsedSessions:   count,
 					BudgetSessions: cfg.Agent.MaxSessions,
@@ -1434,6 +1463,7 @@ func (o *Orchestrator) rebuildBudgetExhausted(ctx context.Context, cfg config.Se
 					fresh[id] = &BudgetExhaustedEntry{
 						Identifier:         identifierByID[id],
 						DisplayID:          displayIDByID[id],
+						IssueIdentity:      identityByID[id],
 						Reason:             budgetReasonToken,
 						UsedSessions:       usage.Sessions,
 						BudgetSessions:     cfg.Agent.MaxSessions,

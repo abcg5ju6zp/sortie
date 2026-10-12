@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/persistence"
+	"github.com/sortie-ai/sortie/internal/redact"
 	"github.com/sortie-ai/sortie/internal/registry"
 )
 
@@ -984,6 +986,37 @@ func TestRuntimeSnapshot_ConfiguredSettingsBesideTheReportedModel(t *testing.T) 
 	if got := result.Running[0]; got.RuleName != "cheap" || got.ConfiguredModel != "configured-model" || got.ConfiguredEffort != "low" || got.ModelName != "reported-model" {
 		t.Errorf("snapshot rule, configured model, configured effort, model_name = %q, %q, %q, %q, want %q, %q, %q, %q",
 			got.RuleName, got.ConfiguredModel, got.ConfiguredEffort, got.ModelName, "cheap", "configured-model", "low", "reported-model")
+	}
+}
+
+func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
+	t.Parallel()
+
+	value := eventTestSecret(t)
+	redact.Add("test.state issue identity", value)
+	now := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
+	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	state.Running["ISS-1"] = &RunningEntry{
+		Issue: domain.Issue{ID: "ISS-1", Title: "rotate " + value, Labels: []string{"ops", "leak-" + value}},
+	}
+	state.RetryAttempts["ISS-2"] = &RetryEntry{
+		IssueID: "ISS-2", IssueIdentity: IssueIdentity{Title: "rotate " + value},
+	}
+
+	result := RuntimeSnapshot(state, now)
+
+	if len(result.Running) != 1 || len(result.Retrying) != 1 {
+		t.Fatalf("RuntimeSnapshot rows = %d running, %d retrying, want 1, 1", len(result.Running), len(result.Retrying))
+	}
+	running, retrying := result.Running[0], result.Retrying[0]
+	if want := "rotate " + redact.Marker; running.IssueTitle != want {
+		t.Errorf("Running[0].IssueTitle = %q, want %q", running.IssueTitle, want)
+	}
+	if want := []string{"ops", "leak-" + redact.Marker}; !slices.Equal(running.IssueLabels, want) {
+		t.Errorf("Running[0].IssueLabels = %q, want %q", running.IssueLabels, want)
+	}
+	if want := "rotate " + redact.Marker; retrying.IssueTitle != want {
+		t.Errorf("Retrying[0].IssueTitle = %q, want %q", retrying.IssueTitle, want)
 	}
 }
 

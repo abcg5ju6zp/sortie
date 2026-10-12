@@ -186,6 +186,9 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"stage_previous", "TEXT", true, 0},
 				{"stage_previous_outcome", "TEXT", true, 0},
 				{"chain_id", "TEXT", true, 0},
+				{"display_identifier", "TEXT", true, 0},
+				{"issue_title", "TEXT", true, 0},
+				{"issue_url", "TEXT", true, 0},
 			},
 		},
 		{
@@ -222,6 +225,8 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"chain_id", "TEXT", true, 0},
 				{"stage_target", "TEXT", true, 0},
 				{"stage_result", "TEXT", true, 0},
+				{"issue_title", "TEXT", true, 0},
+				{"issue_url", "TEXT", true, 0},
 			},
 		},
 		{

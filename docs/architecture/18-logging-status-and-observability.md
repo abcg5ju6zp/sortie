@@ -104,7 +104,9 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
 - each running row should include `tokens_awaited`, true only when the session has recorded no figure and the moment its frozen arrival names for one has not passed: no turn has begun for an arrival that reports during a turn, and no turn has ended for one that settles at most one figure per turn. A row whose arrival reports figures and whose `tokens_awaited` is false recorded nothing and will record nothing, so a consumer must not present it as a figure still to come
 - each running row should include `api_requests_measured`, true when the row's `api_request_count` is a count of model API requests the session measured
 - each running row should include `rule_name`, `configured_model`, and `configured_effort`, the dispatch rule the session runs under and the model and reasoning level its resolved settings block carries, empty (and omitted from the JSON form) when unset; `model_name` keeps the model the runtime reported, which can differ from the configured one under routing aliases and runtime fallbacks
-- `retrying` (list of retry queue rows)
+- each running row should include `issue_title`, `issue_url`, and `issue_labels`, the issue's title, web link, and labels as the session was dispatched with them, unchanged for the whole run and the same text the agent's prompt received. `issue_title` and `issue_url` are empty (and omitted from the JSON form) when the tracker returned none; `issue_labels` is always present, an empty list when the issue carries none, lowercase in the tracker's order as Section 11 normalizes them
+- every such string is masked as Section 15.3 states, in the snapshot rather than in the state it is copied from, because stage advancement reads the labels as the tracker returned them
+- `retrying` (list of retry queue rows). Each row carries `issue_title` and `issue_url` beside the display identifier, the read of the issue the retry was scheduled with. The read is persisted with the retry and restored at startup, so a restart serves what was served before it, and a reaction retry scheduled from a pending reaction rebuilt at startup carries the read its run recorded. A retry that holds no read, because it was restored from a row persisted before the identity was recorded, takes the first read the orchestrator takes of its issue: the next poll tick whose candidates list it, or its next fire. A read already held is never replaced
 - `agent_totals`
   - `input_tokens`
   - `output_tokens`
@@ -117,7 +119,7 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
   - `running_non_reporting` (count of the current running set reporting no usage at all: either the resolved `usage_arrival` is `none`, in which case any figure the session's runtime sends is discarded, or the arrival reports figures and the moment it names for one passed with nothing recorded)
 - `rate_limits` (latest coding-agent rate limit payload, if available)
 - `budget_exhausted_count` (number of issues currently blocked by a re-dispatch budget; always present)
-- `budget_exhausted` (list of blocked-issue records, sorted by identifier; always present, empty when the set is empty). Each record carries the issue's ID and identifier, the reason (`token_budget` or `session_budget`; `token_budget` takes precedence over `session_budget` when one issue reaches both gates), the used and budgeted session and token counts, and the time the hold began. The set is rebuilt per tick from those two gates (Section 8.4) and also updated by the retry lane when it discovers a hold between ticks.
+- `budget_exhausted` (list of blocked-issue records, sorted by identifier; always present, empty when the set is empty). Each record carries the issue's ID and identifier, the reason (`token_budget` or `session_budget`; `token_budget` takes precedence over `session_budget` when one issue reaches both gates), the used and budgeted session and token counts, the time the hold began, and the issue's title and tracker link. The title and link come from the read of the poll tick that last rebuilt the set, or from the retry the hold was found on until the next tick. The set is rebuilt per tick from those two gates (Section 8.4) and also updated by the retry lane when it discovers a hold between ticks.
 - `parked_count` (number of issues currently held out of primary dispatch; always present)
 - `parked` (sorted list of parked issue IDs; omitted when the set is empty)
 - `parked_reason` (map from parked issue ID to the park's reason, `agent_blocked` or `handoff_absence`; omitted when the set is empty)
@@ -227,9 +229,14 @@ Minimum endpoints:
         {
           "issue_id": "abc123",
           "issue_identifier": "MT-649",
+          "issue_title": "Fix the flaky login test",
+          "issue_url": "https://tracker.example.com/browse/MT-649",
+          "issue_labels": ["bug", "backend"],
           "state": "In Progress",
           "session_id": "thread-1-turn-1",
           "turn_count": 7,
+          "self_review_active": false,
+          "self_review_iteration": 0,
           "last_event": "turn_completed",
           "last_message": "",
           "started_at": "2026-02-24T20:10:12Z",
@@ -245,6 +252,8 @@ Minimum endpoints:
           "rule_name": "hard",
           "configured_model": "claude-sonnet-4-20250514",
           "configured_effort": "high",
+          "workflow_file": "WORKFLOW.md",
+          "agent_kind": "claude-code",
           "api_request_count": 3,
           "requests_by_model": {"claude-sonnet-4-20250514": 3},
           "tool_time_percent": 12.3,
@@ -253,6 +262,7 @@ Minimum endpoints:
           "usage_arrival": "incremental",
           "usage_attribution": "per_model",
           "tokens_pending": false,
+          "tokens_awaited": false,
           "api_requests_measured": true
         }
       ],
@@ -260,6 +270,8 @@ Minimum endpoints:
         {
           "issue_id": "def456",
           "issue_identifier": "MT-650",
+          "issue_title": "Retry the export job",
+          "issue_url": "https://tracker.example.com/browse/MT-650",
           "attempt": 3,
           "due_at": "2026-02-24T20:16:00Z",
           "error": "no available orchestrator slots"
@@ -269,6 +281,8 @@ Minimum endpoints:
         {
           "issue_id": "ghi789",
           "issue_identifier": "MT-651",
+          "issue_title": "Migrate the billing tables",
+          "issue_url": "https://tracker.example.com/browse/MT-651",
           "reason": "session_budget",
           "used_sessions": 3,
           "budget_sessions": 3,
@@ -310,6 +324,9 @@ Minimum endpoints:
         "current_retry_attempt": 2
       },
       "running": {
+        "issue_title": "Fix the flaky login test",
+        "issue_url": "https://tracker.example.com/browse/MT-649",
+        "issue_labels": ["bug", "backend"],
         "session_id": "thread-1-turn-1",
         "turn_count": 7,
         "state": "In Progress",
@@ -375,6 +392,7 @@ API design notes:
 
 - The JSON shapes above are the recommended baseline for interoperability and debugging ergonomics.
 - Implementations may add fields, but should avoid breaking existing fields within a version.
+- Running, retry, and budget-exhausted rows name their issue in flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`, never in a nested object, and the same rows inside `GET /api/v1/<issue_identifier>` carry them. `issue_title` and `issue_url` are the tracker's title and web link, each omitted when empty; a running row always carries a title, and a retry row lacks it only while the retry holds no read of its issue. `issue_labels` is on running rows only and always present. Every such string is masked as Section 15.3 states.
 - On a running row, `api_request_count` is `null` exactly when `api_requests_measured` is false, the five members of `tokens` are `null` exactly when `tokens_measured` is false, and `requests_by_model` is absent on the first condition and when the attribution names no model.
 - Sortie deviates from the field-stability note above for those six figures, narrowing each from an integer to a nullable one, because a consumer reading a number cannot tell a measured zero from an unmeasured one. A typed consumer is forced to handle the null; an untyped one, in a language where `null` coerces to `0` in arithmetic, is no worse off than it was.
 - `active_estimated_cost_usd`, an implementation extension beyond the baseline shape above, sums the estimated cost of running, measured sessions whose agent kind has a configured token rate; it is omitted when no running, measured session prices. `cost_unpriced_running` sits beside it and counts the running, measured sessions the sum leaves out for want of a rate. It is present, zero included, whenever `token_rates` holds an entry for any agent kind, complete or not, and omitted otherwise, so its presence alone tells a consumer whether cost pricing is configured at all.

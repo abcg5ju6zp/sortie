@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- The JSON API at `/api/v1/state` and `/api/v1/{identifier}` now names every running, retrying, and budget-held issue by its title and tracker link, and shows each running issue's labels along with its session's SSH host, agent, and self-review progress. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
+
+### Fixed
+
+- Jira issue links no longer include a user name and password written into `tracker.endpoint`, so the link opens and an agent prompt that shows it no longer exposes them. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
+
+### Migrations
+
+- Add `issue_title` and `issue_url` to `run_history` and `retry_entries`, and `display_identifier` to `retry_entries`. A retry or run recorded before the upgrade reads back with no title or link; a queued retry gets one from the first tracker poll or when it next fires. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
+
 ## [1.27.0] - 2026-10-11
 
 ### Added

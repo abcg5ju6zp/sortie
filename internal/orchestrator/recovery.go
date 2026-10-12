@@ -47,6 +47,8 @@ func PopulateRetries(state *State, entries []persistence.PendingRetry, log *slog
 		state.RetryAttempts[e.IssueID] = &RetryEntry{
 			IssueID:          e.IssueID,
 			Identifier:       e.Identifier,
+			DisplayID:        e.DisplayID,
+			IssueIdentity:    IssueIdentity{Title: e.IssueTitle, URL: e.IssueURL},
 			SessionID:        sessionID,
 			Attempt:          e.Attempt,
 			DueAtMS:          e.DueAtMs,
@@ -291,6 +293,11 @@ func stageLineageOf(run persistence.RunHistory) StageLineage {
 	return StageLineage{PreviousRule: run.StagePrevious, PreviousOutcome: run.StagePreviousOutcome, ChainID: run.ChainID}
 }
 
+// issueIdentityOfRun returns the identity run recorded at dispatch.
+func issueIdentityOfRun(run persistence.RunHistory) IssueIdentity {
+	return IssueIdentity{Title: run.IssueTitle, URL: run.IssueURL}
+}
+
 func recoverPendingReactionKinds(
 	state *State,
 	run persistence.RunHistory,
@@ -322,6 +329,8 @@ func recoverPendingReactionKinds(
 				RuleName:     run.RuleName,
 				StageLineage: stageLineageOf(run),
 				TemplateID:   run.TemplateID,
+
+				IssueIdentity: issueIdentityOfRun(run),
 			}
 			outcome.ReviewRecovered++
 			added++
@@ -349,6 +358,8 @@ func recoverPendingReactionKinds(
 				RuleName:     run.RuleName,
 				StageLineage: stageLineageOf(run),
 				TemplateID:   run.TemplateID,
+
+				IssueIdentity: issueIdentityOfRun(run),
 			}
 			outcome.BotReviewRecovered++
 			added++
@@ -382,6 +393,8 @@ func recoverPendingReactionKinds(
 				RuleName:     run.RuleName,
 				StageLineage: stageLineageOf(run),
 				TemplateID:   run.TemplateID,
+
+				IssueIdentity: issueIdentityOfRun(run),
 			}
 			outcome.CIRecovered++
 			added++
@@ -409,6 +422,8 @@ func recoverPendingReactionKinds(
 				RuleName:     run.RuleName,
 				StageLineage: stageLineageOf(run),
 				TemplateID:   run.TemplateID,
+
+				IssueIdentity: issueIdentityOfRun(run),
 			}
 			outcome.AutoMergeRecovered++
 			added++
@@ -436,6 +451,8 @@ func recoverPendingReactionKinds(
 				RuleName:     run.RuleName,
 				StageLineage: stageLineageOf(run),
 				TemplateID:   run.TemplateID,
+
+				IssueIdentity: issueIdentityOfRun(run),
 			}
 			outcome.MergeConflictRecovered++
 			added++
@@ -463,6 +480,8 @@ func recoverPendingReactionKinds(
 				RuleName:     run.RuleName,
 				StageLineage: stageLineageOf(run),
 				TemplateID:   run.TemplateID,
+
+				IssueIdentity: issueIdentityOfRun(run),
 			}
 			outcome.LabelReviewRecovered++
 			added++
@@ -492,6 +511,8 @@ func recoverPendingReactionKinds(
 				RuleName:     run.RuleName,
 				StageLineage: stageLineageOf(run),
 				TemplateID:   run.TemplateID,
+
+				IssueIdentity: issueIdentityOfRun(run),
 			}
 			outcome.LabelFixRecovered++
 			added++
@@ -520,6 +541,8 @@ func recoverPendingReactionKinds(
 				RuleName:     run.RuleName,
 				StageLineage: stageLineageOf(run),
 				TemplateID:   run.TemplateID,
+
+				IssueIdentity: issueIdentityOfRun(run),
 			}
 			outcome.MergeCompletionRecovered++
 			added++

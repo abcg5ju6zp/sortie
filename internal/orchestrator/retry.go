@@ -176,6 +176,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 			IssueID:             issueID,
 			Identifier:          popped.Identifier,
 			DisplayID:           popped.DisplayID,
+			IssueIdentity:       popped.IssueIdentity,
 			Attempt:             attempt,
 			DelayMS:             delayMS,
 			Error:               retryErr,
@@ -288,6 +289,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		state.BudgetExhausted[issueID] = &BudgetExhaustedEntry{
 			Identifier:         popped.Identifier,
 			DisplayID:          popped.DisplayID,
+			IssueIdentity:      popped.IssueIdentity,
 			Reason:             reason,
 			UsedSessions:       usedSessions,
 			BudgetSessions:     params.MaxSessions,
@@ -413,6 +415,13 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 
 		reschedule(nextAttempt, delayMS, "retry issue fetch failed")
 		return
+	}
+
+	// reschedule reads popped when it runs, so every later reschedule of
+	// this fire carries the identity. A read already held is never replaced.
+	if popped.IssueIdentity == (IssueIdentity{}) {
+		popped.IssueIdentity = issueIdentityOf(issue)
+		popped.DisplayID = issue.DisplayID
 	}
 
 	// A person's label edit can pass through zero state labels for a
@@ -786,6 +795,9 @@ func persistRetryEntry(ctx context.Context, log *slog.Logger, store RetryTimerSt
 	pEntry := persistence.RetryEntry{
 		IssueID:    retryEntry.IssueID,
 		Identifier: retryEntry.Identifier,
+		DisplayID:  retryEntry.DisplayID,
+		IssueTitle: retryEntry.IssueIdentity.Title,
+		IssueURL:   retryEntry.IssueIdentity.URL,
 		Attempt:    retryEntry.Attempt,
 		DueAtMs:    retryEntry.DueAtMS,
 		Error:      stringPtr(retryEntry.Error),

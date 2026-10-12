@@ -524,14 +524,15 @@ func logRetrySlotDeferral(log *slog.Logger, challenger string, incumbent *RetryE
 
 // ScheduleRetryParams holds the inputs for [ScheduleRetry].
 type ScheduleRetryParams struct {
-	IssueID     string
-	Identifier  string
-	DisplayID   string
-	Attempt     int   // 1-based retry attempt number.
-	DelayMS     int64 // Delay before timer fires, in milliseconds.
-	Error       string
-	LastSSHHost string // Runtime-only: SSH host from previous attempt for retry affinity.
-	SessionID   string // Session identifier from previous attempt for cross-retry resume.
+	IssueID       string
+	Identifier    string
+	DisplayID     string
+	IssueIdentity IssueIdentity
+	Attempt       int   // 1-based retry attempt number.
+	DelayMS       int64 // Delay before timer fires, in milliseconds.
+	Error         string
+	LastSSHHost   string // Runtime-only: SSH host from previous attempt for retry affinity.
+	SessionID     string // Session identifier from previous attempt for cross-retry resume.
 
 	// Logger receives the displacement warning when ScheduleRetry finds
 	// the retry slot occupied. Nil selects slog.Default().
@@ -623,6 +624,7 @@ func ScheduleRetry(state *State, params ScheduleRetryParams, onFire func(issueID
 		IssueID:             params.IssueID,
 		Identifier:          params.Identifier,
 		DisplayID:           params.DisplayID,
+		IssueIdentity:       params.IssueIdentity,
 		SessionID:           params.SessionID,
 		Attempt:             params.Attempt,
 		DueAtMS:             dueAtMS,

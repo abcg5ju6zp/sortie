@@ -171,6 +171,8 @@ func reconcileLabelFixCommands(state *State, params ReconcileParams, log *slog.L
 				RuleSettingsApplied: pending.RuleSettingsApplied,
 				TemplateID:          pending.TemplateID,
 				Logger:              entryLog,
+
+				IssueIdentity: pending.IssueIdentity,
 			}, params.OnRetryFire)
 
 			// Best-effort acknowledgment: the label's disappearance tells the

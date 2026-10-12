@@ -5328,6 +5328,45 @@ func budgetOrchestratorWithMetrics(state *State, wm *stubWorkflowManager, store 
 	})
 }
 
+func TestHandleTick_FillsRetryHoldingNoRead(t *testing.T) {
+	t.Parallel()
+
+	candidates := []domain.Issue{
+		{ID: "iss-1", Identifier: "TEST-1", DisplayID: "acme/web#1", Title: "first title", URL: "https://example.test/1", State: "To Do"},
+		{ID: "iss-2", Identifier: "TEST-2", DisplayID: "acme/web#2", Title: "candidate title", URL: "https://example.test/2", State: "To Do"},
+	}
+	held := IssueIdentity{Title: "held title", URL: "https://example.test/held"}
+	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	for id, entry := range map[string]*RetryEntry{
+		"iss-1": {IssueID: "iss-1", Identifier: "TEST-1"},
+		"iss-2": {IssueID: "iss-2", Identifier: "TEST-2", DisplayID: "acme/web#held", IssueIdentity: held},
+		"iss-3": {IssueID: "iss-3", Identifier: "TEST-3"},
+	} {
+		state.RetryAttempts[id] = entry
+		state.Claimed[id] = struct{}{}
+	}
+	tracker := &candidateTrackerAdapter{
+		mockTrackerAdapter: &mockTrackerAdapter{},
+		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return candidates, nil },
+	}
+
+	budgetOrchestrator(state, budgetTickConfig(0), &stubStore{}, tracker).handleTick(context.Background())
+
+	type row struct{ displayID, title, url string }
+	got := map[string]row{}
+	for _, r := range RuntimeSnapshot(state, time.Now()).Retrying {
+		got[r.IssueID] = row{r.DisplayID, r.IssueTitle, r.IssueURL}
+	}
+	want := map[string]row{
+		"iss-1": {"acme/web#1", "first title", "https://example.test/1"},
+		"iss-2": {"acme/web#held", "held title", "https://example.test/held"},
+		"iss-3": {},
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("Retrying rows after handleTick = %+v, want %+v", got, want)
+	}
+}
+
 func TestHandleTick_BudgetExhaustionRebuildsState(t *testing.T) {
 	t.Parallel()
 
