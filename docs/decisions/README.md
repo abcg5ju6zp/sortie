@@ -39,3 +39,4 @@ This directory contains architecturally significant decisions for Sortie, docume
 | [0031](0031-let-a-dispatch-rule-carry-its-agent-kinds-settings.md) | Let a Dispatch Rule Carry the Settings of the Agent Kind It Selects | Accepted |
 | [0032](0032-route-outbound-messages-through-per-destination-event-subscriptions.md) | Route Outbound Messages Through Per-Destination Event Subscriptions | Accepted |
 | [0033](0033-advance-an-issue-to-the-next-stage-by-swapping-a-stage-label.md) | Advance an Issue to the Next Stage by Swapping a Stage Label | Accepted |
+| [0034](0034-build-the-dashboard-as-an-embedded-react-application.md) | Build the Dashboard as a React Application Committed and Embedded in the Binary | Accepted |

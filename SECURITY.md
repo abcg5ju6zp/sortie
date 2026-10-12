@@ -98,7 +98,9 @@ across multiple projects. Extensions require reporter agreement.
 - SQLite persistence layer vulnerabilities (injection, corruption, unauthorized access).
 - Configuration injection via environment variable handling or YAML parsing.
 - Denial of service against the orchestrator (crash, resource exhaustion, deadlock).
-- Vulnerabilities in direct dependencies (see [go.mod](go.mod)).
+- Vulnerabilities in direct dependencies of code that ships in the binary: Go
+  modules (see [go.mod](go.mod)) and any third-party code bundled into the
+  embedded dashboard.
 
 ### Out of Scope
 
@@ -132,8 +134,9 @@ Sortie's security model is documented in the
 - **Secret handling**: API tokens and secret values support `$VAR` indirection
   and are never logged or expanded beyond a single level.
 - **Minimal dependency surface**: the binary is statically linked with zero
-  runtime dependencies. No CGo. Uses a small set of direct dependencies, with
-  Prometheus metrics support remaining optional.
+  runtime dependencies. No CGo. The Go code uses a small set of direct
+  dependencies, with Prometheus metrics support remaining optional. Tooling
+  used only to develop or build Sortie never ships in the binary.
 
 ## Security Announcements
 
