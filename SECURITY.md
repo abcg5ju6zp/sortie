@@ -98,7 +98,9 @@ across multiple projects. Extensions require reporter agreement.
 - SQLite persistence layer vulnerabilities (injection, corruption, unauthorized access).
 - Configuration injection via environment variable handling or YAML parsing.
 - Denial of service against the orchestrator (crash, resource exhaustion, deadlock).
-- Vulnerabilities in direct dependencies (see [go.mod](go.mod)).
+- Vulnerabilities in direct dependencies of code that ships in the binary: Go
+  modules (see [go.mod](go.mod)) and any third-party code bundled into the
+  embedded dashboard.
 
 ### Out of Scope
 
