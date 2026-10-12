@@ -234,6 +234,8 @@ func reconcileBotReviewComments(state *State, params ReconcileParams, log *slog.
 			RuleSettingsApplied: pending.RuleSettingsApplied,
 			TemplateID:          pending.TemplateID,
 			Logger:              entryLog,
+
+			IssueIdentity: pending.IssueIdentity,
 		}, params.OnRetryFire)
 
 		state.ReactionAttempts[rkey]++

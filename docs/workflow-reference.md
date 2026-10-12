@@ -1947,9 +1947,14 @@ Returns the system-wide runtime state including running sessions, retry queue, a
     {
       "issue_id": "abc123",
       "issue_identifier": "MT-649",
+      "issue_title": "Fix the flaky login test",
+      "issue_url": "https://tracker.example.com/browse/MT-649",
+      "issue_labels": ["bug", "backend"],
       "state": "In Progress",
       "session_id": "thread-1-turn-1",
       "turn_count": 7,
+      "self_review_active": false,
+      "self_review_iteration": 0,
       "last_event": "turn_completed",
       "last_message": "",
       "started_at": "2026-02-24T20:10:12Z",
@@ -1966,6 +1971,8 @@ Returns the system-wide runtime state including running sessions, retry queue, a
       "rule_name": "hard",
       "configured_model": "claude-sonnet-4-20250514",
       "configured_effort": "high",
+      "workflow_file": "WORKFLOW.md",
+      "agent_kind": "claude-code",
       "api_request_count": 3,
       "requests_by_model": {"claude-sonnet-4-20250514": 3},
       "tool_time_percent": 12.3,
@@ -1974,6 +1981,7 @@ Returns the system-wide runtime state including running sessions, retry queue, a
       "usage_arrival": "incremental",
       "usage_attribution": "per_model",
       "tokens_pending": false,
+      "tokens_awaited": false,
       "api_requests_measured": true
     }
   ],
@@ -1981,6 +1989,8 @@ Returns the system-wide runtime state including running sessions, retry queue, a
     {
       "issue_id": "def456",
       "issue_identifier": "MT-650",
+      "issue_title": "Retry the export job",
+      "issue_url": "https://tracker.example.com/browse/MT-650",
       "attempt": 3,
       "due_at": "2026-02-24T20:16:00Z",
       "error": "no available orchestrator slots"
@@ -1990,6 +2000,8 @@ Returns the system-wide runtime state including running sessions, retry queue, a
     {
       "issue_id": "ghi789",
       "issue_identifier": "MT-651",
+      "issue_title": "Migrate the billing tables",
+      "issue_url": "https://tracker.example.com/browse/MT-651",
       "reason": "session_budget",
       "used_sessions": 3,
       "budget_sessions": 3,
@@ -2018,6 +2030,14 @@ Returns the system-wide runtime state including running sessions, retry queue, a
 
 | Field               | Type              | Description                                                                                                                                |
 | ------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `issue_title`             | string or absent  | The tracker's title of the issue, as read when the session was dispatched and unchanged for the whole run. Omitted when the tracker returned none. Masked: a value registered as a secret is replaced by `[redacted]`. |
+| `issue_url`               | string or absent  | The tracker's web link of the issue, as read at dispatch. Omitted when the tracker returned none. A Jira link carries no user name or password of `tracker.endpoint`. Masked like `issue_title`. |
+| `issue_labels`            | array of strings  | The issue's labels as read at dispatch, lowercase and in the tracker's order. Always present; `[]` when the issue carries none. Masked like `issue_title`. |
+| `ssh_host`                | string or absent  | The SSH host the session runs on. Omitted for a local session. |
+| `workflow_file`           | string or absent  | Base filename of the `WORKFLOW.md` in force at dispatch. Omitted when unset. |
+| `agent_kind`              | string or absent  | The agent kind the session runs, from the configuration in force at dispatch. Omitted when unset. |
+| `self_review_active`      | boolean           | True while the session is in its self-review phase. |
+| `self_review_iteration`   | integer           | The self-review iterations completed in the current phase: `0` while the first runs and whenever `self_review_active` is `false`. |
 | `tokens`                  | object            | Token counts for this session. Each of the five members, `input_tokens`, `output_tokens`, `total_tokens`, `cache_read_tokens`, and `cache_write_tokens`, is an integer or `null`. The five are `null` together, exactly when `tokens_measured` is `false`, and each carries its figure otherwise. |
 | `tokens.cache_read_tokens` | integer or `null` | Cumulative cache-read token count. Reflects tokens served from the LLM provider's prompt cache rather than reprocessed. `null` when `tokens_measured` is `false`; `0` when the session is measured and the agent adapter reports no cache data. |
 | `tokens.cache_write_tokens` | integer or `null` | Cumulative cache-write token count. Reflects input tokens written to the LLM provider's prompt cache. `null` when `tokens_measured` is `false`; `0` when the session is measured and the agent adapter reports no cache-write count. |
@@ -2033,7 +2053,19 @@ Returns the system-wide runtime state including running sessions, retry queue, a
 | `usage_arrival`      | string            | The session's kind's declared usage-reporting arrival, frozen at dispatch: `incremental`, `turn_end`, `none`, or `""` when undeclared.    |
 | `usage_attribution`  | string            | The session's kind's declared usage-reporting attribution, frozen at dispatch: `per_model`, `session_total`, `none`, or `""` when undeclared. |
 | `tokens_pending`     | boolean           | True only when `usage_arrival` is `turn_end`, the session is measured, and the turn that figure would settle for is still in flight.      |
+| `tokens_awaited`     | boolean           | True only when the session has recorded no figure and the moment its `usage_arrival` names for one has not passed. A session whose `usage_arrival` reports figures and whose `tokens_awaited` is `false` recorded nothing and will record nothing. |
 | `api_requests_measured` | boolean        | True when `api_request_count` is a measurement of model API requests: `usage_arrival` is `incremental` and either a figure has arrived or no turn has begun. False for every other arrival, and for an `incremental` session past its first turn that has reported nothing. |
+
+**Retry and budget-exhausted identity fields:**
+
+Each row of `retrying` and each record of `budget_exhausted` carries these flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`. Both are masked like the running row's `issue_title`.
+
+| Field         | Type             | Description                                                                                                                                  |
+| ------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `issue_title` | string or absent | The tracker's title of the issue. Omitted when empty, which on a retry row means the retry holds no read of its issue yet. |
+| `issue_url`   | string or absent | The tracker's web link of the issue. Omitted when empty, under the same rule as `issue_title`. |
+
+A retry row carries the read of the issue the retry was scheduled with. Sortie stores the read with the retry and restores it at startup, so a restart serves the title, link, and display identifier it served before. A retry restored from a row stored by an earlier release holds no read; it takes one from the next poll tick whose candidates list its issue, or from its next fire, and a read already held is never replaced. A `budget_exhausted` record carries the read of the poll tick that last rebuilt the set, or of the retry the hold was found on until the next tick.
 
 **Aggregate totals:**
 
@@ -2046,8 +2078,8 @@ Returns the system-wide runtime state including running sessions, retry queue, a
 | `cache_write_tokens` | integer | Total cache-write tokens across all sessions. Follows the same cumulative-delta accounting as other token counters. |
 | `seconds_running`   | number  | Aggregate wall-clock runtime — completed-session time plus elapsed time from currently running sessions. |
 | `unmeasured_sessions` | integer | Ended sessions whose token usage was never recorded, which the token totals above leave out. Survives a restart. |
-| `running_unreported` | integer | Running sessions whose `usage_arrival` reports usage but that have not reported a figure yet. |
-| `running_non_reporting` | integer | Running sessions whose `usage_arrival` is `none`. |
+| `running_unreported` | integer | Running sessions whose `usage_arrival` reports usage, that have not reported a figure yet, and whose `tokens_awaited` is `true`, so a figure may still arrive. |
+| `running_non_reporting` | integer | Running sessions that report no usage: those whose `usage_arrival` is `none`, and those whose `usage_arrival` reports figures but whose moment for one passed with nothing recorded. |
 
 A session whose `usage_arrival` is `none` contributes nothing to the token totals, even when its runtime reports a figure.
 
@@ -2070,6 +2102,9 @@ Returns issue-specific runtime and debug details for a single issue. Returns `40
     "current_retry_attempt": 0
   },
   "running": {
+    "issue_title": "Fix the flaky login test",
+    "issue_url": "https://tracker.example.com/browse/MT-649",
+    "issue_labels": ["bug", "backend"],
     "session_id": "thread-1-turn-1",
     "turn_count": 7,
     "state": "In Progress",

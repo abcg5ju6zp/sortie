@@ -106,6 +106,7 @@ func TestRunHistoryConfiguredSettingsColumns_RoundTrip(t *testing.T) {
 	run := newTestRun(1)
 	run.ConfiguredModel, run.ConfiguredEffort, run.ReportedModel = "provider/cheap", "low", "provider/cheap-20260101"
 	run.ChainID, run.StagePrevious, run.StageTarget, run.StageResult = "chain-1", "specify", "plan", "advanced"
+	run.IssueTitle, run.IssueURL = "Fix the login redirect", "https://example.atlassian.net/browse/PROJ-1"
 	inserted := appendOrFatal(t, s, run)
 
 	readers := map[string]func() ([]RunHistory, error){
@@ -144,6 +145,10 @@ func TestRunHistoryConfiguredSettingsColumns_RoundTrip(t *testing.T) {
 		if gotCols := (stageCols{r.ChainID, r.StagePrevious, r.StageTarget, r.StageResult}); gotCols != want {
 			t.Errorf("%s chain, previous, target, result = %+v, want %+v", name, gotCols, want)
 		}
+	}
+
+	if r := got["LoadLatestSuccessfulRunsForReactionRecovery"][0]; r.IssueTitle != run.IssueTitle || r.IssueURL != run.IssueURL {
+		t.Errorf("LoadLatestSuccessfulRunsForReactionRecovery title, url = %q, %q, want %q, %q", r.IssueTitle, r.IssueURL, run.IssueTitle, run.IssueURL)
 	}
 }
 

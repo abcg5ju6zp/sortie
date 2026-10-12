@@ -394,6 +394,8 @@ func handleCIFailure(
 		IssueID:        pending.IssueID,
 		Identifier:     pending.Identifier,
 		DisplayID:      pending.DisplayID,
+		IssueTitle:     pending.IssueIdentity.Title,
+		IssueURL:       pending.IssueIdentity.URL,
 		Attempt:        pending.Attempt,
 		StartedAt:      now.Format(time.RFC3339),
 		CompletedAt:    now.Format(time.RFC3339),
@@ -441,6 +443,8 @@ func handleCIFailure(
 		RuleSettingsApplied: pending.RuleSettingsApplied,
 		TemplateID:          pending.TemplateID,
 		Logger:              log,
+
+		IssueIdentity: pending.IssueIdentity,
 	}, params.OnRetryFire)
 	metrics.IncRetries(triggerCIFix)
 

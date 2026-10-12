@@ -324,6 +324,8 @@ func dispatchMergeConflictContinuation(
 		RuleSettingsApplied: pending.RuleSettingsApplied,
 		TemplateID:          pending.TemplateID,
 		Logger:              log,
+
+		IssueIdentity: pending.IssueIdentity,
 	}, params.OnRetryFire)
 
 	if markErr := params.Store.MarkReactionDispatched(ctx, pending.IssueID, ReactionKindMergeConflict); markErr != nil {

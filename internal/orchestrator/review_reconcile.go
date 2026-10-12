@@ -251,6 +251,8 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 			RuleSettingsApplied: pending.RuleSettingsApplied,
 			TemplateID:          pending.TemplateID,
 			Logger:              entryLog,
+
+			IssueIdentity: pending.IssueIdentity,
 		}, params.OnRetryFire)
 
 		state.ReactionAttempts[rkey]++

@@ -40,8 +40,9 @@ var usageBranchDeclarationSet = map[string][]string{
 }
 
 // usageBranchContractViolation describes one place a walked function
-// reads AgentKind outside the one position this rule admits: the index
-// operand of an index expression.
+// reads AgentKind outside the positions this rule admits: the index
+// operand of an index expression, and the value of a keyed composite
+// literal field.
 type usageBranchContractViolation struct {
 	pos  token.Position
 	text string
@@ -73,12 +74,14 @@ func (v *astParentVisitor) Visit(n ast.Node) ast.Visitor {
 }
 
 // agentKindReadViolations reports every read of the AgentKind field
-// inside body that does not appear as the index operand of an index
-// expression: a comparison operand, a switch tag, a case expression,
-// a call argument, or any other position. A read is a selector
-// expression whose field name is AgentKind; the scope is the selector
-// itself, not the string-typed local variable a caller might later
-// assign it to, which this function does not track.
+// inside body that appears neither as the index operand of an index
+// expression nor as the value of a keyed composite literal field, which
+// copies the kind into a response without being able to branch on it: a
+// comparison operand, a switch tag, a case expression, a call argument,
+// or any other position. A read is a selector expression whose field name
+// is AgentKind; the scope is the selector itself, not the string-typed
+// local variable a caller might later assign it to, which this function
+// does not track.
 func agentKindReadViolations(fset *token.FileSet, body ast.Node) []usageBranchContractViolation {
 	var violations []usageBranchContractViolation
 
@@ -88,6 +91,9 @@ func agentKindReadViolations(fset *token.FileSet, body ast.Node) []usageBranchCo
 			return
 		}
 		if idx, ok := parent.(*ast.IndexExpr); ok && idx.Index == n {
+			return
+		}
+		if kv, ok := parent.(*ast.KeyValueExpr); ok && kv.Value == n {
 			return
 		}
 		violations = append(violations, usageBranchContractViolation{
@@ -160,6 +166,14 @@ func TestAgentKindReadViolations_DetectsViolations(t *testing.T) {
 			src: `package fixture
 func f(rates map[string]int, e entry) int {
 	return rates[e.AgentKind]
+}`,
+			wantCount: 0,
+		},
+		{
+			name: "keyed composite literal copy is admitted",
+			src: `package fixture
+func f(e entry) response {
+	return response{AgentKind: e.AgentKind}
 }`,
 			wantCount: 0,
 		},

@@ -37,27 +37,35 @@ type stateCounts struct {
 }
 
 type runningEntryResponse struct {
-	IssueID           string         `json:"issue_id"`
-	IssueIdentifier   string         `json:"issue_identifier"`
-	DisplayIdentifier string         `json:"display_identifier,omitempty"`
-	State             string         `json:"state"`
-	SessionID         string         `json:"session_id"`
-	TurnCount         int            `json:"turn_count"`
-	LastEvent         string         `json:"last_event"`
-	LastMessage       string         `json:"last_message"`
-	StartedAt         time.Time      `json:"started_at"`
-	LastEventAt       time.Time      `json:"last_event_at"`
-	WorkspacePath     string         `json:"workspace_path"`
-	Tokens            tokenInfo      `json:"tokens"`
-	ModelName         string         `json:"model_name,omitempty"`
-	RuleName          string         `json:"rule_name,omitempty"`
-	ConfiguredModel   string         `json:"configured_model,omitempty"`
-	ConfiguredEffort  string         `json:"configured_effort,omitempty"`
-	APIRequestCount   *int           `json:"api_request_count"`
-	RequestsByModel   map[string]int `json:"requests_by_model,omitempty"`
-	ToolTimePercent   *float64       `json:"tool_time_percent"`
-	APITimePercent    *float64       `json:"api_time_percent"`
-	TokensMeasured    bool           `json:"tokens_measured"`
+	IssueID             string         `json:"issue_id"`
+	IssueIdentifier     string         `json:"issue_identifier"`
+	DisplayIdentifier   string         `json:"display_identifier,omitempty"`
+	IssueTitle          string         `json:"issue_title,omitempty"`
+	IssueURL            string         `json:"issue_url,omitempty"`
+	IssueLabels         []string       `json:"issue_labels"`
+	State               string         `json:"state"`
+	SessionID           string         `json:"session_id"`
+	TurnCount           int            `json:"turn_count"`
+	SelfReviewActive    bool           `json:"self_review_active"`
+	SelfReviewIteration int            `json:"self_review_iteration"`
+	LastEvent           string         `json:"last_event"`
+	LastMessage         string         `json:"last_message"`
+	StartedAt           time.Time      `json:"started_at"`
+	LastEventAt         time.Time      `json:"last_event_at"`
+	WorkspacePath       string         `json:"workspace_path"`
+	SSHHost             string         `json:"ssh_host,omitempty"`
+	Tokens              tokenInfo      `json:"tokens"`
+	ModelName           string         `json:"model_name,omitempty"`
+	RuleName            string         `json:"rule_name,omitempty"`
+	ConfiguredModel     string         `json:"configured_model,omitempty"`
+	ConfiguredEffort    string         `json:"configured_effort,omitempty"`
+	WorkflowFile        string         `json:"workflow_file,omitempty"`
+	AgentKind           string         `json:"agent_kind,omitempty"`
+	APIRequestCount     *int           `json:"api_request_count"`
+	RequestsByModel     map[string]int `json:"requests_by_model,omitempty"`
+	ToolTimePercent     *float64       `json:"tool_time_percent"`
+	APITimePercent      *float64       `json:"api_time_percent"`
+	TokensMeasured      bool           `json:"tokens_measured"`
 
 	// UsageArrival and UsageAttribution mirror
 	// [orchestrator.SnapshotRunningEntry]'s frozen pair verbatim, as
@@ -68,6 +76,7 @@ type runningEntryResponse struct {
 	UsageArrival        string `json:"usage_arrival"`
 	UsageAttribution    string `json:"usage_attribution"`
 	TokensPending       bool   `json:"tokens_pending"`
+	TokensAwaited       bool   `json:"tokens_awaited"`
 	APIRequestsMeasured bool   `json:"api_requests_measured"`
 }
 
@@ -87,6 +96,8 @@ type retryEntryResponse struct {
 	IssueID           string    `json:"issue_id"`
 	IssueIdentifier   string    `json:"issue_identifier"`
 	DisplayIdentifier string    `json:"display_identifier,omitempty"`
+	IssueTitle        string    `json:"issue_title,omitempty"`
+	IssueURL          string    `json:"issue_url,omitempty"`
 	Attempt           int       `json:"attempt"`
 	DueAt             time.Time `json:"due_at"`
 	Error             string    `json:"error"`
@@ -99,6 +110,8 @@ type budgetExhaustedResponse struct {
 	IssueID            string    `json:"issue_id"`
 	IssueIdentifier    string    `json:"issue_identifier"`
 	DisplayIdentifier  string    `json:"display_identifier,omitempty"`
+	IssueTitle         string    `json:"issue_title,omitempty"`
+	IssueURL           string    `json:"issue_url,omitempty"`
 	Reason             string    `json:"reason"`
 	UsedSessions       int       `json:"used_sessions"`
 	BudgetSessions     int       `json:"budget_sessions"`
@@ -152,23 +165,32 @@ func toRunningEntryResponse(e orchestrator.SnapshotRunningEntry, nowArgs ...time
 		IssueID:             e.IssueID,
 		IssueIdentifier:     e.Identifier,
 		DisplayIdentifier:   e.DisplayID,
+		IssueTitle:          e.IssueTitle,
+		IssueURL:            e.IssueURL,
+		IssueLabels:         e.IssueLabels,
 		State:               e.State,
 		SessionID:           e.SessionID,
 		TurnCount:           e.TurnCount,
+		SelfReviewActive:    e.SelfReviewActive,
+		SelfReviewIteration: e.SelfReviewIteration,
 		LastEvent:           string(e.LastAgentEvent),
 		LastMessage:         e.LastAgentMessage,
 		StartedAt:           e.StartedAt.UTC(),
 		LastEventAt:         e.LastAgentTimestamp.UTC(),
 		WorkspacePath:       e.WorkspacePath,
+		SSHHost:             e.SSHHost,
 		ModelName:           e.ModelName,
 		RuleName:            e.RuleName,
 		ConfiguredModel:     e.ConfiguredModel,
 		ConfiguredEffort:    e.ConfiguredEffort,
+		WorkflowFile:        e.WorkflowFile,
+		AgentKind:           e.AgentKind,
 		RequestsByModel:     e.RequestsByModel,
 		TokensMeasured:      e.UsageMeasured,
 		UsageArrival:        string(e.UsageArrival),
 		UsageAttribution:    string(e.UsageAttribution),
 		TokensPending:       e.TokensPending,
+		TokensAwaited:       e.TokensAwaited,
 		APIRequestsMeasured: e.APIRequestsMeasured,
 	}
 
@@ -206,6 +228,8 @@ func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse 
 		IssueID:           e.IssueID,
 		IssueIdentifier:   e.Identifier,
 		DisplayIdentifier: e.DisplayID,
+		IssueTitle:        e.IssueTitle,
+		IssueURL:          e.IssueURL,
 		Attempt:           e.Attempt,
 		DueAt:             time.UnixMilli(e.DueAtMS).UTC(),
 		Error:             e.Error,
@@ -217,6 +241,8 @@ func toBudgetExhaustedResponse(e orchestrator.SnapshotBudgetEntry) budgetExhaust
 		IssueID:            e.IssueID,
 		IssueIdentifier:    e.Identifier,
 		DisplayIdentifier:  e.DisplayID,
+		IssueTitle:         e.IssueTitle,
+		IssueURL:           e.IssueURL,
 		Reason:             e.Reason,
 		UsedSessions:       e.UsedSessions,
 		BudgetSessions:     e.BudgetSessions,

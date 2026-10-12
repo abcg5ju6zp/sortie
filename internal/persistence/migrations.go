@@ -83,6 +83,9 @@ var migration023SQL string
 //go:embed sql/024_stage_chains.sql
 var migration024SQL string
 
+//go:embed sql/025_issue_identity.sql
+var migration025SQL string
+
 var migrations = []Migration{
 	{Version: 1, Description: "core persistence tables", SQL: migration001SQL},
 	{Version: 2, Description: "extended token metrics", SQL: migration002SQL},
@@ -108,4 +111,5 @@ var migrations = []Migration{
 	{Version: 22, Description: "review comments each issue's runs were given", SQL: migration022SQL},
 	{Version: 23, Description: "stage hop counts and the previous stage on retry entries and run history", SQL: migration023SQL},
 	{Version: 24, Description: "stage chain identifier and hop result on run history, retry entries, and stage hops", SQL: migration024SQL},
+	{Version: 25, Description: "issue identity on retry entries and run history", SQL: migration025SQL},
 }

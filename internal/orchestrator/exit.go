@@ -389,6 +389,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		runError = evidenceErr
 	}
 
+	issueIdentity := issueIdentityOf(entry.Issue)
+
 	// RunHistory.Attempt is 1-based for display; normalizeAttempt returns the
 	// 0-based retry counter, so add 1.
 	runHistory := persistence.RunHistory{
@@ -416,6 +418,9 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		CacheWriteTokens: entry.CacheWriteTokens,
 		TokensMeasured:   measured,
 		UnaccountedTurns: workerResult.UnaccountedTurns,
+
+		IssueTitle: issueIdentity.Title,
+		IssueURL:   issueIdentity.URL,
 
 		StagePrevious:        entry.StageLineage.PreviousRule,
 		StagePreviousOutcome: entry.StageLineage.PreviousOutcome,
@@ -688,6 +693,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					RuleSettingsApplied: entry.RuleSettingsApplied,
 					TemplateID:          entry.TemplateID,
 					Logger:              log,
+
+					IssueIdentity: issueIdentityOf(entry.Issue),
 				}, params.OnRetryFire)
 				metrics.IncRetries(triggerError)
 				retryScheduled = true
@@ -736,6 +743,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 						RuleSettingsApplied: entry.RuleSettingsApplied,
 						TemplateID:          entry.TemplateID,
 						Logger:              log,
+
+						IssueIdentity: issueIdentityOf(entry.Issue),
 					}, params.OnRetryFire)
 					metrics.IncRetries(triggerContinuation)
 					retryScheduled = true
@@ -820,6 +829,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							RuleSettingsApplied: entry.RuleSettingsApplied,
 							TemplateID:          entry.TemplateID,
 							Logger:              log,
+
+							IssueIdentity: issueIdentityOf(entry.Issue),
 						}, params.OnRetryFire)
 						metrics.IncRetries(triggerContinuation)
 						retryScheduled = true
@@ -889,6 +900,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					RuleSettingsApplied: entry.RuleSettingsApplied,
 					TemplateID:          entry.TemplateID,
 					Logger:              log,
+
+					IssueIdentity: issueIdentityOf(entry.Issue),
 				}, params.OnRetryFire)
 				metrics.IncRetries(triggerContinuation)
 				retryScheduled = true
@@ -957,6 +970,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 						StageLineage:        entry.StageLineage,
 						RuleSettingsApplied: entry.RuleSettingsApplied,
 						TemplateID:          entry.TemplateID,
+
+						IssueIdentity: issueIdentityOf(entry.Issue),
 					}
 				} else if scm.Branch != "" {
 					log.Debug("ci watch not seeded: workspace metadata missing pull request identity",
@@ -1001,6 +1016,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							StageLineage:        entry.StageLineage,
 							RuleSettingsApplied: entry.RuleSettingsApplied,
 							TemplateID:          entry.TemplateID,
+
+							IssueIdentity: issueIdentityOf(entry.Issue),
 						}
 					}
 				}
@@ -1040,6 +1057,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							StageLineage:        entry.StageLineage,
 							RuleSettingsApplied: entry.RuleSettingsApplied,
 							TemplateID:          entry.TemplateID,
+
+							IssueIdentity: issueIdentityOf(entry.Issue),
 						}
 					}
 				}
@@ -1078,6 +1097,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							StageLineage:        entry.StageLineage,
 							RuleSettingsApplied: entry.RuleSettingsApplied,
 							TemplateID:          entry.TemplateID,
+
+							IssueIdentity: issueIdentityOf(entry.Issue),
 						}
 					}
 				}
@@ -1117,6 +1138,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							StageLineage:        entry.StageLineage,
 							RuleSettingsApplied: entry.RuleSettingsApplied,
 							TemplateID:          entry.TemplateID,
+
+							IssueIdentity: issueIdentityOf(entry.Issue),
 						}
 					}
 				}
@@ -1157,6 +1180,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							StageLineage:        entry.StageLineage,
 							RuleSettingsApplied: entry.RuleSettingsApplied,
 							TemplateID:          entry.TemplateID,
+
+							IssueIdentity: issueIdentityOf(entry.Issue),
 						}
 					}
 				}
@@ -1197,6 +1222,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							StageLineage:        entry.StageLineage,
 							RuleSettingsApplied: entry.RuleSettingsApplied,
 							TemplateID:          entry.TemplateID,
+
+							IssueIdentity: issueIdentityOf(entry.Issue),
 						}
 					}
 				}
@@ -1234,6 +1261,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							StageLineage:        entry.StageLineage,
 							RuleSettingsApplied: entry.RuleSettingsApplied,
 							TemplateID:          entry.TemplateID,
+
+							IssueIdentity: issueIdentityOf(entry.Issue),
 						}
 					}
 				}
@@ -1286,6 +1315,8 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					RuleSettingsApplied: entry.RuleSettingsApplied,
 					TemplateID:          entry.TemplateID,
 					Logger:              log,
+
+					IssueIdentity: issueIdentityOf(entry.Issue),
 				}, params.OnRetryFire)
 				metrics.IncRetries(triggerError)
 				retryScheduled = true
@@ -1304,6 +1335,9 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 				pEntry := persistence.RetryEntry{
 					IssueID:    retryEntry.IssueID,
 					Identifier: retryEntry.Identifier,
+					DisplayID:  retryEntry.DisplayID,
+					IssueTitle: retryEntry.IssueIdentity.Title,
+					IssueURL:   retryEntry.IssueIdentity.URL,
 					Attempt:    retryEntry.Attempt,
 					DueAtMs:    retryEntry.DueAtMS,
 					Error:      stringPtr(retryEntry.Error),

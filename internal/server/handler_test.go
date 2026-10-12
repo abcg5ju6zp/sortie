@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -898,29 +899,98 @@ func TestToRetryEntryResponse(t *testing.T) {
 	}
 }
 
-func TestToRunningEntryResponse_DisplayID(t *testing.T) {
+func TestEntryResponses_IdentityKeysJSON(t *testing.T) {
 	t.Parallel()
 
+	startedAt := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name           string
-		id             string
-		dispID         string
-		wantIdentifier string
-		wantDisplayID  string
+		name string
+		body any
+		want map[string]any
 	}{
 		{
-			name:           "DisplayID set — raw Identifier preserved, qualified form in DisplayIdentifier",
-			id:             "42",
-			dispID:         "owner/repo#42",
-			wantIdentifier: "42",
-			wantDisplayID:  "owner/repo#42",
+			name: "running",
+			body: toRunningEntryResponse(orchestrator.SnapshotRunningEntry{
+				IssueID:             "id-1",
+				Identifier:          "PROJ-1",
+				DisplayID:           "acme/web#1",
+				IssueTitle:          "Fix the login redirect",
+				IssueURL:            "https://acme.atlassian.net/browse/PROJ-1",
+				IssueLabels:         []string{"backend", "urgent"},
+				State:               "In Progress",
+				SessionID:           "sess-1",
+				TurnCount:           4,
+				SelfReviewActive:    true,
+				SelfReviewIteration: 2,
+				WorkspacePath:       "/work/PROJ-1",
+				SSHHost:             "build-1.example.test",
+				WorkflowFile:        "backend.WORKFLOW.md",
+				AgentKind:           "claude-code",
+				TokensAwaited:       true,
+				StartedAt:           startedAt,
+			}),
+			want: map[string]any{
+				"issue_id":              "id-1",
+				"issue_identifier":      "PROJ-1",
+				"display_identifier":    "acme/web#1",
+				"issue_title":           "Fix the login redirect",
+				"issue_url":             "https://acme.atlassian.net/browse/PROJ-1",
+				"issue_labels":          []any{"backend", "urgent"},
+				"state":                 "In Progress",
+				"session_id":            "sess-1",
+				"turn_count":            float64(4),
+				"workspace_path":        "/work/PROJ-1",
+				"ssh_host":              "build-1.example.test",
+				"workflow_file":         "backend.WORKFLOW.md",
+				"agent_kind":            "claude-code",
+				"self_review_active":    true,
+				"self_review_iteration": float64(2),
+				"tokens_awaited":        true,
+			},
 		},
 		{
-			name:           "DisplayID empty — Identifier unchanged, DisplayIdentifier empty",
-			id:             "PROJ-99",
-			dispID:         "",
-			wantIdentifier: "PROJ-99",
-			wantDisplayID:  "",
+			name: "retry",
+			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{
+				IssueID:    "id-2",
+				Identifier: "PROJ-2",
+				DisplayID:  "acme/web#2",
+				IssueTitle: "Retry me",
+				IssueURL:   "https://acme.atlassian.net/browse/PROJ-2",
+				Attempt:    3,
+				Error:      "agent timeout",
+			}),
+			want: map[string]any{
+				"issue_id":           "id-2",
+				"issue_identifier":   "PROJ-2",
+				"display_identifier": "acme/web#2",
+				"issue_title":        "Retry me",
+				"issue_url":          "https://acme.atlassian.net/browse/PROJ-2",
+				"attempt":            float64(3),
+				"error":              "agent timeout",
+			},
+		},
+		{
+			name: "budget exhausted",
+			body: toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{
+				IssueID:        "id-3",
+				Identifier:     "PROJ-3",
+				DisplayID:      "acme/web#3",
+				IssueTitle:     "Held by budget",
+				IssueURL:       "https://acme.atlassian.net/browse/PROJ-3",
+				Reason:         "session_budget",
+				UsedSessions:   3,
+				BudgetSessions: 3,
+			}),
+			want: map[string]any{
+				"issue_id":           "id-3",
+				"issue_identifier":   "PROJ-3",
+				"display_identifier": "acme/web#3",
+				"issue_title":        "Held by budget",
+				"issue_url":          "https://acme.atlassian.net/browse/PROJ-3",
+				"reason":             "session_budget",
+				"used_sessions":      float64(3),
+				"budget_sessions":    float64(3),
+			},
 		},
 	}
 
@@ -928,25 +998,25 @@ func TestToRunningEntryResponse_DisplayID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			entry := orchestrator.SnapshotRunningEntry{
-				IssueID:    "issue-x",
-				Identifier: tt.id,
-				DisplayID:  tt.dispID,
+			data, err := json.Marshal(tt.body)
+			if err != nil {
+				t.Fatalf("json.Marshal(%s row): %v", tt.name, err)
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatalf("json.Unmarshal(%s row): %v", tt.name, err)
 			}
 
-			got := toRunningEntryResponse(entry)
-
-			if got.IssueIdentifier != tt.wantIdentifier {
-				t.Errorf("IssueIdentifier = %q, want %q", got.IssueIdentifier, tt.wantIdentifier)
-			}
-			if got.DisplayIdentifier != tt.wantDisplayID {
-				t.Errorf("DisplayIdentifier = %q, want %q", got.DisplayIdentifier, tt.wantDisplayID)
+			for key, want := range tt.want {
+				if got := decoded[key]; !reflect.DeepEqual(got, want) {
+					t.Errorf("%s row JSON %q = %v, want %v", tt.name, key, got, want)
+				}
 			}
 		})
 	}
 }
 
-func TestToRetryEntryResponse_DisplayID(t *testing.T) {
+func TestToEntryResponses_DisplayID(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -976,22 +1046,14 @@ func TestToRetryEntryResponse_DisplayID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			entry := orchestrator.SnapshotRetryEntry{
-				IssueID:    "issue-y",
-				Identifier: tt.id,
-				DisplayID:  tt.dispID,
-				Attempt:    1,
-				DueAtMS:    time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC).UnixMilli(),
-				Error:      "timeout",
-			}
+			running := toRunningEntryResponse(orchestrator.SnapshotRunningEntry{IssueID: "issue-x", Identifier: tt.id, DisplayID: tt.dispID})
+			retry := toRetryEntryResponse(orchestrator.SnapshotRetryEntry{IssueID: "issue-y", Identifier: tt.id, DisplayID: tt.dispID})
 
-			got := toRetryEntryResponse(entry)
-
-			if got.IssueIdentifier != tt.wantIdentifier {
-				t.Errorf("IssueIdentifier = %q, want %q", got.IssueIdentifier, tt.wantIdentifier)
+			if running.IssueIdentifier != tt.wantIdentifier || retry.IssueIdentifier != tt.wantIdentifier {
+				t.Errorf("IssueIdentifier running, retry = %q, %q, want %q", running.IssueIdentifier, retry.IssueIdentifier, tt.wantIdentifier)
 			}
-			if got.DisplayIdentifier != tt.wantDisplayID {
-				t.Errorf("DisplayIdentifier = %q, want %q", got.DisplayIdentifier, tt.wantDisplayID)
+			if running.DisplayIdentifier != tt.wantDisplayID || retry.DisplayIdentifier != tt.wantDisplayID {
+				t.Errorf("DisplayIdentifier running, retry = %q, %q, want %q", running.DisplayIdentifier, retry.DisplayIdentifier, tt.wantDisplayID)
 			}
 		})
 	}

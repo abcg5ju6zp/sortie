@@ -15,6 +15,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/prompt"
+	"github.com/sortie-ai/sortie/internal/redact"
 	"github.com/sortie-ai/sortie/internal/registry"
 )
 
@@ -290,18 +291,20 @@ type RunningEntry struct {
 }
 
 // RetryEntry holds the runtime state for a pending retry. IssueID,
-// Identifier, Attempt, DueAtMS, and Error map to persistence.RetryEntry;
+// Identifier, DisplayID, IssueIdentity, Attempt, DueAtMS, and Error map to
+// persistence.RetryEntry;
 // the rest is runtime-only and reconstructed on startup from persisted
 // due_at timestamps.
 type RetryEntry struct {
-	IssueID     string
-	Identifier  string
-	DisplayID   string
-	SessionID   string
-	Attempt     int
-	DueAtMS     int64
-	Error       string
-	TimerHandle *time.Timer
+	IssueID       string
+	Identifier    string
+	DisplayID     string
+	IssueIdentity IssueIdentity
+	SessionID     string
+	Attempt       int
+	DueAtMS       int64
+	Error         string
+	TimerHandle   *time.Timer
 
 	// LastSSHHost is the SSH host from the previous attempt, passed as the
 	// preferred host to [HostPool.AcquireHost]. Runtime-only.
@@ -463,6 +466,10 @@ type PendingReaction struct {
 	Identifier string
 
 	DisplayID string
+
+	// IssueIdentity is the issue's title and link as read when the worker
+	// exited, or as restored from run history.
+	IssueIdentity IssueIdentity
 
 	// Attempt is the overall run attempt number from the completed worker.
 	Attempt int
@@ -732,6 +739,7 @@ type MergeCompletionReactionConfig struct {
 type BudgetExhaustedEntry struct {
 	Identifier         string // human-readable ticket key; empty when the candidate carried none
 	DisplayID          string // qualified form of Identifier; empty when Identifier is display-ready
+	IssueIdentity      IssueIdentity
 	Reason             string // budgetReasonSession or budgetReasonToken
 	UsedSessions       int    // completed sessions counted from run history
 	BudgetSessions     int    // configured agent.max_sessions; 0 means unlimited
@@ -760,6 +768,36 @@ type ParkedEntry struct {
 	Label        string // parking label the orchestrator applied
 	LabelApplied bool
 	ParkedAt     time.Time
+}
+
+// IssueIdentity names an issue to a person beside its key: the tracker's
+// title and web link as the orchestrator read them. The zero value holds no
+// read of the issue.
+type IssueIdentity struct {
+	Title string
+	URL   string
+}
+
+// issueIdentityOf returns the identity issue carries, unmasked.
+func issueIdentityOf(issue domain.Issue) IssueIdentity {
+	return IssueIdentity{Title: issue.Title, URL: issue.URL}
+}
+
+// maskedIdentity returns id with every secret registered for redaction
+// replaced by its marker.
+func maskedIdentity(id IssueIdentity) IssueIdentity {
+	return IssueIdentity{Title: redact.Mask(id.Title), URL: redact.Mask(id.URL)}
+}
+
+// maskedLabels returns a new slice of labels with every registered secret
+// replaced by its marker; it is empty and non-nil when labels is. State
+// keeps the unmasked labels because stage advancement reads them.
+func maskedLabels(labels []string) []string {
+	masked := make([]string, len(labels))
+	for i, label := range labels {
+		masked[i] = redact.Mask(label)
+	}
+	return masked
 }
 
 // StageLineage is the frozen stage.previous pair and chain identifier of a
@@ -1056,11 +1094,15 @@ func RunningCountByState(running map[string]*RunningEntry, state string) int {
 }
 
 // SnapshotRunningEntry is a read-only view of a running session, produced
-// by [RuntimeSnapshot].
+// by [RuntimeSnapshot]. IssueTitle, IssueURL, and IssueLabels are masked,
+// and IssueLabels is never nil.
 type SnapshotRunningEntry struct {
 	IssueID             string                    `json:"issue_id"`
 	Identifier          string                    `json:"issue_identifier"`
 	DisplayID           string                    `json:"display_identifier,omitempty"`
+	IssueTitle          string                    `json:"issue_title,omitempty"`
+	IssueURL            string                    `json:"issue_url,omitempty"`
+	IssueLabels         []string                  `json:"issue_labels"`
 	State               string                    `json:"state"`
 	SessionID           string                    `json:"session_id"`
 	TurnCount           int                       `json:"turn_count"`
@@ -1096,11 +1138,13 @@ type SnapshotRunningEntry struct {
 }
 
 // SnapshotRetryEntry is a read-only view of a pending retry, produced by
-// [RuntimeSnapshot].
+// [RuntimeSnapshot]. IssueTitle and IssueURL are masked.
 type SnapshotRetryEntry struct {
 	IssueID    string `json:"issue_id"`
 	Identifier string `json:"issue_identifier"`
 	DisplayID  string `json:"display_identifier,omitempty"`
+	IssueTitle string `json:"issue_title,omitempty"`
+	IssueURL   string `json:"issue_url,omitempty"`
 	Attempt    int    `json:"attempt"`
 	DueAtMS    int64  `json:"due_at_ms"`
 	Error      string `json:"error"`
@@ -1108,10 +1152,13 @@ type SnapshotRetryEntry struct {
 
 // SnapshotBudgetEntry is a read-only, value-copied view of one issue held
 // out of dispatch by a budget ceiling, produced by [RuntimeSnapshot].
+// IssueTitle and IssueURL are masked.
 type SnapshotBudgetEntry struct {
 	IssueID            string    `json:"issue_id"`
 	Identifier         string    `json:"issue_identifier"`
 	DisplayID          string    `json:"display_identifier,omitempty"`
+	IssueTitle         string    `json:"issue_title,omitempty"`
+	IssueURL           string    `json:"issue_url,omitempty"`
 	Reason             string    `json:"reason"`
 	UsedSessions       int       `json:"used_sessions"`
 	BudgetSessions     int       `json:"budget_sessions"`
@@ -1255,10 +1302,14 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			modelRequests = make(map[string]int, len(entry.RequestsByModel))
 			maps.Copy(modelRequests, entry.RequestsByModel)
 		}
+		identity := maskedIdentity(issueIdentityOf(entry.Issue))
 		snap.Running = append(snap.Running, SnapshotRunningEntry{
 			IssueID:             entry.Issue.ID,
 			Identifier:          entry.Identifier,
 			DisplayID:           entry.Issue.DisplayID,
+			IssueTitle:          identity.Title,
+			IssueURL:            identity.URL,
+			IssueLabels:         maskedLabels(entry.Issue.Labels),
 			State:               entry.Issue.State,
 			SessionID:           entry.SessionID,
 			TurnCount:           entry.TurnCount,
@@ -1304,10 +1355,13 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	}
 
 	for _, entry := range state.RetryAttempts {
+		identity := maskedIdentity(entry.IssueIdentity)
 		snap.Retrying = append(snap.Retrying, SnapshotRetryEntry{
 			IssueID:    entry.IssueID,
 			Identifier: entry.Identifier,
 			DisplayID:  entry.DisplayID,
+			IssueTitle: identity.Title,
+			IssueURL:   identity.URL,
 			Attempt:    entry.Attempt,
 			DueAtMS:    entry.DueAtMS,
 			Error:      entry.Error,
@@ -1329,10 +1383,13 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.BudgetExhaustedCount = len(state.BudgetExhausted)
 	budgetExhausted := make([]SnapshotBudgetEntry, 0, len(state.BudgetExhausted))
 	for id, entry := range state.BudgetExhausted {
+		identity := maskedIdentity(entry.IssueIdentity)
 		budgetExhausted = append(budgetExhausted, SnapshotBudgetEntry{
 			IssueID:            id,
 			Identifier:         entry.Identifier,
 			DisplayID:          entry.DisplayID,
+			IssueTitle:         identity.Title,
+			IssueURL:           identity.URL,
 			Reason:             entry.Reason,
 			UsedSessions:       entry.UsedSessions,
 			BudgetSessions:     entry.BudgetSessions,
