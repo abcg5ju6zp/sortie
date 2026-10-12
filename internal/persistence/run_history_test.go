@@ -639,8 +639,6 @@ func TestTokenUsageByIssue_QueryTokenBudgetUsage_StoppedInFlightParity(t *testin
 	}
 }
 
-// completionRun returns a run_history row for identifier carrying
-// completedAt, with the remaining fields from newTestRun.
 func completionRun(i int, identifier, completedAt string) RunHistory {
 	run := newTestRun(i)
 	run.Identifier = identifier
@@ -732,8 +730,6 @@ func TestLatestRunCompletionByIdentifier(t *testing.T) {
 	})
 }
 
-// countRun returns a run_history row for issueID carrying status and
-// completedAt, with the remaining fields from newTestRun.
 func countRun(i int, issueID, status, completedAt string) RunHistory {
 	run := newTestRun(i)
 	run.IssueID = issueID
@@ -742,7 +738,6 @@ func countRun(i int, issueID, status, completedAt string) RunHistory {
 	return run
 }
 
-// mustParseRFC3339 parses s as RFC3339 or fails the test.
 func mustParseRFC3339(t *testing.T, s string) time.Time {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339, s)
@@ -764,7 +759,7 @@ func TestCountWorkerRunsCompletedSince(t *testing.T) {
 	appendOrFatal(t, s, countRun(1, issueID, "succeeded", "2026-04-01T09:00:00Z")) // at bound, counts
 	appendOrFatal(t, s, countRun(2, issueID, "failed", "2026-04-01T10:00:00Z"))
 	appendOrFatal(t, s, countRun(3, issueID, "cancelled", "2026-04-01T11:00:00Z"))
-	appendOrFatal(t, s, countRun(4, issueID, "ci_failed", "2026-04-01T10:30:00Z")) // excluded by status
+	appendOrFatal(t, s, countRun(4, issueID, "ci_failed", "2026-04-01T10:30:00Z"))
 	appendOrFatal(t, s, countRun(5, issueID, "succeeded", "2026-03-31T23:59:59Z")) // before bound, excluded
 	appendOrFatal(t, s, countRun(6, "ISS-CWR-OTHER", "succeeded", "2026-04-01T12:00:00Z"))
 
@@ -810,8 +805,6 @@ func TestCountWorkerRunsCompletedSince(t *testing.T) {
 	})
 }
 
-// TestLoadLatestSuccessfulRunsForReactionRecovery_ExcludesNeedsPerson pins
-// that a needs_person row is not a success and is excluded from recovery.
 func TestLoadLatestSuccessfulRunsForReactionRecovery_ExcludesNeedsPerson(t *testing.T) {
 	t.Parallel()
 
@@ -837,5 +830,69 @@ func TestLoadLatestSuccessfulRunsForReactionRecovery_ExcludesNeedsPerson(t *test
 	}
 	if got[0].IssueID != eligible.IssueID {
 		t.Errorf("LoadLatestSuccessfulRunsForReactionRecovery().IssueID = %q, want %q", got[0].IssueID, eligible.IssueID)
+	}
+}
+
+func dispatchRun(i int, issueID, adapter string) RunHistory {
+	run := RunHistory{
+		IssueID: issueID, AgentAdapter: adapter, RuleName: fmt.Sprintf("rule-%d", i), ConfiguredModel: fmt.Sprintf("model-%d", i),
+		StagePrevious: fmt.Sprintf("previous-%d", i), StagePreviousOutcome: fmt.Sprintf("outcome-%d", i),
+		ChainID: fmt.Sprintf("chain-%d", i), DispatchedAt: fmt.Sprintf("2026-03-19T09:%02d:00Z", i),
+	}
+	if adapter == "" {
+		run.Status = "ci_failed"
+	}
+	return run
+}
+
+func TestLatestAgentRuns(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		seed []RunHistory
+		ask  []string
+		want []int
+	}{
+		{
+			name: "newest agent run per issue, skipping ci_failed, agentless, and unasked issues",
+			seed: []RunHistory{
+				dispatchRun(1, "ISS-A", "mock"),
+				dispatchRun(2, "ISS-A", "mock"),
+				dispatchRun(3, "ISS-A", ""),
+				dispatchRun(4, "ISS-B", ""),
+				dispatchRun(5, "ISS-E", "mock"),
+				dispatchRun(6, "ISS-UNASKED", "mock"),
+			},
+			ask:  []string{"ISS-A", "ISS-B", "ISS-E", "ISS-NO-ROWS"},
+			want: []int{1, 4},
+		},
+		{
+			name: "empty ask",
+			seed: []RunHistory{dispatchRun(1, "ISS-A", "mock")},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := openTestStore(t)
+			migrateOrFatal(t, s)
+			appended := make([]RunHistory, len(tt.seed))
+			for i, run := range tt.seed {
+				appended[i] = appendOrFatal(t, s, run)
+			}
+			want := map[string]RunHistory{}
+			for _, i := range tt.want {
+				want[appended[i].IssueID] = appended[i]
+			}
+
+			got, err := s.LatestAgentRuns(context.Background(), tt.ask)
+
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Errorf("LatestAgentRuns(%v) = %+v, %v, want %+v, nil", tt.ask, got, err, want)
+			}
+		})
 	}
 }

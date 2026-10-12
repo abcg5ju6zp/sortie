@@ -95,6 +95,17 @@ func (s *Store) MarkStageHopObserved(ctx context.Context, issueID string) error 
 	return nil
 }
 
+// MarkStageHopDispatched sets run_dispatched for the given issue ID. It is a
+// no-op, not an error, when no row exists for that issue ID.
+func (s *Store) MarkStageHopDispatched(ctx context.Context, issueID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE stage_hops SET run_dispatched = 1 WHERE issue_id = ?`, issueID)
+	if err != nil {
+		return fmt.Errorf("mark stage hop dispatched %q: %w", issueID, err)
+	}
+	return nil
+}
+
 // DeleteStageHop removes the hop record for the given issue ID. It is a
 // no-op, not an error, when no row exists for that issue ID.
 func (s *Store) DeleteStageHop(ctx context.Context, issueID string) error {
