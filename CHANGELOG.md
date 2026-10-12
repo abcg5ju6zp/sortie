@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The JSON API (`/api/v1/state` and `/api/v1/{identifier}`) now lists the pull request reactions each issue waits on, such as CI, review comments, bot reviews, merge conflicts, auto-merge, merge completion, and label commands, each with its pull request and link, why it waits and when it checks next, how many tries it used of its limit where it has one, what its last check saw (the failing CI checks and how many checks fail, wait, or pass; how many review comments it found and how many of those Sortie has yet to act on; whether the pull request has merge conflicts), and when it escalated. `/api/v1/{identifier}` answers for an issue that only waits on a reaction instead of reporting it unknown. ([#1288](https://github.com/sortie-ai/sortie/issues/1288))
 
+- The JSON API (`/api/v1/state`) now shows the issue type, labels, and tracker state of each running, retrying, and budget-held issue, and a retrying issue keeps them across a restart. `/api/v1/{identifier}` also answers with a top-level `issue` object giving the issue's title, link, type, labels, and state. ([#1311](https://github.com/sortie-ai/sortie/issues/1311))
+
 ### Fixed
 
 - Jira issue links no longer include a user name and password written into `tracker.endpoint`, so the link opens and an agent prompt that shows it no longer exposes them. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
