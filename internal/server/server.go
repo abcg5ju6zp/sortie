@@ -88,6 +88,10 @@ type Params struct {
 	// GET /api/v1/state and GET /api/v1/{identifier}.
 	SnapshotFn SnapshotFunc
 
+	// WorkflowShapeFn returns the effective workflow shape. Called on
+	// each GET /api/v1/state; nil omits config.
+	WorkflowShapeFn func() orchestrator.WorkflowShape
+
 	// RefreshFn signals an immediate poll+reconciliation cycle.
 	// Called on POST /api/v1/refresh.
 	RefreshFn RefreshFunc
@@ -146,15 +150,16 @@ type Params struct {
 // metrics endpoints. Construct via [New]. Safe for concurrent use
 // after construction.
 type Server struct {
-	httpServer    *http.Server
-	mux           *http.ServeMux
-	logger        *slog.Logger
-	snapshotFn    SnapshotFunc
-	refreshFn     RefreshFunc
-	dashboardTmpl *template.Template
-	version       string
-	startedAt     time.Time
-	slotFunc      SlotFunc
+	httpServer      *http.Server
+	mux             *http.ServeMux
+	logger          *slog.Logger
+	snapshotFn      SnapshotFunc
+	refreshFn       RefreshFunc
+	workflowShapeFn func() orchestrator.WorkflowShape
+	dashboardTmpl   *template.Template
+	version         string
+	startedAt       time.Time
+	slotFunc        SlotFunc
 
 	drainingFlag     atomic.Bool
 	dbPingFn         DBPingFunc
@@ -198,6 +203,7 @@ func New(params Params) *Server {
 		logger:           logger,
 		snapshotFn:       params.SnapshotFn,
 		refreshFn:        params.RefreshFn,
+		workflowShapeFn:  params.WorkflowShapeFn,
 		dashboardTmpl:    tmpl,
 		version:          params.Version,
 		startedAt:        params.StartedAt,

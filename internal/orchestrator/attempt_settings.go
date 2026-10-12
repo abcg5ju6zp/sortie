@@ -29,10 +29,7 @@ func (o *Orchestrator) resolveAttemptSettings(cfg config.ServiceConfig, selectio
 		filepath.Dir(o.workflowManager.WorkflowAbsPath()))
 	meta, registered := o.preflightParams.AgentRegistry.Meta(selection.AgentKind)
 
-	arrival, attribution := registry.UsageArrivalUndeclared, registry.UsageAttributionUndeclared
-	if registered {
-		arrival, attribution = meta.UsageDisposition(settings.Passthrough, sshHost != "")
-	}
+	arrival, attribution := usageDisposition(meta, registered, settings.Passthrough, sshHost != "")
 	refusals, _ := settingsDiagnostics(cfg, meta, registered, settings, sshHost != "")
 
 	return AttemptSettings{
@@ -41,6 +38,16 @@ func (o *Orchestrator) resolveAttemptSettings(cfg config.ServiceConfig, selectio
 		UsageAttribution: attribution,
 		Refusals:         refusals,
 	}
+}
+
+// usageDisposition returns the usage arrival and attribution a session of
+// meta reports under passthrough, the undeclared pair for a kind the
+// registry does not hold.
+func usageDisposition(meta registry.AgentMeta, registered bool, passthrough map[string]any, remote bool) (registry.UsageArrival, registry.UsageAttribution) {
+	if !registered {
+		return registry.UsageArrivalUndeclared, registry.UsageAttributionUndeclared
+	}
+	return meta.UsageDisposition(passthrough, remote)
 }
 
 // settingsDiagnostics runs every check that reads a resolved settings

@@ -123,6 +123,7 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
 - `budget_exhausted` (list of blocked-issue records, sorted by identifier; always present, empty when the set is empty). Each record carries the issue's ID and identifier, the reason (`token_budget` or `session_budget`; `token_budget` takes precedence over `session_budget` when one issue reaches both gates), the used and budgeted session and token counts, the count of the issue's sessions the token ceiling stopped in flight (present only when the token ceiling was evaluated for the issue), the time the hold began, and the issue's title and tracker link. The title and link come from the read of the poll tick that last rebuilt the set, or from the retry the hold was found on until the next tick. The set is rebuilt per tick from those two gates (Section 8.4) and also updated by the retry lane when it discovers a hold between ticks.
 - `parked_count` (number of issues currently held out of primary dispatch; always present)
 - `parked` (list of park records, sorted by identifier and then issue ID; always present, empty when no issue is parked). Each record carries the issue's ID and identifier, the display identifier when the tracker needs a qualified form, the issue's title and tracker link, the reason (`agent_blocked` or `handoff_absence`), the tracker state observed when the park was recorded, the parking label the orchestrator applied, whether a read has shown that label on the issue, and the time the park was recorded. The title, link, and state are masked as Section 15.3 states, in the snapshot rather than in the state they are copied from. The park persists the title and link and restores them at startup. A park that holds no read of its issue, because it was recorded or restored without one, takes the first read the orchestrator takes of the issue: the next poll tick's candidate, or one single-issue read when the candidate fetch omits the issue and the batched state read of the release step finds it (Section 8.1). A read already held is never replaced or read again
+- `config` (the effective workflow shape: the tracker states, the dispatch rules in order with how each is selected, the stage chains their `next` links form, the hop ceiling, the reaction kinds the process applies with their limits, escalation, and timing, the token rates, the session and token budgets, the poll interval, the concurrency caps, the SSH hosts, and whether each agent selection reports token usage). It reports the configuration in force after the last successful load, except that a reaction appears exactly when the process applies it, with the settings it applies, and the token rates are the ones the process started with. It carries no credential. Section 13.7.2 gives the keys and how to read them
 
 Recommended snapshot error modes:
 
@@ -214,7 +215,7 @@ Provide a JSON REST API under `/api/v1/*` for current runtime state and operatio
 Minimum endpoints:
 
 - `GET /api/v1/state`
-  - Returns a summary view of the current system state (running sessions, retry queue/delays, aggregate token/runtime totals, latest rate limits, and any additional tracked summary fields).
+  - Returns a summary view of the current system state (running sessions, retry queue/delays, aggregate token/runtime totals, latest rate limits, the effective workflow shape, and any additional tracked summary fields).
   - Suggested response shape:
 
     ```json
@@ -337,7 +338,39 @@ Minimum endpoints:
         "running_unreported": 1,
         "running_non_reporting": 1
       },
-      "rate_limits": null
+      "rate_limits": null,
+      "config": {
+        "tracker": {"kind": "jira", "active_states": ["To Do", "In Progress"], "in_progress_state": "In Progress", "handoff_state": "In Review", "terminal_states": ["Done"]},
+        "polling": {"interval_ms": 30000},
+        "agent": {
+          "kind": "claude-code", "usage_arrival": "incremental", "max_turns": 20, "stall_timeout_ms": 300000,
+          "max_retry_backoff_ms": 300000, "max_sessions": 6, "max_tokens": null,
+          "max_concurrent_agents": 6, "max_concurrent_agents_by_state": {}
+        },
+        "worker": {"ssh_hosts": [], "max_concurrent_agents_per_host": null},
+        "dispatch": {
+          "rules": [
+            {"name": "specify", "selected_by": "match", "match": {"issue_type": ["Story"]}, "next": "implement", "agent_kind": "claude-code", "usage_arrival": "incremental"},
+            {"name": "implement", "selected_by": "stage", "stage": "stage-implement", "agent_kind": "claude-code", "usage_arrival": "incremental"},
+            {"name": "deps", "selected_by": "match", "match": {"labels": ["dependencies"], "priority": {"op": "lte", "value": 2}}, "agent_kind": "codex", "usage_arrival": "incremental"},
+            {"name": "everything", "selected_by": "catch_all", "agent_kind": "claude-code", "usage_arrival": "incremental"}
+          ],
+          "default": null,
+          "chains": [["specify", "implement"]],
+          "max_consecutive_hops": null,
+          "hop_ceiling": 10
+        },
+        "reactions": {
+          "ci_failure": {"max_retries": 2, "escalation": "label", "escalation_label": "needs-human"},
+          "review_comments": {"max_continuation_turns": 3, "debounce_ms": 60000, "poll_interval_ms": 120000, "escalation": "label", "escalation_label": "needs-human"},
+          "bot_review": {"max_continuation_turns": 5, "poll_interval_ms": 60000, "bot_usernames": ["review-bot"], "escalation": "none"},
+          "auto_merge": {"strategy": "squash", "require_ci": true, "delete_branch": true, "poll_interval_ms": 60000, "max_retries": null, "escalation": "label", "escalation_label": "needs-human"}
+        },
+        "token_rates": {
+          "claude-code": {"input_per_mtok": 3.0, "output_per_mtok": 15.0, "cache_read_per_mtok": 0.3, "cache_write_per_mtok": null, "complete": true},
+          "codex": {"input_per_mtok": 2.5, "output_per_mtok": null, "cache_read_per_mtok": null, "cache_write_per_mtok": null, "complete": false}
+        }
+      }
     }
     ```
 
@@ -464,6 +497,21 @@ API design notes:
   - `reason` is `agent_blocked` or `handoff_absence`. `parked_state` is the tracker state observed when the park was recorded, or at the first observation after a park recorded before any read, omitted while unobserved and masked. `label` is the parking label the orchestrator applied, served unmasked because it is configuration, and `label_applied` is true once a read showed the label on the issue. `parked_at` is the time the park was recorded, in UTC.
   - The list is sorted by identifier and then issue ID, and `counts.parked` equals its length. An issue appears in every list whose set holds it: a parked issue with a review continuation queued is in `parked` and `retrying` both.
 - `active_estimated_cost_usd`, an implementation extension beyond the baseline shape above, sums the estimated cost of running, measured sessions whose agent kind has a configured token rate; it is omitted when no running, measured session prices. `cost_unpriced_running` sits beside it and counts the running, measured sessions the sum leaves out for want of a rate. It is present, zero included, whenever `token_rates` holds an entry for any agent kind, complete or not, and omitted otherwise, so its presence alone tells a consumer whether cost pricing is configured at all. While `token_rates` holds an entry for any agent kind, `active_estimated_cost_usd` equals the sum of `estimated_cost_usd` over the running rows whose `cost_status` is `estimated` (and is absent when no row is), and `cost_unpriced_running` equals the count of rows whose `cost_status` is `unpriced`.
+- `config` on `GET /api/v1/state` is the workflow shape in effect, so a client draws the rules, stages, and reactions the workflow has and assumes none it lacks. The key is additive; no existing key changes name, type, or meaning.
+  - `config` reports the configuration promoted at the last successful load, kept when a reload fails. A setting whose change needs a restart reports what the process applies: every reaction except `ci_failure` is the one built at startup, and `token_rates` are the rates the process started with. So `config` names no reaction a reload added and keeps naming one a reload removed, until the restart that applies the edit.
+  - The poll loop copies budgets, concurrency caps, and SSH hosts into its own state at its next tick, so for at most one poll interval after a reload `agent.max_tokens` and `agent.max_sessions` in `config` can lead a running row's `budget_tokens` and `budget_sessions`. A client shows a row's own budget keys on that row, and the `config` values where it describes the workflow.
+  - A member whose setting imposes no ceiling serves `null`, present and never `0`: `agent.stall_timeout_ms`, `agent.max_sessions`, `agent.max_tokens`, `worker.max_concurrent_agents_per_host`, and the auto-merge `max_retries`, where `0` turns count-based escalation off. The other `max_retries` members serve the value held, `0` included: a merge-conflict `0` escalates on the first detection. `max_turns` is the limit a session applies, so a configured value below 1 serves as 1.
+  - `tracker.in_progress_state`, `tracker.handoff_state`, and `tracker.no_change_state` are omitted when unset. A list member is `[]` when empty, and `max_concurrent_agents_by_state` is `{}`. Its keys are lowercase states and its caps are positive.
+  - `dispatch.rules` lists the rules in configuration order, which is the order match rules are tried; a rule selected by its stage label is chosen ahead of them. `selected_by` is `stage` for a rule that carries a stage label, `catch_all` for a rule with no `match` block that takes every remaining issue, and `match` otherwise. `stage` appears only on a `stage` rule. `match` appears only on a `match` rule and holds each non-empty predicate as written: `labels`, `issue_type`, `title`, `identifier`, and `assignee` as lists, and `priority` as `op` with `value`, or `op` `in` with `values`. `name` and `next` are omitted when the rule has none. Each rule carries the `agent_kind` dispatch resolves for it.
+  - `dispatch.default` holds `agent_kind` and `usage_arrival` when the `dispatch.default` block names an agent or a template, and is `null` otherwise. Running, retry, and run-history rows name this selection `default`; a row with no `rule_name` ran on the workflow-wide fallback, which `agent` describes. A catch-all rule takes every issue that no stage rule and no earlier match rule takes, so while one is configured neither `dispatch.default` nor the workflow-wide fallback selects an issue. `config` still serves both, and a client draws no dispatch path through them.
+  - `dispatch.chains` lists each stage chain the `next` links form, as rule names in `next` order. A chain starts at a rule that carries `next` and that no `next` names, the chains follow the order of the rules that start them, and a walk stops at a rule without `next`, at a `next` that names no rule, or before a repeated rule. Chains that share a tail list it in each chain. A rule that carries no `next` and that no `next` names belongs to no chain. The list is `[]` when no rule carries `next`.
+  - `dispatch.max_consecutive_hops` is the value WORKFLOW.md writes and `null` when the key is absent. `dispatch.hop_ceiling` is the limit a worker exit compares: the written value, or the larger of 10 and the hop count of the longest chain. With no chain no hop occurs, and `hop_ceiling` reports the ceiling a reload that adds `next` would apply.
+  - `usage_arrival` appears on `agent` for the workflow-wide fallback, on `dispatch.default`, and on each rule. It is resolved the way a session resolves it at its start: the kind's declaration, the selection's settings block, and the launch mode, so one kind can report under one rule and report nothing under another. Its values are those of a running row: `incremental`, `turn_end`, `none`, or `""` for a kind the registry does not hold or that declares nothing. A selection reports token usage exactly when the value is `incremental` or `turn_end`. The launch mode is remote exactly when `worker.ssh_hosts` is non-empty, because with hosts configured every dispatch takes one, so a kind that reports nothing over SSH serves `none` while hosts are configured. `worker.ssh_hosts` lists each host once, in the order written, and is `[]` in local mode.
+  - `reactions` holds a member per reaction kind the process applies, keyed as in WORKFLOW.md, and is `{}` when it applies none; its key order carries no meaning. A retry row's `reaction_config_key` names a member of it. `ci_failure` is present exactly while the process runs the CI check, which needs both a CI provider and a source-control adapter. Every other kind is present exactly when it was configured at startup, and `label_commands` when the review command or the fix command was. Each member carries the limits and timing its kind applies: `max_retries` for `ci_failure`, `merge_conflicts`, `auto_merge`, and `merge_completion`; `max_continuation_turns` for `review_comments` and `bot_review`; `debounce_ms` for `review_comments`; `bot_usernames` for `bot_review`; `strategy`, `require_ci`, and `delete_branch` for `auto_merge`; `target_state` for `merge_completion`; and `poll_interval_ms` for every kind except `ci_failure`.
+  - `escalation` is the mode a reaction applies: `label`, `comment`, or `none`. `escalation_label` is present exactly when `escalation` is `label`, and holds the label the reaction applies: the configured value, or `needs-human` where the block writes none. `ci_failure` reads its block on every tick, so when the configuration in force carries no `ci_failure` block while the CI check still runs from startup, it serves `escalation` `none` and `max_retries` `0`, which is what the check applies. `label_commands` has no escalation members; it carries `review_label` while the review command is configured and `fix_label` while the fix command is, and both commands share its one `poll_interval_ms`.
+  - `config.token_rates` is `null` when the process started with no entry, which is how the shape says `token_rates` is not configured. Otherwise it holds a member per entry keyed by the agent kind as written, with each `*_per_mtok` rate (`null` when not set) and `complete`, true exactly when `input_per_mtok` and `output_per_mtok` are both set, the condition under which a session is priced. An unset cache rate prices that class at the input rate, and `config` serves the configured `null`, never the substituted rate.
+  - `config` is an allowlist of typed settings and holds no credential: it carries no tracker endpoint, key, or query filter, no agent command, hook, workspace or database path, or notification destination, no reaction extra key or triage script, and no settings block. Its configuration strings are served unmasked, as the parked `label` is, because they are configuration.
+  - A row's `rule_name`, `stage_lineage.previous`, and `reaction_config_key` are those in force when its run was dispatched or the row was stored, while `config` follows the rule above, so each can name a member `config` does not hold. A reload that renames or removes a rule leaves running and retry rows naming it, as does a restart on the edited file for the retry rows it restores, and a row whose `rule_name` is `default` keeps it while `dispatch.default` serves `null`. A client then draws the row from the row's own keys.
 - Endpoints should be read-only except for operational triggers like `/refresh`.
 - Unsupported methods on defined routes should return `405 Method Not Allowed`.
 - API errors should use a JSON envelope such as `{"error":{"code":"...","message":"..."}}`.

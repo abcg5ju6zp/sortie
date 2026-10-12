@@ -390,6 +390,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `sortie validate` on a workflow naming a retired kind yields the `valid` value and exit code of its converted form written by hand, exactly one `agent.kind.retired` warning in both output formats, and no deprecation warning
 - Across three ticks on an unchanged configuration the run log carries one `Warn` record for the retired-kind advisory, and building the configuration logs nothing
 - Removing the retired-kind advisory makes a test fail
+- The state route's workflow shape lists the dispatch rules in configuration order with how each is selected, the chains in `next` order, and only the reaction kinds the process applies, and no credential value from any configuration location appears in it
 
 ### 17.7 CLI and Host Lifecycle
 

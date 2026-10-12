@@ -871,6 +871,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		srv = server.New(server.Params{
 			SnapshotFn:       o.SnapshotFunc(),
 			RefreshFn:        o.RefreshFunc(),
+			WorkflowShapeFn:  o.WorkflowShape,
 			Logger:           br.logger,
 			Addr:             addr,
 			Version:          Version,

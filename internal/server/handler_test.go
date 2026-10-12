@@ -2047,7 +2047,6 @@ func TestHandleState(t *testing.T) {
 		}
 		defer func() { _ = resp.Body.Close() }()
 
-		// Decode as raw JSON to check for null vs [].
 		raw, err := io.ReadAll(resp.Body)
 		if err != nil {
 			t.Fatalf("read body: %v", err)
@@ -2070,9 +2069,6 @@ func TestHandleState(t *testing.T) {
 	})
 }
 
-// TestHandleState_Budget fails if the reason or its numbers stop reaching
-// the JSON API, or if a surface this change adds names a setting as a
-// thing to change.
 func TestHandleState_Budget(t *testing.T) {
 	t.Parallel()
 
