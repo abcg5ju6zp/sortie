@@ -67,11 +67,11 @@ Inside the handler, `/ui/assets/*` is a strict file server that returns 404 for 
 default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'
 ```
 
-`style-src 'self'` excludes any library that injects `<style>` elements at runtime.
+`style-src 'self'` blocks `<style>` elements and `style` attributes written as strings, in markup or through `setAttribute`. It does not block styles set through the CSSOM, which is how React applies the `style` prop, so libraries that position elements through that prop keep working. A library that injects `<style>` elements or writes `style` attributes as strings is excluded.
 
 ### Type contract
 
-A Go test in the server package, standard library only, walks the response types from each route's root type with `reflect`, follows `encoding/json`'s rules (a pointer without `omitempty` is `T | null`, with it `field?: T`; nil slices and maps are `null`; a type with its own `MarshalJSON` fails the test until it is mapped), and emits TypeScript declarations and a JSON Schema 2020-12 document. It compares both with the committed copies, and an update flag rewrites them. A Go-only contributor who changes a response type sees a red `go test` and regenerates without Node. If the change breaks code the dashboard uses, the dashboard's type check fails, which is correct because that change needs a TypeScript edit anyway.
+A Go test in the server package, standard library only, walks the response types from each route's root type with `reflect`, follows `encoding/json`'s rules (a pointer, slice, or map without `omitempty` is `T | null`, because nil encodes as `null`; with `omitempty` it is `field?: T`, because nil, and an empty slice or map, is omitted; a type with its own `MarshalJSON` fails the test until it is mapped), and emits TypeScript declarations and a JSON Schema 2020-12 document. It compares both with the committed copies, and an update flag rewrites them. A Go-only contributor who changes a response type sees a red `go test` and regenerates without Node. If the change breaks code the dashboard uses, the dashboard's type check fails, which is correct because that change needs a TypeScript edit anyway.
 
 ### Design tokens and accessibility
 
@@ -147,6 +147,7 @@ ADR-0006 states that any addition must be pure Go with no CGo, and ADR-0008 fram
 ### Negative
 
 - **Concurrent dashboard pull requests conflict on the committed output.** Content-hashed names cascade, so almost every change rewrites the entry chunk. Resolution is mechanical (take either side, rebuild, commit) and the drift gate rejects a hand merge, but every such conflict costs a rebuild.
+- **The drift gate is not a required check.** A pull request whose committed output is stale shows a red dashboard job but can still merge, and the binary then embeds the stale output until the next rebuild.
 - **Dependabot npm updates that change the bundle turn the drift gate red** and need a rebuild before merge.
 - **React carries the largest runtime of the candidates**, about 115 KiB gzip for React, a router, a dialog, and a virtual list before application code, which leaves modest headroom under the initial-load budget, and React has the slowest renderer of the mainstream frameworks. Neither matters at a LAN dashboard's scale, but the budget will be felt.
 - **Hook rules are a recurring bug source** (stale closures, dependency arrays); lint enforcement mitigates it, not removes it.
