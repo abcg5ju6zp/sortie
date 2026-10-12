@@ -1292,8 +1292,11 @@ func (o *Orchestrator) fillRetryIdentity(candidates []domain.Issue) {
 
 // refreshParkedIssues evaluates the release rule against this tick's
 // candidates, then against every parked issue the candidate slice omits,
-// read through one batched, comment-free tracker call. Must run on the
-// event loop after the budget rebuild and before the dispatch loop.
+// read through one batched, comment-free tracker call. A park that still
+// holds no read of its issue takes the candidate's, or, when the candidates
+// omit the issue and the batched read finds it, one single-issue read. Must
+// run on the event loop after the budget rebuild and before the dispatch
+// loop.
 func (o *Orchestrator) refreshParkedIssues(ctx context.Context, candidates []domain.Issue) {
 	if len(o.state.Parked) == 0 {
 		return
@@ -1310,6 +1313,7 @@ func (o *Orchestrator) refreshParkedIssues(ctx context.Context, candidates []dom
 			continue
 		}
 		observeParkedLabels(ctx, o.state, o.store, o.logger, entry, issue.ID, issue.Labels)
+		o.backfillParkedIdentity(ctx, issue.ID, entry, issue)
 	}
 
 	missing := make([]string, 0, len(o.state.Parked))
@@ -1340,7 +1344,41 @@ func (o *Orchestrator) refreshParkedIssues(ctx context.Context, candidates []dom
 		if !found {
 			continue
 		}
-		observeParkedState(ctx, o.state, o.store, o.logger, entry, id, observed)
+		if !observeParkedState(ctx, o.state, o.store, o.logger, entry, id, observed) {
+			continue
+		}
+		if entry.IssueIdentity != (IssueIdentity{}) {
+			continue
+		}
+		issue, err := o.trackerAdapter.FetchIssueByID(ctx, id)
+		if err != nil {
+			logging.WithIssue(o.logger, id, entry.Identifier).Warn(
+				"parked issue identity read failed, retrying next tick",
+				slog.Any("error", err),
+			)
+			continue
+		}
+		o.backfillParkedIdentity(ctx, id, entry, issue)
+	}
+}
+
+// backfillParkedIdentity stores the identity of issue on a park that holds
+// no read and is still parked. A read that names nothing leaves the park as
+// it was.
+func (o *Orchestrator) backfillParkedIdentity(ctx context.Context, id string, entry *ParkedEntry, issue domain.Issue) {
+	if o.state.Parked[id] != entry || entry.IssueIdentity != (IssueIdentity{}) {
+		return
+	}
+	identity := issueIdentityOf(issue)
+	if identity == (IssueIdentity{}) {
+		return
+	}
+	entry.IssueIdentity = identity
+	if err := o.store.UpsertParkedIssue(ctx, parkedIssueRow(id, entry)); err != nil {
+		logging.WithIssue(o.logger, id, entry.Identifier).Error(
+			"failed to persist park identity backfill",
+			slog.Any("error", err),
+		)
 	}
 }
 
@@ -1386,6 +1424,7 @@ func (o *Orchestrator) parkExhaustedAbsences(ctx context.Context, cfg config.Ser
 			issue.ID,
 			issue.Identifier,
 			issue.DisplayID,
+			issueIdentityOf(issue),
 			issue.State,
 			count,
 			ceiling,

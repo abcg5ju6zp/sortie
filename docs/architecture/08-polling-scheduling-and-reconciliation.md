@@ -15,7 +15,7 @@ Tick sequence:
 5. Fetch candidate issues from tracker using active states.
 6. Sort issues by dispatch priority.
 7. Rebuild the exhausted-issue set from the session and token ceilings (§14.2).
-8. Evaluate the release rule for every parked issue (§14.2): observe the tick's candidates directly for a state change or a confirmed parking label's removal, then read the tracker state of the parked issues the candidate fetch did not return, through one batched, comment-free call. This is the only tracker call this step makes beyond the candidate fetch in step 5; it is skipped when every parked issue is already a candidate.
+8. Evaluate the release rule for every parked issue (§14.2): observe the tick's candidates directly for a state change or a confirmed parking label's removal, then read the tracker state of the parked issues the candidate fetch did not return, through one batched, comment-free call. A park that holds no read of its issue, because it was recorded or restored without one, takes the read of this step: the candidate's when the candidates list the issue, otherwise one single-issue read when the batched state read finds it. That read is made once per park unless it fails, in which case the next tick tries again. Beyond the candidate fetch in step 5, the batched state read and this single-issue read are the only tracker calls this step makes; the batched read is skipped when every parked issue is already a candidate.
 9. Park each candidate whose consecutive handoff-absence count has just reached the ceiling (§14.2), skipped entirely under `tracker.handoff_evidence: off`.
 10. Dispatch eligible issues while slots remain. For a candidate whose tracker adapter declares the per-issue blocker source, this step may read that one candidate's blocker list, bounded by the per-pass read budget and its rotating window (§8.2); a candidate the budget or window excludes this tick is held rather than dispatched. A candidate that holds a stage hop record whose target label no read has yet shown passes the stage hop hold below after it is admitted and before its rule is selected.
 11. Notify observability/status consumers of state changes.
@@ -79,7 +79,8 @@ Optional SSH host limit:
 Retry entry creation:
 
 - The caller checks the retry slot first (Section 7.5): a challenger consults the slot and schedules only when it is free. The cancellation the primitive performs internally is a backstop for a call site that skipped the check, not the primitive's own contract.
-- Store `attempt`, `identifier`, `error`, `due_at_ms`, `session_id` (continuation retries propagate the session ID from the exiting worker; error and reaction retries leave it null), and new timer handle.
+- Store `attempt`, `identifier`, `error`, `trigger` (the `sortie_retries_total` label of the schedule, empty for a reaction continuation that records none), `due_at_ms`, `session_id` (continuation retries propagate the session ID from the exiting worker; error and reaction retries leave it null), and new timer handle.
+- A reschedule by the retry timer records the trigger `timer` and its own reason as the error, never the error of the retry it replaces. The reasons are listed in Section 13.7.2.
 
 Backoff formula:
 

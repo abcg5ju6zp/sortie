@@ -257,6 +257,8 @@ func TestParkSurvivesRestart(t *testing.T) {
 	}
 
 	state := exitStateWithIssue(t, issueID, "In Progress")
+	state.Running[issueID].Issue.Title = "Restart title"
+	state.Running[issueID].Issue.URL = "https://tracker.test/PROJ-RESTART"
 	params := HandleWorkerExitParams{
 		Store:               store,
 		MaxRetryBackoffMS:   300_000,
@@ -290,6 +292,9 @@ func TestParkSurvivesRestart(t *testing.T) {
 
 	if _, ok := fresh.Parked[issueID]; !ok {
 		t.Fatal("PopulateParked did not restore the park after the restart")
+	}
+	if got := RuntimeSnapshot(fresh, baseTime).Parked; len(got) != 1 || got[0].IssueTitle != "Restart title" || got[0].IssueURL != "https://tracker.test/PROJ-RESTART" {
+		t.Errorf("restored park snapshot = %+v, want title %q and link %q", got, "Restart title", "https://tracker.test/PROJ-RESTART")
 	}
 
 	candidate := domain.Issue{ID: issueID, Identifier: "PROJ-RESTART", Title: "T", State: "In Progress"}
@@ -440,4 +445,111 @@ func TestRefreshParkedIssuesNonCandidateStateRead(t *testing.T) {
 			t.Errorf("missing read-failure warning\nlogs: %s", logs.String())
 		}
 	})
+}
+
+func TestRefreshParkedIssuesIdentityBackfill(t *testing.T) {
+	t.Parallel()
+
+	const id = "BACKFILL-1"
+	held := IssueIdentity{Title: "held title", URL: "https://tracker.test/held"}
+	read := domain.Issue{ID: id, Title: "read title", URL: "https://tracker.test/read"}
+	readIdentity := IssueIdentity{Title: read.Title, URL: read.URL}
+
+	tests := []struct {
+		name         string
+		held         IssueIdentity
+		candidates   []domain.Issue
+		observed     string
+		readErr      error
+		wantIdentity IssueIdentity
+		wantParked   bool
+		wantReads    []string
+		wantRows     []IssueIdentity
+	}{
+		{
+			name:         "candidate listing the issue supplies the identity",
+			candidates:   []domain.Issue{{ID: id, Title: read.Title, URL: read.URL, State: "In Progress"}},
+			observed:     "In Progress",
+			wantIdentity: readIdentity,
+			wantParked:   true,
+			wantRows:     []IssueIdentity{readIdentity},
+		},
+		{
+			name:         "issue the candidates omit takes one single-issue read",
+			observed:     "In Progress",
+			wantIdentity: readIdentity,
+			wantParked:   true,
+			wantReads:    []string{id},
+			wantRows:     []IssueIdentity{readIdentity},
+		},
+		{
+			name:         "held identity is kept and not read again",
+			held:         held,
+			observed:     "In Progress",
+			wantIdentity: held,
+			wantParked:   true,
+		},
+		{
+			name:     "park released by the state rule is neither read nor written",
+			observed: "Done",
+		},
+		{
+			name:       "failed single-issue read leaves the park as it was",
+			observed:   "In Progress",
+			readErr:    errors.New("tracker unavailable"),
+			wantParked: true,
+			wantReads:  []string{id},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := NewState(1000, 1, 0, nil, AgentTotals{})
+			state.Parked[id] = &ParkedEntry{
+				Identifier:    "PROJ-BACKFILL-1",
+				Reason:        parkReasonAgentBlocked,
+				ParkedState:   "In Progress",
+				IssueIdentity: tt.held,
+			}
+			tracker := &mockTrackerAdapter{
+				fetchStatesFn: func(context.Context, []string) (map[string]string, error) {
+					return map[string]string{id: tt.observed}, nil
+				},
+				fetchIssueByIDFn: func(context.Context, string) (domain.Issue, error) {
+					return read, tt.readErr
+				},
+			}
+			store := &stubStore{}
+			orchestrator := NewOrchestrator(OrchestratorParams{
+				State:           state,
+				Logger:          discardLogger(),
+				TrackerAdapter:  tracker,
+				AgentAdapter:    &mockAgentAdapter{},
+				WorkflowManager: &stubWorkflowManager{config: config.ServiceConfig{}},
+				Store:           store,
+			})
+
+			orchestrator.refreshParkedIssues(context.Background(), tt.candidates)
+
+			entry, parked := state.Parked[id]
+			if parked != tt.wantParked {
+				t.Fatalf("parked after refreshParkedIssues = %v, want %v", parked, tt.wantParked)
+			}
+			if parked && entry.IssueIdentity != tt.wantIdentity {
+				t.Errorf("parked IssueIdentity = %+v, want %+v", entry.IssueIdentity, tt.wantIdentity)
+			}
+			if !slices.Equal(tracker.fetchIssueByIDCalls, tt.wantReads) {
+				t.Errorf("FetchIssueByID called with %v, want %v", tracker.fetchIssueByIDCalls, tt.wantReads)
+			}
+			var rows []IssueIdentity
+			for _, row := range store.parkedIssues {
+				rows = append(rows, IssueIdentity{Title: row.IssueTitle, URL: row.IssueURL})
+			}
+			if !slices.Equal(rows, tt.wantRows) {
+				t.Errorf("upserted park identities = %+v, want %+v", rows, tt.wantRows)
+			}
+		})
+	}
 }

@@ -19,6 +19,7 @@ type stateResponse struct {
 	Running                []runningEntryResponse           `json:"running"`
 	Retrying               []retryEntryResponse             `json:"retrying"`
 	BudgetExhausted        []budgetExhaustedResponse        `json:"budget_exhausted"`
+	Parked                 []parkedEntryResponse            `json:"parked"`
 	AgentTotals            orchestrator.SnapshotAgentTotals `json:"agent_totals"`
 	RateLimits             map[string]any                   `json:"rate_limits"`
 	ActiveEstimatedCostUSD *float64                         `json:"active_estimated_cost_usd,omitempty"`
@@ -34,6 +35,7 @@ type stateCounts struct {
 	Running         int `json:"running"`
 	Retrying        int `json:"retrying"`
 	BudgetExhausted int `json:"budget_exhausted"`
+	Parked          int `json:"parked"`
 }
 
 type runningEntryResponse struct {
@@ -115,6 +117,37 @@ type retryEntryResponse struct {
 	Attempt           int       `json:"attempt"`
 	DueAt             time.Time `json:"due_at"`
 	Error             string    `json:"error"`
+
+	Trigger           string                `json:"trigger,omitempty"`
+	ReactionKind      string                `json:"reaction_kind,omitempty"`
+	ReactionConfigKey string                `json:"reaction_config_key,omitempty"`
+	RuleName          string                `json:"rule_name,omitempty"`
+	StageLineage      *stageLineageResponse `json:"stage_lineage"`
+	Paused            bool                  `json:"paused"`
+}
+
+// stageLineageResponse is the stage hop that reached the run a retry
+// follows. It is nil in the wire format unless a hop reached that run.
+type stageLineageResponse struct {
+	ChainID         string `json:"chain_id,omitempty"`
+	Previous        string `json:"previous,omitempty"`
+	PreviousOutcome string `json:"previous_outcome,omitempty"`
+}
+
+// parkedEntryResponse is the JSON wire format for one issue held out of
+// primary dispatch until a person acts on it. Used by GET /api/v1/state and
+// GET /api/v1/{identifier}.
+type parkedEntryResponse struct {
+	IssueID           string    `json:"issue_id"`
+	IssueIdentifier   string    `json:"issue_identifier"`
+	DisplayIdentifier string    `json:"display_identifier,omitempty"`
+	IssueTitle        string    `json:"issue_title,omitempty"`
+	IssueURL          string    `json:"issue_url,omitempty"`
+	Reason            string    `json:"reason"`
+	ParkedState       string    `json:"parked_state,omitempty"`
+	Label             string    `json:"label"`
+	LabelApplied      bool      `json:"label_applied"`
+	ParkedAt          time.Time `json:"parked_at"`
 }
 
 // budgetExhaustedResponse is the JSON wire format for one issue held out
@@ -145,6 +178,7 @@ type issueDetailResponse struct {
 	Running         *runningEntryResponse    `json:"running"`
 	Retry           *retryEntryResponse      `json:"retry"`
 	BudgetExhausted *budgetExhaustedResponse `json:"budget_exhausted"`
+	Parked          *parkedEntryResponse     `json:"parked"`
 	RecentEvents    []any                    `json:"recent_events"`
 	LastError       *string                  `json:"last_error"`
 	Tracked         map[string]any           `json:"tracked"`
@@ -286,6 +320,14 @@ func issueSpendIncomplete(usage *orchestrator.SnapshotIssueUsage) bool {
 }
 
 func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse {
+	var lineage *stageLineageResponse
+	if e.StageLineage.PreviousRule != "" {
+		lineage = &stageLineageResponse{
+			ChainID:         e.StageLineage.ChainID,
+			Previous:        e.StageLineage.PreviousRule,
+			PreviousOutcome: e.StageLineage.PreviousOutcome,
+		}
+	}
 	return retryEntryResponse{
 		IssueID:           e.IssueID,
 		IssueIdentifier:   e.Identifier,
@@ -295,6 +337,28 @@ func toRetryEntryResponse(e orchestrator.SnapshotRetryEntry) retryEntryResponse 
 		Attempt:           e.Attempt,
 		DueAt:             time.UnixMilli(e.DueAtMS).UTC(),
 		Error:             e.Error,
+
+		Trigger:           e.Trigger,
+		ReactionKind:      e.ReactionKind,
+		ReactionConfigKey: e.ReactionConfigKey,
+		RuleName:          e.RuleName,
+		StageLineage:      lineage,
+		Paused:            e.Paused,
+	}
+}
+
+func toParkedEntryResponse(e orchestrator.SnapshotParkedEntry) parkedEntryResponse {
+	return parkedEntryResponse{
+		IssueID:           e.IssueID,
+		IssueIdentifier:   e.Identifier,
+		DisplayIdentifier: e.DisplayID,
+		IssueTitle:        e.IssueTitle,
+		IssueURL:          e.IssueURL,
+		Reason:            e.Reason,
+		ParkedState:       e.ParkedState,
+		Label:             e.Label,
+		LabelApplied:      e.LabelApplied,
+		ParkedAt:          e.ParkedAt.UTC(),
 	}
 }
 
@@ -332,6 +396,11 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, tokenRates TokenRa
 		budgetExhausted = append(budgetExhausted, toBudgetExhaustedResponse(e))
 	}
 
+	parked := make([]parkedEntryResponse, 0, len(snap.Parked))
+	for _, e := range snap.Parked {
+		parked = append(parked, toParkedEntryResponse(e))
+	}
+
 	rateLimits := snap.RateLimits
 	if rateLimits == nil {
 		rateLimits = map[string]any{}
@@ -343,10 +412,12 @@ func toStateResponse(snap orchestrator.RuntimeSnapshotResult, tokenRates TokenRa
 			Running:         len(running),
 			Retrying:        len(retrying),
 			BudgetExhausted: len(budgetExhausted),
+			Parked:          len(parked),
 		},
 		Running:         running,
 		Retrying:        retrying,
 		BudgetExhausted: budgetExhausted,
+		Parked:          parked,
 		AgentTotals:     snap.AgentTotals,
 		RateLimits:      rateLimits,
 	}
@@ -534,6 +605,7 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 	var runEntry *runningEntryResponse
 	var retryEntry *retryEntryResponse
 	var budgetEntry *budgetExhaustedResponse
+	var parkedEntry *parkedEntryResponse
 
 	for _, e := range snap.Running {
 		if e.Identifier == identifier {
@@ -556,7 +628,14 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 		}
 	}
 
-	if runEntry == nil && retryEntry == nil && budgetEntry == nil {
+	for _, e := range snap.Parked {
+		if e.Identifier == identifier {
+			parkedEntry = new(toParkedEntryResponse(e))
+			break
+		}
+	}
+
+	if runEntry == nil && retryEntry == nil && budgetEntry == nil && parkedEntry == nil {
 		return nil
 	}
 
@@ -573,6 +652,9 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 	case budgetEntry != nil:
 		status = "budget_exhausted"
 		issueID = budgetEntry.IssueID
+	case parkedEntry != nil:
+		status = "parked"
+		issueID = parkedEntry.IssueID
 	default:
 		status = "unknown"
 	}
@@ -610,6 +692,7 @@ func buildIssueDetail(identifier string, snap orchestrator.RuntimeSnapshotResult
 		Running:         runEntry,
 		Retry:           retryEntry,
 		BudgetExhausted: budgetEntry,
+		Parked:          parkedEntry,
 		RecentEvents:    []any{},
 		LastError:       lastError,
 		Tracked:         map[string]any{},

@@ -146,9 +146,10 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - The release rule: a tracker state change unparks the issue; a confirmed parking label observed absent unparks the issue; an unconfirmed label observed absent leaves the park in place; a parking label observed while unconfirmed is recorded as confirmed
 - A failed parking-label write leaves the park in place with the label unconfirmed, and a later release pass that still observes the label absent does not unpark the issue on that evidence alone
 - A successful parking-label write does not by itself confirm the label; only a later observation of the label on the issue does
-- Loading persisted park records at startup restores the runtime park set, skipping a malformed record and loading a record with no recorded tracker state
-- The runtime snapshot reports the parked-issue count always, and the parked issue list and reason map only when the parked set is non-empty
+- Loading persisted park records at startup restores the runtime park set, with each park's title and link, skipping a malformed record and loading a record with no recorded tracker state
+- The runtime snapshot reports the parked-issue count and the parked list always, the list empty when no issue is parked, and no reason map
 - A parked issue absent from the poll tick's candidate set is read for its state through a separate, filter-free tracker call, and that call carries only the parked issues the candidate fetch did not return
+- A park that holds no read of its issue takes the candidate's read or, when the candidates omit the issue and the state read finds it, one single-issue read, and is never read for it again; a park released on that tick is neither read nor written, and a failed single-issue read leaves the park as it was and is tried again on the next tick
 - Parking on the consecutive handoff-absence ceiling and parking on a blocked soft stop produce the same durable record shape, differing only in the reason attributed to the park
 - Releasing a park resets its consecutive-absence count whatever reason the park carries; for a released absence-ceiling park, the same poll tick does not immediately re-derive the exhausted count and park the issue again
 - A park held under `tracker.handoff_evidence: off` is not released by the policy, and no new absence park is taken while the policy is set
@@ -163,6 +164,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Whichever lane, poll tick or retry timer, discovers a hold is the only one that announces it; the other lane's rebuild or block leaves the announcement memory alone
 - The budget-exhausted gauge reports a per-reason level derived from the current set, seeded to zero for every declared reason on each recompute, so a reason that clears reports zero rather than freezing at its last published value
 - Both `GET /api/v1/state` and `GET /api/v1/{identifier}` carry the budget-exhausted record's identifier, reason, and numbers, and the per-issue endpoint answers for a budget-blocked issue instead of reporting it unknown
+- Retry rows of both endpoints carry the trigger, the reaction kind with its `reactions` key, and the paused flag, and a retry the retry timer rescheduled carries its reschedule reason instead of the error of the run before it; both endpoints serve a parked issue, the per-issue one instead of reporting it unknown
 - The dashboard renders a budget-blocked card and table only when the exhausted set is non-empty
 - A hold entering the budget-exhausted set, on either lane, delivers exactly one `budget.held` event to its destinations, which posts one tracker comment naming the fired ceiling and its governing setting when the `tracker_comment` destination receives it; a tick or retry fire that re-observes the same hold under the same reason delivers nothing further
 - A hold whose `budget.held` delivery has no destination spends no pacing slot and writes neither a durable notice row nor a memory entry, on either lane; after a configuration change subscribes a destination to `budget.held`, the next pass delivers the notice exactly once

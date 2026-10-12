@@ -25,6 +25,7 @@ Sortie uses an embedded SQLite database for durable state. The database file pat
 | `display_identifier` | TEXT | Qualified form of `identifier` (for example `owner/repo#9`); empty when `identifier` suffices, and on an entry written before migration 025 (migration 025) |
 | `issue_title` | TEXT | The tracker's title of the issue as read when the retry was scheduled; empty on an entry written before migration 025, and while the retry holds no read of its issue (migration 025) |
 | `issue_url` | TEXT | The tracker's web link of the issue as read then, under the same rule as `issue_title` (migration 025) |
+| `trigger` | TEXT | The `sortie_retries_total` label of the schedule that created the entry (`error`, `continuation`, `timer`, `stall`, or `ci_fix`); empty when that schedule records none, and `''` on an entry written before migration 026 until the entry is next written (migration 026) |
 
 Note: `timer_handle` is runtime-only and is not stored.
 
@@ -176,6 +177,8 @@ The reset point is read from `run_history` inside the write, so a work-observed 
 | `label`         | TEXT    | Parking label the orchestrator applied                             |
 | `label_applied` | INTEGER | `1` once the orchestrator has confirmed the label reached the tracker |
 | `parked_at`     | TEXT    | ISO-8601 timestamp                                                  |
+| `issue_title`   | TEXT    | The tracker's title of the issue as read when the park was recorded, or at the first read after a park recorded or restored without one; `''` on a row written before migration 026 until the row is next written (migration 026) |
+| `issue_url`     | TEXT    | The tracker's web link of the issue as read then, under the same rule as `issue_title` (migration 026) |
 
 One row per parked issue, holding current state rather than history: the row is deleted the moment the park is lifted, not retained as a record of a past park. `parked_state` is nullable in meaning though not in type: an empty string means no tracker state was observed at park time, which only a park taken from the retry lane produces, since that lane parks ahead of its own tracker fetch by design (§14.2). `label_applied` has exactly one writer: the orchestrator's release-rule observation of the label on a later fetch of the issue, never the outcome of the label write itself.
 

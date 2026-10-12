@@ -931,9 +931,10 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 
 	startedAt := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name string
-		body any
-		want map[string]any
+		name   string
+		body   any
+		want   map[string]any
+		absent []string
 	}{
 		{
 			name: "running",
@@ -996,6 +997,36 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 				"error":              "agent timeout",
 			},
 		},
+		{name: "retry trigger error", body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Trigger: "error"}), want: map[string]any{"trigger": "error"}},
+		{name: "retry trigger continuation", body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Trigger: "continuation"}), want: map[string]any{"trigger": "continuation"}},
+		{name: "retry trigger stall", body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Trigger: "stall"}), want: map[string]any{"trigger": "stall"}},
+		{
+			name: "retry trigger timer carries the reschedule reason",
+			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Trigger: "timer", Error: "no available orchestrator slots"}),
+			want: map[string]any{"trigger": "timer", "error": "no available orchestrator slots"},
+		},
+		{
+			name: "retry trigger ci_fix names its reaction",
+			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Trigger: "ci_fix", ReactionKind: "ci", ReactionConfigKey: "ci_failure"}),
+			want: map[string]any{"trigger": "ci_fix", "reaction_kind": "ci", "reaction_config_key": "ci_failure"},
+		},
+		{name: "retry paused", body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{Trigger: "timer", Paused: true}), want: map[string]any{"paused": true}},
+		{
+			name:   "review continuation has no trigger",
+			body:   toRetryEntryResponse(orchestrator.SnapshotRetryEntry{ReactionKind: "review", ReactionConfigKey: "review_comments"}),
+			want:   map[string]any{"reaction_kind": "review", "reaction_config_key": "review_comments"},
+			absent: []string{"trigger"},
+		},
+		{
+			name: "retry stage lineage with a previous rule",
+			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{StageLineage: orchestrator.StageLineage{ChainID: "chain-1", PreviousRule: "implement", PreviousOutcome: "succeeded"}}),
+			want: map[string]any{"stage_lineage": map[string]any{"chain_id": "chain-1", "previous": "implement", "previous_outcome": "succeeded"}},
+		},
+		{
+			name: "retry stage lineage with only a chain is null",
+			body: toRetryEntryResponse(orchestrator.SnapshotRetryEntry{StageLineage: orchestrator.StageLineage{ChainID: "chain-1"}}),
+			want: map[string]any{"stage_lineage": nil},
+		},
 		{
 			name: "budget exhausted",
 			body: toBudgetExhaustedResponse(orchestrator.SnapshotBudgetEntry{
@@ -1036,6 +1067,12 @@ func TestEntryResponses_KeysJSON(t *testing.T) {
 			t.Parallel()
 
 			assertJSONKeys(t, tt.body, tt.want)
+			got := jsonObject(t, tt.body)
+			for _, key := range tt.absent {
+				if _, present := got[key]; present {
+					t.Errorf("JSON %q present, want absent", key)
+				}
+			}
 		})
 	}
 }
@@ -1163,6 +1200,38 @@ func TestToStateResponse(t *testing.T) {
 		if got.Counts.Retrying != 1 {
 			t.Errorf("Counts.Retrying = %d, want 1", got.Counts.Retrying)
 		}
+	})
+
+	t.Run("parked entry serves every key and counts", func(t *testing.T) {
+		t.Parallel()
+
+		est := time.FixedZone("EST", -5*60*60)
+		snap := orchestrator.RuntimeSnapshotResult{
+			Parked: []orchestrator.SnapshotParkedEntry{{
+				IssueID: "id-p", Identifier: "MT-9", DisplayID: "acme/web#9",
+				IssueTitle: "Needs a human", IssueURL: "https://acme.atlassian.net/browse/MT-9",
+				Reason: "handoff_absence", ParkedState: "In Review", Label: "needs-human", LabelApplied: true,
+				ParkedAt: time.Date(2026, 3, 24, 12, 0, 0, 0, est),
+			}},
+		}
+
+		got := toStateResponse(snap, nil)
+
+		if got.Counts.Parked != 1 || len(got.Parked) != 1 {
+			t.Fatalf("Counts.Parked, len(Parked) = %d, %d, want 1, 1", got.Counts.Parked, len(got.Parked))
+		}
+		assertJSONKeys(t, got.Parked[0], map[string]any{
+			"issue_id":           "id-p",
+			"issue_identifier":   "MT-9",
+			"display_identifier": "acme/web#9",
+			"issue_title":        "Needs a human",
+			"issue_url":          "https://acme.atlassian.net/browse/MT-9",
+			"reason":             "handoff_absence",
+			"parked_state":       "In Review",
+			"label":              "needs-human",
+			"label_applied":      true,
+			"parked_at":          "2026-03-24T17:00:00Z",
+		})
 	})
 
 	t.Run("nil token rates — ActiveEstimatedCostUSD absent", func(t *testing.T) {
@@ -2210,6 +2279,42 @@ func TestHandleIssueDetail(t *testing.T) {
 			t.Errorf("error message = %q, want %q", body.Error.Message, wantMsg)
 		}
 	})
+}
+
+func TestHandleIssueDetail_Parked(t *testing.T) {
+	t.Parallel()
+
+	snap := orchestrator.RuntimeSnapshotResult{
+		Parked: []orchestrator.SnapshotParkedEntry{
+			{IssueID: "id-p", Identifier: "MT-9", Reason: "agent_blocked", Label: "needs-human", ParkedAt: time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)},
+		},
+	}
+	ts := testServer(t, fixedSnapshot(snap), acceptingRefresh())
+
+	resp, err := http.Get(ts.URL + "/api/v1/MT-9")
+	if err != nil {
+		t.Fatalf("GET /api/v1/MT-9: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/MT-9 status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body := decodeJSON[issueDetailResponse](t, resp)
+	if body.Status != "parked" {
+		t.Errorf("Status = %q, want %q", body.Status, "parked")
+	}
+	if body.Parked == nil || body.Parked.Reason != "agent_blocked" {
+		t.Errorf("Parked = %+v, want the parked record with reason agent_blocked", body.Parked)
+	}
+
+	miss, err := http.Get(ts.URL + "/api/v1/NONEXISTENT")
+	if err != nil {
+		t.Fatalf("GET /api/v1/NONEXISTENT: %v", err)
+	}
+	defer func() { _ = miss.Body.Close() }()
+	if miss.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /api/v1/NONEXISTENT status = %d, want %d", miss.StatusCode, http.StatusNotFound)
+	}
 }
 
 // TestHandleIssueDetail_Budget fails if the per-issue endpoint stops

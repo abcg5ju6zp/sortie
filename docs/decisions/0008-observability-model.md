@@ -90,7 +90,7 @@ All metrics use the `sortie_` prefix per Prometheus naming conventions. Metrics 
 | `sortie_agent_runtime_seconds_total` | Counter | — | Cumulative agent runtime in seconds |
 | `sortie_dispatches_total` | Counter | `outcome={success,error}` | Dispatch attempts and their outcomes |
 | `sortie_worker_exits_total` | Counter | `exit_type={normal,error,cancelled}` | Worker exit events by type |
-| `sortie_retries_total` | Counter | `trigger={error,continuation,timer}` | Retry scheduling events by trigger |
+| `sortie_retries_total` | Counter | `trigger={error,continuation,timer,stall,ci_fix}` | Retry scheduling events by trigger |
 | `sortie_reconciliation_actions_total` | Counter | `action={stop,cleanup,keep}` | Reconciliation outcomes per issue |
 | `sortie_poll_cycles_total` | Counter | `result={success,error,skipped}` | Poll tick outcomes |
 | `sortie_tracker_requests_total` | Counter | `operation={fetch_candidates,fetch_issue,fetch_comments,transition},result={success,error}` | Tracker adapter API calls |

@@ -1009,6 +1009,7 @@ The hop leaves the issue in its active tracker state with the target's stage lab
 
 ```text
 on_retry_timer(issue_id, state):
+  // every schedule_retry here records the trigger "timer"
   retry_entry = state.retry_attempts.pop(issue_id)
   if missing:
     return state
@@ -1017,7 +1018,7 @@ on_retry_timer(issue_id, state):
   if err:
     return schedule_retry(state, issue_id, retry_entry.attempt + 1, {
       identifier: retry_entry.identifier,
-      error: "retry poll failed",
+      error: "retry issue fetch failed",
       session_id: retry_entry.session_id
     })
 

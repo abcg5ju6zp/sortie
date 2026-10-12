@@ -344,6 +344,10 @@ type RetryEntry struct {
 	// dispatch. Runtime-only.
 	ReactionKind string
 
+	// Trigger is the sortie_retries_total trigger label the schedule that
+	// created the entry recorded; empty when that schedule records none.
+	Trigger string
+
 	// RuleName is the dispatch rule of the run this retry follows.
 	RuleName string
 
@@ -427,24 +431,29 @@ func watchWindowMS(extra map[string]any, def int) (int, error) {
 	return n, nil
 }
 
-// reactionKindPins is the single registry of reaction kinds. Presence in
-// the map means the kind is known; the value reports whether a pending
-// entry pins its workspace against sweep candidacy. Both
-// [isKnownReactionKind] and [reactionKindPinsWorkspace] read it, so a kind
-// cannot be recognized without an explicit pin classification.
-var reactionKindPins = map[string]bool{
-	ReactionKindCI:              true,
-	ReactionKindReview:          true,
-	ReactionKindBotReview:       true,
-	ReactionKindAutoMerge:       true,
-	ReactionKindMergeConflict:   true,
-	ReactionKindLabelReview:     false,
-	ReactionKindLabelFix:        false,
-	ReactionKindMergeCompletion: false,
+// reactionKindSpec classifies one registered reaction kind.
+type reactionKindSpec struct {
+	configKey     string // key of the reactions section of WORKFLOW.md the kind is configured under
+	pinsWorkspace bool   // a pending entry of the kind excludes its workspace from sweep candidacy
+}
+
+// reactionKinds is the single registry of reaction kinds. Presence in the
+// map means the kind is known. Every entry is an unkeyed literal so the
+// compiler rejects a kind registered without its configuration key or its
+// pin classification.
+var reactionKinds = map[string]reactionKindSpec{
+	ReactionKindCI:              {"ci_failure", true},
+	ReactionKindReview:          {"review_comments", true},
+	ReactionKindBotReview:       {"bot_review", true},
+	ReactionKindAutoMerge:       {"auto_merge", true},
+	ReactionKindMergeConflict:   {"merge_conflicts", true},
+	ReactionKindLabelReview:     {"label_commands", false},
+	ReactionKindLabelFix:        {"label_commands", false},
+	ReactionKindMergeCompletion: {"merge_completion", false},
 }
 
 func isKnownReactionKind(kind string) bool {
-	_, known := reactionKindPins[kind]
+	_, known := reactionKinds[kind]
 	return known
 }
 
@@ -453,11 +462,17 @@ func isKnownReactionKind(kind string) bool {
 // unregistered kind returns true, the non-destructive default: retention
 // is safe for a kind the rest of the system does not yet classify.
 func reactionKindPinsWorkspace(kind string) bool {
-	pins, known := reactionKindPins[kind]
+	spec, known := reactionKinds[kind]
 	if !known {
 		return true
 	}
-	return pins
+	return spec.pinsWorkspace
+}
+
+// reactionConfigKey returns the reactions key kind is configured under, or
+// "" for a kind outside the registry, the empty kind included.
+func reactionConfigKey(kind string) string {
+	return reactionKinds[kind].configKey
 }
 
 // ReactionKey returns the composite map key for a pending reaction.
@@ -772,13 +787,16 @@ type BudgetAnnouncement struct {
 // ParkedEntry is the runtime view of one issue held out of primary
 // dispatch until the orchestrator observes that a person acted on it.
 type ParkedEntry struct {
-	Identifier   string
-	DisplayID    string
-	Reason       string // "agent_blocked" or "handoff_absence"
-	ParkedState  string // tracker state observed at park time; empty when unobserved
-	Label        string // parking label the orchestrator applied
-	LabelApplied bool
-	ParkedAt     time.Time
+	Identifier string
+	DisplayID  string
+	// IssueIdentity is the issue's title and link as read for the park; the
+	// zero value holds no read.
+	IssueIdentity IssueIdentity
+	Reason        string // "agent_blocked" or "handoff_absence"
+	ParkedState   string // tracker state observed at park time; empty when unobserved
+	Label         string // parking label the orchestrator applied
+	LabelApplied  bool
+	ParkedAt      time.Time
 }
 
 // IssueIdentity names an issue to a person beside its key: the tracker's
@@ -1170,14 +1188,35 @@ type SnapshotRunningEntry struct {
 // SnapshotRetryEntry is a read-only view of a pending retry, produced by
 // [RuntimeSnapshot]. IssueTitle and IssueURL are masked.
 type SnapshotRetryEntry struct {
-	IssueID    string `json:"issue_id"`
-	Identifier string `json:"issue_identifier"`
-	DisplayID  string `json:"display_identifier,omitempty"`
-	IssueTitle string `json:"issue_title,omitempty"`
-	IssueURL   string `json:"issue_url,omitempty"`
-	Attempt    int    `json:"attempt"`
-	DueAtMS    int64  `json:"due_at_ms"`
-	Error      string `json:"error"`
+	IssueID           string       `json:"issue_id"`
+	Identifier        string       `json:"issue_identifier"`
+	DisplayID         string       `json:"display_identifier,omitempty"`
+	IssueTitle        string       `json:"issue_title,omitempty"`
+	IssueURL          string       `json:"issue_url,omitempty"`
+	Attempt           int          `json:"attempt"`
+	DueAtMS           int64        `json:"due_at_ms"`
+	Error             string       `json:"error"`
+	Trigger           string       `json:"trigger,omitempty"`
+	ReactionKind      string       `json:"reaction_kind,omitempty"`
+	ReactionConfigKey string       `json:"reaction_config_key,omitempty"`
+	RuleName          string       `json:"rule_name,omitempty"`
+	StageLineage      StageLineage `json:"stage_lineage"`
+	Paused            bool         `json:"paused"`
+}
+
+// SnapshotParkedEntry is a read-only view of one parked issue, produced by
+// [RuntimeSnapshot]. IssueTitle, IssueURL, and ParkedState are masked.
+type SnapshotParkedEntry struct {
+	IssueID      string    `json:"issue_id"`
+	Identifier   string    `json:"issue_identifier"`
+	DisplayID    string    `json:"display_identifier,omitempty"`
+	IssueTitle   string    `json:"issue_title,omitempty"`
+	IssueURL     string    `json:"issue_url,omitempty"`
+	Reason       string    `json:"reason"`
+	ParkedState  string    `json:"parked_state,omitempty"`
+	Label        string    `json:"label"`
+	LabelApplied bool      `json:"label_applied"`
+	ParkedAt     time.Time `json:"parked_at"`
 }
 
 // SnapshotBudgetEntry is a read-only, value-copied view of one issue held
@@ -1230,8 +1269,7 @@ type RuntimeSnapshotResult struct {
 	BudgetExhaustedCount int                    `json:"budget_exhausted_count"`
 	BudgetExhausted      []SnapshotBudgetEntry  `json:"budget_exhausted"`
 	ParkedCount          int                    `json:"parked_count"`
-	Parked               []string               `json:"parked,omitempty"`
-	ParkedReason         map[string]string      `json:"parked_reason,omitempty"`
+	Parked               []SnapshotParkedEntry  `json:"parked"`
 
 	// MaxTokens and MaxSessions are the token ceiling and session budget in
 	// force at capture; 0 means no limit.
@@ -1321,7 +1359,7 @@ func snapshotIssueUsage(usage *persistence.IssueTokenUsage) *SnapshotIssueUsage 
 // RuntimeSnapshot captures a point-in-time view of the orchestrator's
 // runtime state. now is normalized to UTC internally.
 //
-// Running, Retrying, and AgentTotals are copied out and may be retained
+// Running, Retrying, Parked, and AgentTotals are copied out and may be retained
 // without synchronization. RateLimits is shallow-copied and may alias
 // nested mutable values; callers must treat it and its referents as
 // read-only.
@@ -1428,6 +1466,13 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 			Attempt:    entry.Attempt,
 			DueAtMS:    entry.DueAtMS,
 			Error:      entry.Error,
+
+			Trigger:           entry.Trigger,
+			ReactionKind:      entry.ReactionKind,
+			ReactionConfigKey: reactionConfigKey(entry.ReactionKind),
+			RuleName:          entry.RuleName,
+			StageLineage:      entry.StageLineage,
+			Paused:            entry.pausedSinceMS != 0,
 		})
 	}
 
@@ -1472,20 +1517,26 @@ func RuntimeSnapshot(state *State, now time.Time) RuntimeSnapshotResult {
 	snap.BudgetExhausted = budgetExhausted
 
 	snap.ParkedCount = len(state.Parked)
-	if len(state.Parked) > 0 {
-		ids := make([]string, 0, len(state.Parked))
-		for id := range state.Parked {
-			ids = append(ids, id)
-		}
-		slices.Sort(ids)
-		snap.Parked = ids
-
-		reasons := make(map[string]string, len(state.Parked))
-		for _, id := range ids {
-			reasons[id] = state.Parked[id].Reason
-		}
-		snap.ParkedReason = reasons
+	parked := make([]SnapshotParkedEntry, 0, len(state.Parked))
+	for id, entry := range state.Parked {
+		identity := maskedIdentity(entry.IssueIdentity)
+		parked = append(parked, SnapshotParkedEntry{
+			IssueID:      id,
+			Identifier:   entry.Identifier,
+			DisplayID:    entry.DisplayID,
+			IssueTitle:   identity.Title,
+			IssueURL:     identity.URL,
+			Reason:       entry.Reason,
+			ParkedState:  redact.Mask(entry.ParkedState),
+			Label:        entry.Label,
+			LabelApplied: entry.LabelApplied,
+			ParkedAt:     entry.ParkedAt,
+		})
 	}
+	slices.SortFunc(parked, func(a, b SnapshotParkedEntry) int {
+		return cmp.Or(cmp.Compare(a.Identifier, b.Identifier), cmp.Compare(a.IssueID, b.IssueID))
+	})
+	snap.Parked = parked
 
 	if state.AgentRateLimits != nil {
 		snap.RateLimits = maps.Clone(state.AgentRateLimits.Data)

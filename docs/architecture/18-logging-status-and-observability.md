@@ -107,7 +107,7 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
 - each running row should include `rule_name`, `configured_model`, and `configured_effort`, the dispatch rule the session runs under and the model and reasoning level its resolved settings block carries, empty (and omitted from the JSON form) when unset; `model_name` keeps the model the runtime reported, which can differ from the configured one under routing aliases and runtime fallbacks
 - each running row should include `issue_title`, `issue_url`, and `issue_labels`, the issue's title, web link, and labels as the session was dispatched with them, unchanged for the whole run and the same text the agent's prompt received. `issue_title` and `issue_url` are empty (and omitted from the JSON form) when the tracker returned none; `issue_labels` is always present, an empty list when the issue carries none, lowercase in the tracker's order as Section 11 normalizes them
 - every such string is masked as Section 15.3 states, in the snapshot rather than in the state it is copied from, because stage advancement reads the labels as the tracker returned them
-- `retrying` (list of retry queue rows). Each row carries `issue_title` and `issue_url` beside the display identifier, the read of the issue the retry was scheduled with. The read is persisted with the retry and restored at startup, so a restart serves what was served before it, and a reaction retry scheduled from a pending reaction rebuilt at startup carries the read its run recorded. A retry that holds no read, because it was restored from a row persisted before the identity was recorded, takes the first read the orchestrator takes of its issue: the next poll tick whose candidates list it, or its next fire. A read already held is never replaced
+- `retrying` (list of retry queue rows). Each row carries `issue_title` and `issue_url` beside the display identifier, the read of the issue the retry was scheduled with. The read is persisted with the retry and restored at startup, so a restart serves what was served before it, and a reaction retry scheduled from a pending reaction rebuilt at startup carries the read its run recorded. A retry that holds no read, because it was restored from a row persisted before the identity was recorded, takes the first read the orchestrator takes of its issue: the next poll tick whose candidates list it, or its next fire. A read already held is never replaced. Each row also says why the retry waits. `trigger` is the `sortie_retries_total` label of the schedule that created the retry (`error`, `continuation`, `timer`, `stall`, or `ci_fix`); it is omitted when that schedule records none, as for a review, bot review, merge conflict, or label command continuation, which `reaction_kind` names instead. The trigger is persisted with the retry and restored at startup. `reaction_kind` names the reaction behind the retry, and `reaction_config_key` the `reactions` key of WORKFLOW.md that kind is configured under. `rule_name` is the dispatch rule frozen with the retry. `stage_lineage` names the stage chain and the stage hop that reached the run the retry follows. `paused` is true while the issue's state does not permit dispatching the retry. When the retry timer puts a retry back instead of dispatching it, the row's error is the reason it was put back, never the error of the run before it
 - `agent_totals`
   - `input_tokens`
   - `output_tokens`
@@ -122,8 +122,7 @@ If the implementation exposes a synchronous runtime snapshot (for dashboards or 
 - `budget_exhausted_count` (number of issues currently blocked by a re-dispatch budget; always present)
 - `budget_exhausted` (list of blocked-issue records, sorted by identifier; always present, empty when the set is empty). Each record carries the issue's ID and identifier, the reason (`token_budget` or `session_budget`; `token_budget` takes precedence over `session_budget` when one issue reaches both gates), the used and budgeted session and token counts, the count of the issue's sessions the token ceiling stopped in flight (present only when the token ceiling was evaluated for the issue), the time the hold began, and the issue's title and tracker link. The title and link come from the read of the poll tick that last rebuilt the set, or from the retry the hold was found on until the next tick. The set is rebuilt per tick from those two gates (Section 8.4) and also updated by the retry lane when it discovers a hold between ticks.
 - `parked_count` (number of issues currently held out of primary dispatch; always present)
-- `parked` (sorted list of parked issue IDs; omitted when the set is empty)
-- `parked_reason` (map from parked issue ID to the park's reason, `agent_blocked` or `handoff_absence`; omitted when the set is empty)
+- `parked` (list of park records, sorted by identifier and then issue ID; always present, empty when no issue is parked). Each record carries the issue's ID and identifier, the display identifier when the tracker needs a qualified form, the issue's title and tracker link, the reason (`agent_blocked` or `handoff_absence`), the tracker state observed when the park was recorded, the parking label the orchestrator applied, whether a read has shown that label on the issue, and the time the park was recorded. The title, link, and state are masked as Section 15.3 states, in the snapshot rather than in the state they are copied from. The park persists the title and link and restores them at startup. A park that holds no read of its issue, because it was recorded or restored without one, takes the first read the orchestrator takes of the issue: the next poll tick's candidate, or one single-issue read when the candidate fetch omits the issue and the batched state read of the release step finds it (Section 8.1). A read already held is never replaced or read again
 
 Recommended snapshot error modes:
 
@@ -224,7 +223,8 @@ Minimum endpoints:
       "counts": {
         "running": 2,
         "retrying": 1,
-        "budget_exhausted": 1
+        "budget_exhausted": 1,
+        "parked": 1
       },
       "running": [
         {
@@ -286,7 +286,15 @@ Minimum endpoints:
           "issue_url": "https://tracker.example.com/browse/MT-650",
           "attempt": 3,
           "due_at": "2026-02-24T20:16:00Z",
-          "error": "no available orchestrator slots"
+          "error": "no available orchestrator slots",
+          "trigger": "timer",
+          "rule_name": "default",
+          "stage_lineage": {
+            "chain_id": "7q2m4x9b1k5d8f3h6j0n2p4rst",
+            "previous": "review",
+            "previous_outcome": "succeeded"
+          },
+          "paused": false
         }
       ],
       "budget_exhausted": [
@@ -303,6 +311,19 @@ Minimum endpoints:
           "unmeasured_sessions": null,
           "stopped_in_flight": null,
           "exhausted_at": "2026-02-24T20:12:00Z"
+        }
+      ],
+      "parked": [
+        {
+          "issue_id": "jkl012",
+          "issue_identifier": "MT-652",
+          "issue_title": "Rotate the signing keys",
+          "issue_url": "https://tracker.example.com/browse/MT-652",
+          "reason": "agent_blocked",
+          "parked_state": "In Progress",
+          "label": "needs-human",
+          "label_applied": true,
+          "parked_at": "2026-02-24T20:05:00Z"
         }
       ],
       "agent_totals": {
@@ -374,6 +395,7 @@ Minimum endpoints:
       },
       "retry": null,
       "budget_exhausted": null,
+      "parked": null,
       "logs": {
         "agent_session_logs": [
           {
@@ -395,8 +417,8 @@ Minimum endpoints:
     }
     ```
 
-  - `status` is `"running"` when the issue has a running session, otherwise `"retrying"` when it has a pending retry, otherwise `"budget_exhausted"` when it is held out of dispatch by a per-issue budget ceiling; `budget_exhausted` in the response body carries the same record shape as the `budget_exhausted` array on `GET /api/v1/state` and is `null` when the issue is not in that set.
-  - If the issue is unknown to the current in-memory state, return `404` with an error response (for example `{"error":{"code":"issue_not_found","message":"..."}}`); an issue held by a budget ceiling is not unknown to it, so this case is distinct from that one.
+  - `status` is `"running"` when the issue has a running session, otherwise `"retrying"` when it has a pending retry, otherwise `"budget_exhausted"` when it is held out of dispatch by a per-issue budget ceiling, otherwise `"parked"` when it is parked; `budget_exhausted` in the response body carries the same record shape as the `budget_exhausted` array on `GET /api/v1/state` and is `null` when the issue is not in that set, and `parked` carries the record shape of the `parked` array and is `null` when the issue is not parked. An issue that is only parked answers with a `null` workspace, zero attempts, and a `null` `last_error`, as a budget-held one does. `last_error` is the retry row's error, so after the retry timer reschedules a retry it is the reschedule reason.
+  - If the issue is unknown to the current in-memory state, return `404` with an error response (for example `{"error":{"code":"issue_not_found","message":"..."}}`); an issue held by a budget ceiling or parked is not unknown to it, so this case is distinct from those.
 
 - `POST /api/v1/refresh`
   - Queues an immediate tracker poll + reconciliation cycle (best-effort trigger; implementations may coalesce repeated requests).
@@ -416,7 +438,7 @@ API design notes:
 
 - The JSON shapes above are the recommended baseline for interoperability and debugging ergonomics.
 - Implementations may add fields, but should avoid breaking existing fields within a version.
-- Running, retry, and budget-exhausted rows name their issue in flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`, never in a nested object, and the same rows inside `GET /api/v1/<issue_identifier>` carry them. `issue_title` and `issue_url` are the tracker's title and web link, each omitted when empty; a running row always carries a title, and a retry row lacks it only while the retry holds no read of its issue. `issue_labels` is on running rows only and always present. Every such string is masked as Section 15.3 states.
+- Running, retry, budget-exhausted, and parked rows name their issue in flat keys beside `issue_id`, `issue_identifier`, and `display_identifier`, never in a nested object, and the same rows inside `GET /api/v1/<issue_identifier>` carry them. `issue_title` and `issue_url` are the tracker's title and web link, each omitted when empty; a running row always carries a title, and a retry row lacks it only while the retry holds no read of its issue, and a parked row only while the park holds none. `issue_labels` is on running rows only and always present. Every such string is masked as Section 15.3 states.
 - On a running row, `api_request_count` is `null` exactly when `api_requests_measured` is false, the five members of `tokens` are `null` exactly when `tokens_measured` is false, and `requests_by_model` is absent on the first condition and when the attribution names no model.
 - Sortie deviates from the field-stability note above for those figures, narrowing each from an integer to a nullable one, because a consumer reading a number cannot tell a measured zero from an unmeasured one. A typed consumer is forced to handle the null; an untyped one, in a language where `null` coerces to `0` in arithmetic, is no worse off than it was.
 - A running row, and the `running` object of the per-issue response, which serves the same keys, carries the issue's spend and limits in flat keys. The keys are additive; no existing key changes name, type, or meaning.
@@ -429,6 +451,18 @@ API design notes:
   - `estimated_cost_usd` is the running session's estimate under `token_rates` for its agent kind, and `cost_status` says why it is absent: `estimated`, `unpriced` when the session is measured and its kind has no complete rate entry, or `unmeasured` when the session has reported no usage. `issue_estimated_cost_usd` sums the estimates of the issue's priced parts, completed sessions included, and `issue_cost_status` is `estimated` when the sum covers the whole spend, `partial` when it is a lower bound because a part that spent tokens is left out, `unpriced` when no priced part spent tokens and a part that did has no rate, and `unmeasured` when `used_tokens` is `null` or no part is priced or unpriced. A running session that has reported zero tokens leaves nothing out, so a missing rate for its kind does not make a complete, otherwise priced issue `partial`.
   - Estimates are unrounded USD, priced at the rates the process started with. `used_tokens` is `null` only when `issue_cost_status` is `unmeasured`, and `issue_cost_status` is `estimated` only when `used_tokens_complete` is true.
   - A budget-exhausted record also carries `stopped_in_flight`, the count of the issue's sessions the token ceiling stopped mid-run, `null` exactly when the record's `used_tokens` is `null`.
+- A retry row, on `GET /api/v1/state` and in the `retry` object of the per-issue response, says why the retry waits in these keys. They are additive; no existing key changes name or type.
+  - `trigger` is the `sortie_retries_total` label of the schedule that created the row: `error`, `continuation`, `timer`, `stall`, or `ci_fix`. It is omitted when that schedule records none: a review, bot review, merge conflict, or label command continuation, which `reaction_kind` names.
+  - `reaction_kind` is the retry's reaction kind, omitted when it carries none. An `error` or `stall` retry of a run a reaction dispatched carries that run's kind, and a `timer` row keeps the kind of the retry it replaced. `reaction_config_key` is present exactly when `reaction_kind` is, and names the `reactions` key of WORKFLOW.md the kind is configured under, so a client holds no mapping of its own: `ci` is `ci_failure`, `review` is `review_comments`, `bot-review` is `bot_review`, `merge` is `auto_merge`, `merge-conflict` is `merge_conflicts`, `label-review` and `label-fix` are `label_commands`, and `merge-completion` is `merge_completion`.
+  - `rule_name` is the dispatch rule frozen with the retry, `default` for `dispatch.default`, omitted when the workflow-wide fallback routed the run. When the configuration in force no longer reaches that selection, the retry dispatches on another rule (Section 8.4, "Retry selection").
+  - `stage_lineage` is always present and `null` unless a stage hop reached the run the retry follows. The object holds `chain_id`, `previous`, and `previous_outcome`, each omitted when empty: the run's stage chain, the rule whose hop reached the run, and that hop's outcome, `succeeded` or `no_change`. A chain's first stage, which no hop reached, reports `null`.
+  - `paused` is always present, and true exactly when the retry timer last rescheduled the retry because its issue's state does not permit dispatching it, which is when `error` is `reaction retry paused by an open blocking issue` or `reaction retry paused by issue state`.
+  - When the retry timer reschedules a retry, `error` carries the reason, one of `worker still running`, `retry issue fetch failed`, `issue without a state label`, `reaction retry paused by an open blocking issue`, `reaction retry paused by issue state`, `no available orchestrator slots`, `no available SSH hosts`, `retry agent kind unavailable`, or `retry agent settings refused`, and the trigger is `timer`. The error of the run before it stays in the logs and in that run's run history. The per-issue `last_error` copies `error`, so it carries the reason too.
+- A parked record, on the `parked` array and in the `parked` object of the per-issue response, carries these keys.
+  - `issue_id` and `issue_identifier` are always present. `display_identifier` is omitted when the tracker needs no qualified form.
+  - `issue_title` and `issue_url` are the tracker's title and web link as read when the park was recorded or, for a park recorded or restored without a read, at the first poll tick on which the tracker answers for the issue. Each is omitted when empty and masked.
+  - `reason` is `agent_blocked` or `handoff_absence`. `parked_state` is the tracker state observed when the park was recorded, or at the first observation after a park recorded before any read, omitted while unobserved and masked. `label` is the parking label the orchestrator applied, served unmasked because it is configuration, and `label_applied` is true once a read showed the label on the issue. `parked_at` is the time the park was recorded, in UTC.
+  - The list is sorted by identifier and then issue ID, and `counts.parked` equals its length. An issue appears in every list whose set holds it: a parked issue with a review continuation queued is in `parked` and `retrying` both.
 - `active_estimated_cost_usd`, an implementation extension beyond the baseline shape above, sums the estimated cost of running, measured sessions whose agent kind has a configured token rate; it is omitted when no running, measured session prices. `cost_unpriced_running` sits beside it and counts the running, measured sessions the sum leaves out for want of a rate. It is present, zero included, whenever `token_rates` holds an entry for any agent kind, complete or not, and omitted otherwise, so its presence alone tells a consumer whether cost pricing is configured at all. While `token_rates` holds an entry for any agent kind, `active_estimated_cost_usd` equals the sum of `estimated_cost_usd` over the running rows whose `cost_status` is `estimated` (and is absent when no row is), and `cost_unpriced_running` equals the count of rows whose `cost_status` is `unpriced`.
 - Endpoints should be read-only except for operational triggers like `/refresh`.
 - Unsupported methods on defined routes should return `405 Method Not Allowed`.
@@ -458,7 +492,7 @@ Defined metrics (label sets and buckets are specified here; see ADR-0008 for his
 | `sortie_agent_runtime_seconds_total` | Counter | Cumulative agent-session wall-clock time for completed sessions. |
 | `sortie_dispatches_total{outcome}` | Counter | Dispatch attempts, partitioned by outcome (`success`, `error`). |
 | `sortie_worker_exits_total{exit_type}` | Counter | Worker exits, partitioned by exit type (`normal`, `error`, `cancelled`, `soft_stop`). A soft-stop exit reports `soft_stop` rather than the exit kind it would otherwise map to. |
-| `sortie_retries_total{trigger}` | Counter | Retry schedule events, partitioned by trigger (`error`, `continuation`, `timer`, `stall`, `ci_fix`). |
+| `sortie_retries_total{trigger}` | Counter | Retry schedule events, partitioned by trigger (`error`, `continuation`, `timer`, `stall`, `ci_fix`). A review, bot review, merge conflict, or label command continuation records no trigger. |
 | `sortie_reconciliation_actions_total{action}` | Counter | Reconciliation outcomes per issue, partitioned by action (`stop`, `cleanup`, `keep`, `sweep_cleanup`, `sweep_expired`). |
 | `sortie_poll_cycles_total{result}` | Counter | Poll tick completions, partitioned by result (`success`, `error`, `skipped`). |
 | `sortie_tracker_requests_total{operation,result}` | Counter | Tracker adapter API calls, partitioned by operation (`fetch_candidates`, `fetch_issue`, `fetch_by_states`, `fetch_states_by_ids`, `fetch_states_by_identifiers`, `fetch_comments`, `fetch_blockers`, `transition`, `comment`, `add_label`, `remove_label`) and result (`success`, `error`). |

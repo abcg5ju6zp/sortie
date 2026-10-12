@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - The JSON API at `/api/v1/state` and `/api/v1/{identifier}` now shows, for each running issue, the tokens its finished sessions and its running session have used against `agent.max_tokens`, its finished sessions against `agent.max_sessions`, and the estimated cost of the session and of the whole issue when `token_rates` prices its agent. A figure Sortie does not have reads as not measured or unpriced instead of zero, and an issue held by a budget ceiling also shows how many of its sessions the token ceiling stopped mid-run. ([#1071](https://github.com/sortie-ai/sortie/issues/1071))
 
+- The JSON API at `/api/v1/state` now shows why each retrying issue waits: what scheduled the retry, the pull request reaction behind it under its `reactions` name from WORKFLOW.md, its dispatch rule and stage, and whether the issue's current state has paused it. It also lists parked issues with their title, link, reason, and parking label, and `/api/v1/{identifier}` shows a parked issue instead of answering that it is unknown. ([#1287](https://github.com/sortie-ai/sortie/issues/1287))
+
 ### Fixed
 
 - Jira issue links no longer include a user name and password written into `tracker.endpoint`, so the link opens and an agent prompt that shows it no longer exposes them. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
@@ -20,9 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - `sortie stats` no longer reports CI failures as runs without a price, so with every coding agent priced in `token_rates` it no longer notes that its cost figures skip some runs. ([#1071](https://github.com/sortie-ai/sortie/issues/1071))
 
+- A retry that came due but could not start now says why it was put back, for example that the issue is blocked or that its previous run is still stopping, instead of repeating an earlier run's error that no longer applies. ([#1287](https://github.com/sortie-ai/sortie/issues/1287))
+
 ### Migrations
 
 - Add `issue_title` and `issue_url` to `run_history` and `retry_entries`, and `display_identifier` to `retry_entries`. A retry or run recorded before the upgrade reads back with no title or link; a queued retry gets one from the first tracker poll or when it next fires. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
+
+- Add `trigger` to `retry_entries`, and `issue_title` and `issue_url` to `parked_issues`. A retry stored before the upgrade shows no trigger until it next comes due, and an issue parked before the upgrade gets its title and link from the tracker on the first poll after the upgrade. ([#1287](https://github.com/sortie-ai/sortie/issues/1287))
 
 ## [1.27.0] - 2026-10-11
 

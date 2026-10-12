@@ -773,6 +773,15 @@ func TestReconcileCIStatus_Failing_UnderMaxRetries(t *testing.T) {
 		t.Errorf(`IncRetries("ci_fix") = %d, want 1`, metrics.retriesByTrigger["ci_fix"])
 	}
 
+	retrying := RuntimeSnapshot(state, time.Now()).Retrying
+	if len(retrying) != 1 {
+		t.Fatalf("len(Retrying) = %d, want 1", len(retrying))
+	}
+	got := [3]string{retrying[0].Trigger, retrying[0].ReactionKind, retrying[0].ReactionConfigKey}
+	if want := [3]string{"ci_fix", "ci", "ci_failure"}; got != want {
+		t.Errorf("Retrying[0] trigger, reaction kind, reaction config key = %q, want %q", got, want)
+	}
+
 	if _, ok := state.Claimed["ISS-CI-5"]; !ok {
 		t.Error("claim released after CI failure under max retries; want preserved")
 	}

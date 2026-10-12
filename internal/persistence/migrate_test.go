@@ -189,6 +189,7 @@ func TestMigrate_ColumnCorrectness(t *testing.T) {
 				{"display_identifier", "TEXT", true, 0},
 				{"issue_title", "TEXT", true, 0},
 				{"issue_url", "TEXT", true, 0},
+				{"trigger", "TEXT", true, 0},
 			},
 		},
 		{

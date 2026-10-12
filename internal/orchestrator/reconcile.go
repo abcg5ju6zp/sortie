@@ -347,6 +347,7 @@ func reconcileOverdueRetries(state *State, params ReconcileParams, log *slog.Log
 			RuleSettingsApplied: entry.RuleSettingsApplied,
 			TemplateID:          entry.TemplateID,
 			Logger:              entryLog,
+			Trigger:             entry.Trigger,
 		}, params.OnRetryFire)
 
 		if rearmed, ok := state.RetryAttempts[issueID]; ok {
@@ -418,6 +419,7 @@ func reconcileStalled(state *State, params ReconcileParams, log *slog.Logger, ct
 			RuleSettingsApplied: entry.RuleSettingsApplied,
 			TemplateID:          entry.TemplateID,
 			Logger:              entryLog,
+			Trigger:             triggerStall,
 		}, params.OnRetryFire)
 		metrics.IncRetries(triggerStall)
 
@@ -443,6 +445,7 @@ func reconcileStalled(state *State, params ReconcileParams, log *slog.Logger, ct
 				RuleName:   retryEntry.RuleName,
 				TemplateID: retryEntry.TemplateID,
 				AgentKind:  retryEntry.AgentKind,
+				Trigger:    retryEntry.Trigger,
 
 				StagePrevious:        retryEntry.StageLineage.PreviousRule,
 				StagePreviousOutcome: retryEntry.StageLineage.PreviousOutcome,

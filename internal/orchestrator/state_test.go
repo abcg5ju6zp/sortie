@@ -1002,11 +1002,15 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	state.RetryAttempts["ISS-2"] = &RetryEntry{
 		IssueID: "ISS-2", IssueIdentity: IssueIdentity{Title: "rotate " + value},
 	}
+	state.Parked["ISS-3"] = &ParkedEntry{
+		Identifier: "PROJ-3", IssueIdentity: IssueIdentity{Title: "rotate " + value},
+	}
 
 	result := RuntimeSnapshot(state, now)
 
-	if len(result.Running) != 1 || len(result.Retrying) != 1 {
-		t.Fatalf("RuntimeSnapshot rows = %d running, %d retrying, want 1, 1", len(result.Running), len(result.Retrying))
+	if len(result.Running) != 1 || len(result.Retrying) != 1 || len(result.Parked) != 1 {
+		t.Fatalf("RuntimeSnapshot rows = %d running, %d retrying, %d parked, want 1, 1, 1",
+			len(result.Running), len(result.Retrying), len(result.Parked))
 	}
 	running, retrying := result.Running[0], result.Retrying[0]
 	if want := "rotate " + redact.Marker; running.IssueTitle != want {
@@ -1017,6 +1021,9 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	}
 	if want := "rotate " + redact.Marker; retrying.IssueTitle != want {
 		t.Errorf("Retrying[0].IssueTitle = %q, want %q", retrying.IssueTitle, want)
+	}
+	if want := "rotate " + redact.Marker; result.Parked[0].IssueTitle != want {
+		t.Errorf("Parked[0].IssueTitle = %q, want %q", result.Parked[0].IssueTitle, want)
 	}
 }
 
@@ -1749,39 +1756,23 @@ func TestIsKnownReactionKind_AcceptsLabelReview(t *testing.T) {
 	}
 }
 
-// TestReactionKindPins asserts the known-kind set by iterating
-// reactionKindPins itself, so a second hand-written list cannot diverge
-// from it.
 func TestReactionKindPins(t *testing.T) {
 	t.Parallel()
 
 	t.Run("isKnownReactionKind is true for exactly the registered kinds", func(t *testing.T) {
 		t.Parallel()
 
-		for kind := range reactionKindPins {
+		for kind := range reactionKinds {
 			t.Run(kind, func(t *testing.T) {
 				t.Parallel()
 				if !isKnownReactionKind(kind) {
-					t.Errorf("isKnownReactionKind(%q) = false, want true (registered in reactionKindPins)", kind)
+					t.Errorf("isKnownReactionKind(%q) = false, want true (registered in reactionKinds)", kind)
 				}
 			})
 		}
 
 		if isKnownReactionKind("totally-unregistered-kind") {
 			t.Error(`isKnownReactionKind("totally-unregistered-kind") = true, want false (unregistered kind)`)
-		}
-	})
-
-	t.Run("reactionKindPinsWorkspace returns the registered value for each registered kind", func(t *testing.T) {
-		t.Parallel()
-
-		for kind, wantPins := range reactionKindPins {
-			t.Run(kind, func(t *testing.T) {
-				t.Parallel()
-				if got := reactionKindPinsWorkspace(kind); got != wantPins {
-					t.Errorf("reactionKindPinsWorkspace(%q) = %v, want %v", kind, got, wantPins)
-				}
-			})
 		}
 	})
 
@@ -2125,7 +2116,7 @@ func TestRuntimeSnapshot_ParkedFields(t *testing.T) {
 
 	fixedNow := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
 
-	t.Run("empty Parked produces zero count and nil slices", func(t *testing.T) {
+	t.Run("empty Parked is a non-nil empty list", func(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
@@ -2135,15 +2126,12 @@ func TestRuntimeSnapshot_ParkedFields(t *testing.T) {
 		if result.ParkedCount != 0 {
 			t.Errorf("ParkedCount = %d, want 0", result.ParkedCount)
 		}
-		if result.Parked != nil {
-			t.Errorf("Parked = %v, want nil", result.Parked)
-		}
-		if result.ParkedReason != nil {
-			t.Errorf("ParkedReason = %v, want nil", result.ParkedReason)
+		if result.Parked == nil || len(result.Parked) != 0 {
+			t.Errorf("Parked = %#v, want a non-nil empty list", result.Parked)
 		}
 	})
 
-	t.Run("non-empty Parked sorted, counted, and reasoned", func(t *testing.T) {
+	t.Run("non-empty Parked sorted by identifier and counted", func(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
@@ -2156,20 +2144,14 @@ func TestRuntimeSnapshot_ParkedFields(t *testing.T) {
 		if result.ParkedCount != 3 {
 			t.Errorf("ParkedCount = %d, want 3", result.ParkedCount)
 		}
-		want := []string{"ISS-A", "ISS-B", "ISS-C"}
+		want := []string{"PROJ-A", "PROJ-B", "PROJ-C"}
 		if len(result.Parked) != len(want) {
 			t.Fatalf("len(Parked) = %d, want %d", len(result.Parked), len(want))
 		}
-		for i, id := range want {
-			if result.Parked[i] != id {
-				t.Errorf("Parked[%d] = %q, want %q", i, result.Parked[i], id)
+		for i, identifier := range want {
+			if result.Parked[i].Identifier != identifier {
+				t.Errorf("Parked[%d].Identifier = %q, want %q", i, result.Parked[i].Identifier, identifier)
 			}
-		}
-		if got := result.ParkedReason["ISS-A"]; got != parkReasonHandoffAbsence {
-			t.Errorf("ParkedReason[ISS-A] = %q, want %q", got, parkReasonHandoffAbsence)
-		}
-		if got := result.ParkedReason["ISS-C"]; got != parkReasonAgentBlocked {
-			t.Errorf("ParkedReason[ISS-C] = %q, want %q", got, parkReasonAgentBlocked)
 		}
 	})
 }

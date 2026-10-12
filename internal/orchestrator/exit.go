@@ -563,6 +563,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 				workerResult.IssueID,
 				workerResult.Identifier,
 				entry.Issue.DisplayID,
+				issueIdentityOf(entry.Issue),
 				observation,
 				consecutiveAbsences,
 				absenceCeiling,
@@ -627,6 +628,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					IssueID:        workerResult.IssueID,
 					Identifier:     workerResult.Identifier,
 					DisplayID:      entry.Issue.DisplayID,
+					IssueIdentity:  issueIdentityOf(entry.Issue),
 					ObservedState:  observation,
 					Reason:         parkReasonAgentBlocked,
 					Label:          params.HandoffParkingLabel,
@@ -695,6 +697,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					Logger:              log,
 
 					IssueIdentity: issueIdentityOf(entry.Issue),
+					Trigger:       triggerError,
 				}, params.OnRetryFire)
 				metrics.IncRetries(triggerError)
 				retryScheduled = true
@@ -745,6 +748,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 						Logger:              log,
 
 						IssueIdentity: issueIdentityOf(entry.Issue),
+						Trigger:       triggerContinuation,
 					}, params.OnRetryFire)
 					metrics.IncRetries(triggerContinuation)
 					retryScheduled = true
@@ -831,6 +835,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 							Logger:              log,
 
 							IssueIdentity: issueIdentityOf(entry.Issue),
+							Trigger:       triggerContinuation,
 						}, params.OnRetryFire)
 						metrics.IncRetries(triggerContinuation)
 						retryScheduled = true
@@ -902,6 +907,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					Logger:              log,
 
 					IssueIdentity: issueIdentityOf(entry.Issue),
+					Trigger:       triggerContinuation,
 				}, params.OnRetryFire)
 				metrics.IncRetries(triggerContinuation)
 				retryScheduled = true
@@ -1317,6 +1323,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					Logger:              log,
 
 					IssueIdentity: issueIdentityOf(entry.Issue),
+					Trigger:       triggerError,
 				}, params.OnRetryFire)
 				metrics.IncRetries(triggerError)
 				retryScheduled = true
@@ -1345,6 +1352,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 					RuleName:   retryEntry.RuleName,
 					TemplateID: retryEntry.TemplateID,
 					AgentKind:  retryEntry.AgentKind,
+					Trigger:    retryEntry.Trigger,
 
 					StagePrevious:        retryEntry.StageLineage.PreviousRule,
 					StagePreviousOutcome: retryEntry.StageLineage.PreviousOutcome,
