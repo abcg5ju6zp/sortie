@@ -9,7 +9,7 @@ The effective poll interval should be updated when workflow config changes are r
 Tick sequence:
 
 1. Run dispatch preflight validation, which triggers a defensive config reload so every later step in the tick sees the same fresh configuration snapshot.
-2. Apply the reloaded configuration to runtime state.
+2. Apply the reloaded configuration to runtime state, then ping the database; the result feeds the health block's database check (Section 13.3).
 3. Reconcile running issues.
 4. Run the periodic workspace sweep when its tick counter is due (Section 8.7).
 5. Fetch candidate issues from tracker using active states.
