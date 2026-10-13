@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,14 +73,14 @@ type SnapshotHealth struct {
 func (o *Orchestrator) Health() SnapshotHealth {
 	health := SnapshotHealth{
 		Database:  o.databaseHealth.snapshot().masked(),
-		Preflight: o.preflightHealth.snapshot().masked(),
+		Preflight: o.withoutWorkflowDir(o.preflightHealth.snapshot()).masked(),
 		Workflow:  SnapshotWorkflowHealth{File: o.workflowFile()},
 		Poll:      o.pollHealth.snapshot(),
 	}
 	health.Poll.SnapshotHealthCheck = health.Poll.masked()
 
 	if o.workflowManager != nil {
-		health.Workflow.SnapshotHealthCheck = workflowCheck(o.workflowManager.LoadStatus())
+		health.Workflow.SnapshotHealthCheck = o.withoutWorkflowDir(workflowCheck(o.workflowManager.LoadStatus())).masked()
 	}
 	if o.scmHealth != nil {
 		health.SCM = &SnapshotSCMHealth{
@@ -99,7 +101,20 @@ func workflowCheck(status workflow.LoadStatus) SnapshotHealthCheck {
 	if status.LastError != nil {
 		check.Error = status.LastError.Error()
 	}
-	return check.masked()
+	return check
+}
+
+// withoutWorkflowDir shortens the workflow file's absolute path in the error
+// text to its base name, so the unauthenticated API does not disclose the
+// directory layout, as every other workflow file it serves already does.
+func (o *Orchestrator) withoutWorkflowDir(c SnapshotHealthCheck) SnapshotHealthCheck {
+	if o.workflowManager == nil {
+		return c
+	}
+	if path := o.workflowManager.WorkflowAbsPath(); path != "" {
+		c.Error = strings.ReplaceAll(c.Error, path, filepath.Base(path))
+	}
+	return c
 }
 
 // recordPreflight records a tick's dispatch preflight; warnings neither

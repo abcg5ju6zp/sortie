@@ -4665,6 +4665,21 @@ func TestHealthReportsInvalidReloadAndFailedPreflight(t *testing.T) {
 		t.Errorf("Health().Poll = %q with error %q, want outcome %q and no error", failed.Poll.Outcome, failed.Poll.Error, "preflight_failed")
 	}
 
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker: [\n---\n"), 0o644); err != nil {
+		t.Fatalf("writing malformed WORKFLOW.md: %v", err)
+	}
+	tickWithin(o)
+	malformed := o.Health()
+	if !strings.Contains(wm.LastLoadError().Error(), workflowPath) {
+		t.Fatalf("LastLoadError() = %v, want the malformed file's error naming its path", wm.LastLoadError())
+	}
+	dir := filepath.Dir(workflowPath)
+	for name, text := range map[string]string{"Workflow": malformed.Workflow.Error, "Preflight": malformed.Preflight.Error} {
+		if !strings.Contains(text, "WORKFLOW.md") || strings.Contains(text, dir) {
+			t.Errorf("Health().%s.Error = %q, want the base name without directory %s", name, text, dir)
+		}
+	}
+
 	cfg := wm.Config()
 	if !slices.Equal(cfg.Tracker.ActiveStates, []string{"In Progress"}) || !slices.Equal(cfg.Tracker.TerminalStates, []string{"Done"}) {
 		t.Errorf("Config() state lists = %v and %v, want the valid file's [In Progress] and [Done]", cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)

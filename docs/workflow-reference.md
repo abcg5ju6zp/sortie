@@ -2507,7 +2507,7 @@ A row's `rule_name`, `stage_lineage.previous`, and `reaction_config_key` are tho
 | `last_success_at` | string or `null` | When a run last passed, in UTC. `null` until one has. |
 | `consecutive_failures` | integer | The runs that failed since `last_success_at`, the run that reports it included. `0` while the check passes. |
 | `failing_since` | string or `null` | When the first of those runs ended, in UTC. `null` while the check passes. |
-| `error` | string or absent | The latest failure's text, masked: a value registered as a secret is replaced by `[redacted]`. Present exactly when `status` is `fail`, except on `poll`. |
+| `error` | string or absent | The latest failure's text, masked: a value registered as a secret is replaced by `[redacted]`. The workflow file's full path is shortened to its base name. Present exactly when `status` is `fail`, except on `poll`. |
 
 | Check | Run that feeds it | Members of its own |
 | ----- | ----------------- | ------------------ |
