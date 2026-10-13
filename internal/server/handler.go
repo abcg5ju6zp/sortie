@@ -15,6 +15,8 @@ import (
 // stateResponse is the JSON wire format for GET /api/v1/state.
 type stateResponse struct {
 	GeneratedAt            time.Time                        `json:"generated_at"`
+	Version                string                           `json:"version"`
+	StartedAt              *time.Time                       `json:"started_at"`
 	Counts                 stateCounts                      `json:"counts"`
 	Running                []runningEntryResponse           `json:"running"`
 	Retrying               []retryEntryResponse             `json:"retrying"`
@@ -33,6 +35,8 @@ type stateResponse struct {
 	CostUnpricedRunning *int `json:"cost_unpriced_running,omitempty"`
 
 	Config *configResponse `json:"config,omitempty"`
+
+	Health *stateHealthResponse `json:"health,omitempty"`
 }
 
 type stateCounts struct {
@@ -760,8 +764,13 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := toStateResponse(snap, s.tokenRates)
+	resp.Version = s.version
+	resp.StartedAt = utcOrNil(s.startedAt)
 	if s.workflowShapeFn != nil {
 		resp.Config = toConfigResponse(s.workflowShapeFn(), s.tokenRates)
+	}
+	if s.healthFn != nil {
+		resp.Health = toStateHealthResponse(s.healthFn())
 	}
 	writeJSON(w, s.logger, http.StatusOK, resp)
 
