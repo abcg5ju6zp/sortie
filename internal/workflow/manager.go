@@ -71,6 +71,20 @@ func WithRetiredAgents(lookup config.RetiredAgentLookup) ManagerOption {
 	return func(m *Manager) { m.retiredAgents = lookup }
 }
 
+// LoadStatus is the outcome of the workflow file's recent loads.
+type LoadStatus struct {
+	// LastLoadAt is when the latest load ended, whether it succeeded or failed.
+	LastLoadAt time.Time
+	// LastSuccessAt is when a load last succeeded and promoted its configuration.
+	LastSuccessAt time.Time
+	// ConsecutiveFailures counts the loads that failed since LastSuccessAt.
+	ConsecutiveFailures int
+	// FailingSince is when the first of those loads ended; zero while ConsecutiveFailures is 0.
+	FailingSince time.Time
+	// LastError is the latest load's error, nil when it succeeded.
+	LastError error
+}
+
 // Manager watches a workflow file for changes and maintains the current
 // effective configuration. The latest config and prompt template are
 // available via [Manager.Config] and [Manager.PromptTemplate]. Safe for
@@ -88,6 +102,7 @@ type Manager struct {
 	currentPrompt        *prompt.Template
 	currentTemplateIndex map[string]*prompt.Template
 	lastLoadErr          error
+	loadStatus           LoadStatus
 
 	watcher *fsnotify.Watcher
 	done    chan struct{}
@@ -129,6 +144,9 @@ func NewManager(path string, logger *slog.Logger, opts ...ManagerOption) (*Manag
 	m.currentConfig = cfg
 	m.currentPrompt = tmpl
 	m.currentTemplateIndex = index
+	m.mu.Lock()
+	m.recordLoadLocked(nil)
+	m.mu.Unlock()
 	return m, nil
 }
 
@@ -190,6 +208,32 @@ func (m *Manager) LastLoadError() error {
 	return m.lastLoadErr
 }
 
+// LoadStatus returns the outcome of the recent loads. Safe for
+// concurrent use.
+func (m *Manager) LoadStatus() LoadStatus {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.loadStatus
+}
+
+// recordLoadLocked records one load outcome next to lastLoadErr. The
+// caller MUST hold m.mu for writing.
+func (m *Manager) recordLoadLocked(err error) {
+	now := time.Now()
+	m.loadStatus.LastLoadAt = now
+	m.loadStatus.LastError = err
+	if err == nil {
+		m.loadStatus.LastSuccessAt = now
+		m.loadStatus.ConsecutiveFailures = 0
+		m.loadStatus.FailingSince = time.Time{}
+		return
+	}
+	if m.loadStatus.ConsecutiveFailures == 0 {
+		m.loadStatus.FailingSince = now
+	}
+	m.loadStatus.ConsecutiveFailures++
+}
+
 func (m *Manager) currentLogger() *slog.Logger {
 	m.mu.RLock()
 	l := m.logger
@@ -219,6 +263,7 @@ func (m *Manager) Reload() error {
 	if err != nil {
 		m.mu.Lock()
 		m.lastLoadErr = err
+		m.recordLoadLocked(err)
 		m.mu.Unlock()
 		return err
 	}
@@ -227,6 +272,7 @@ func (m *Manager) Reload() error {
 		if err := m.validateFunc(cfg); err != nil {
 			m.mu.Lock()
 			m.lastLoadErr = err
+			m.recordLoadLocked(err)
 			m.mu.Unlock()
 			return err
 		}
@@ -237,6 +283,7 @@ func (m *Manager) Reload() error {
 	m.currentPrompt = tmpl
 	m.currentTemplateIndex = index
 	m.lastLoadErr = nil
+	m.recordLoadLocked(nil)
 	m.mu.Unlock()
 	return nil
 }
@@ -333,6 +380,7 @@ func (m *Manager) reload() {
 		logger.Error("workflow reload failed", slog.Any("error", err), slog.String("path", m.path))
 		m.mu.Lock()
 		m.lastLoadErr = err
+		m.recordLoadLocked(err)
 		m.mu.Unlock()
 		return
 	}
@@ -343,6 +391,7 @@ func (m *Manager) reload() {
 				slog.Any("error", err), slog.String("path", m.path))
 			m.mu.Lock()
 			m.lastLoadErr = err
+			m.recordLoadLocked(err)
 			m.mu.Unlock()
 			return
 		}
@@ -353,6 +402,7 @@ func (m *Manager) reload() {
 	m.currentPrompt = tmpl
 	m.currentTemplateIndex = index
 	m.lastLoadErr = nil
+	m.recordLoadLocked(nil)
 	m.mu.Unlock()
 	logger.Info("workflow reloaded", slog.String("path", m.path))
 }
