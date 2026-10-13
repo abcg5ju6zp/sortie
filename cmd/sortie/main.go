@@ -290,6 +290,7 @@ func handleSignals(sigCh <-chan os.Signal, abandon chan struct{}) {
 }
 
 func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	startedAt := time.Now()
 	br, code := boot(ctx, bootParams{args: args, stdout: stdout, stderr: stderr})
 	if code != 0 || br.mgr == nil {
 		return code
@@ -493,6 +494,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 	}
 
 	var scmAdapter domain.SCMAdapter
+	var scmProvider string
 	var reviewConfig orchestrator.ReviewReactionConfig
 	var autoMergeConfig orchestrator.AutoMergeReactionConfig
 	var autoMergeConfigured bool
@@ -538,6 +540,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 
 	if len(activeKindNames) > 0 {
 		provider := activeProviders[0]
+		scmProvider = provider
 		scmCtor, scmErr := registry.SCMAdapters.Get(provider)
 		if scmErr != nil {
 			br.logger.Error("unknown SCM adapter kind",
@@ -845,6 +848,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		DBPath:                            dbPath,
 		CIProvider:                        ciProvider,
 		SCMAdapter:                        scmAdapter,
+		SCMProvider:                       scmProvider,
 		ReviewConfig:                      reviewConfig,
 		ReviewConfigured:                  reviewActive,
 		AutoMergeConfig:                   autoMergeConfig,
@@ -873,10 +877,11 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			SnapshotFn:       o.SnapshotFunc(),
 			RefreshFn:        o.RefreshFunc(),
 			WorkflowShapeFn:  o.WorkflowShape,
+			HealthFn:         o.Health,
 			Logger:           br.logger,
 			Addr:             addr,
 			Version:          Version,
-			StartedAt:        time.Now(),
+			StartedAt:        startedAt,
 			SlotFunc:         func() int { return br.mgr.Config().Agent.MaxConcurrentAgents },
 			MetricsRegistry:  promMetrics.Registry(),
 			DBPingFn:         func(ctx context.Context) error { return store.Ping(ctx) },

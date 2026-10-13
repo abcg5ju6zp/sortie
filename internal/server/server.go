@@ -92,6 +92,10 @@ type Params struct {
 	// each GET /api/v1/state; nil omits config.
 	WorkflowShapeFn func() orchestrator.WorkflowShape
 
+	// HealthFn returns the health of Sortie's own checks. Called on each
+	// GET /api/v1/state; nil omits health.
+	HealthFn func() orchestrator.SnapshotHealth
+
 	// RefreshFn signals an immediate poll+reconciliation cycle.
 	// Called on POST /api/v1/refresh.
 	RefreshFn RefreshFunc
@@ -156,6 +160,7 @@ type Server struct {
 	snapshotFn      SnapshotFunc
 	refreshFn       RefreshFunc
 	workflowShapeFn func() orchestrator.WorkflowShape
+	healthFn        func() orchestrator.SnapshotHealth
 	dashboardTmpl   *template.Template
 	version         string
 	startedAt       time.Time
@@ -204,6 +209,7 @@ func New(params Params) *Server {
 		snapshotFn:       params.SnapshotFn,
 		refreshFn:        params.RefreshFn,
 		workflowShapeFn:  params.WorkflowShapeFn,
+		healthFn:         params.HealthFn,
 		dashboardTmpl:    tmpl,
 		version:          params.Version,
 		startedAt:        params.StartedAt,

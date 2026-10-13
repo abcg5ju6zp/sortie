@@ -79,6 +79,8 @@ func (s *stubWorkflowManager) WorkflowAbsPath() string {
 	return s.absPath
 }
 
+func (s *stubWorkflowManager) LoadStatus() workflow.LoadStatus { return workflow.LoadStatus{} }
+
 func (s *stubWorkflowManager) setConfig(cfg config.ServiceConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -218,6 +220,8 @@ func (s *stubStore) DeleteRetryEntry(_ context.Context, issueID string) error {
 	s.deletedRetryIDs = append(s.deletedRetryIDs, issueID)
 	return nil
 }
+
+func (s *stubStore) Ping(_ context.Context) error { return nil }
 
 func (s *stubStore) CountRunHistoryByIssue(_ context.Context, _ string) (int, error) {
 	return 0, nil
@@ -4474,24 +4478,21 @@ func promotionGate(cfg config.ServiceConfig) error {
 	return ValidateConfigForPromotion(cfg, registry.TrackerMeta{})
 }
 
-func TestReconciliationGuardEndToEnd(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	workflowPath := filepath.Join(tmpDir, "WORKFLOW.md")
-
-	initialContent := `---
-tracker:
-  kind: mock
-  api_key: test-key
-  active_states:
+const validStateLists = `  active_states:
     - In Progress
   terminal_states:
     - Done
-polling:
+`
+
+func realWorkflowContent(root, stateLists string) string {
+	return `---
+tracker:
+  kind: mock
+  api_key: test-key
+` + stateLists + `polling:
   interval_ms: 60000
 workspace:
-  root: ` + tmpDir + `
+  root: ` + root + `
 hooks:
   timeout_ms: 5000
 agent:
@@ -4502,15 +4503,32 @@ agent:
 ---
 do {{ .issue.identifier }}
 `
-	if err := os.WriteFile(workflowPath, []byte(initialContent), 0o644); err != nil {
-		t.Fatalf("writing initial WORKFLOW.md: %v", err)
-	}
+}
 
-	wm, err := workflow.NewManager(workflowPath, discardLogger(),
+func writeRealWorkflow(t *testing.T, path, stateLists string) {
+	t.Helper()
+	content := realWorkflowContent(filepath.Dir(path), stateLists)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing WORKFLOW.md: %v", err)
+	}
+}
+
+func mustRealWorkflowManager(t *testing.T) (*workflow.Manager, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	writeRealWorkflow(t, path, validStateLists)
+	wm, err := workflow.NewManager(path, discardLogger(),
 		workflow.WithValidateFunc(promotionGate))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
+	return wm, path
+}
+
+func TestReconciliationGuardEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	wm, workflowPath := mustRealWorkflowManager(t)
 
 	cfg := wm.Config()
 	if len(cfg.Tracker.ActiveStates) == 0 {
@@ -4560,30 +4578,8 @@ do {{ .issue.identifier }}
 		},
 	})
 
-	// Overwrite WORKFLOW.md with empty state lists (valid YAML, but
-	// semantically dangerous: both active_states and terminal_states
-	// are empty).
-	brokenContent := `---
-tracker:
-  kind: mock
-  api_key: test-key
-polling:
-  interval_ms: 60000
-workspace:
-  root: ` + tmpDir + `
-hooks:
-  timeout_ms: 5000
-agent:
-  kind: mock
-  command: /usr/bin/agent
-  max_concurrent_agents: 5
-  max_turns: 1
----
-do {{ .issue.identifier }}
-`
-	if err := os.WriteFile(workflowPath, []byte(brokenContent), 0o644); err != nil {
-		t.Fatalf("writing broken WORKFLOW.md: %v", err)
-	}
+	// Valid YAML, but both state lists are empty, which promotion must refuse.
+	writeRealWorkflow(t, workflowPath, "")
 
 	o.handleTick(context.Background())
 
@@ -4608,10 +4604,88 @@ do {{ .issue.identifier }}
 	}
 }
 
-// TestReloadPromotesConfigWithMissingBlockFault pins the fail-safe
-// invariant: a dispatch-routed kind with no settings block still
-// promotes through Reload without error and surfaces the
-// dispatch.agent.missing_block fault only at tick preflight.
+func TestHealthReportsInvalidReloadAndFailedPreflight(t *testing.T) {
+	t.Parallel()
+
+	wm, workflowPath := mustRealWorkflowManager(t)
+	regs := passingPreflightRegistries()
+	o := NewOrchestrator(OrchestratorParams{
+		State:           NewState(60000, 5, 0, nil, AgentTotals{}),
+		Logger:          discardLogger(),
+		TrackerAdapter:  &mockTrackerAdapter{},
+		AgentAdapter:    &mockAgentAdapter{},
+		WorkflowManager: wm,
+		Store:           &stubStore{},
+		PreflightParams: PreflightParams{
+			ReloadWorkflow:  wm.Reload,
+			ConfigFunc:      wm.Config,
+			TrackerRegistry: regs.TrackerRegistry,
+			AgentRegistry:   regs.AgentRegistry,
+		},
+	})
+
+	validFrom, validTo := tickWithin(o)
+
+	clean := o.Health()
+	for name, check := range map[string]SnapshotHealthCheck{
+		"Database":  clean.Database,
+		"Preflight": clean.Preflight,
+		"Workflow":  clean.Workflow.SnapshotHealthCheck,
+		"Poll":      clean.Poll.SnapshotHealthCheck,
+	} {
+		if check.ConsecutiveFailures != 0 || check.Error != "" || check.CheckedAt.IsZero() {
+			t.Errorf("Health().%s after a clean tick = %+v, want a passing check with CheckedAt set", name, check)
+		}
+	}
+	if clean.Poll.Outcome != "succeeded" {
+		t.Errorf("Health().Poll.Outcome after a clean tick = %q, want %q", clean.Poll.Outcome, "succeeded")
+	}
+	if clean.SCM != nil {
+		t.Errorf("Health().SCM = %+v, want nil without a provider", clean.SCM)
+	}
+
+	writeRealWorkflow(t, workflowPath, "")
+	failFrom, failTo := tickWithin(o)
+	tickWithin(o)
+
+	failed := o.Health()
+	if failed.Workflow.ConsecutiveFailures != 2 {
+		t.Errorf("Health().Workflow.ConsecutiveFailures = %d, want 2", failed.Workflow.ConsecutiveFailures)
+	}
+	requireWithin(t, "Health().Workflow.LastSuccessAt", failed.Workflow.LastSuccessAt, validFrom, validTo)
+	requireWithin(t, "Health().Workflow.FailingSince", failed.Workflow.FailingSince, failFrom, failTo)
+	loadErr := wm.LastLoadError()
+	if loadErr == nil || failed.Workflow.Error != loadErr.Error() {
+		t.Errorf("Health().Workflow.Error = %q, want LastLoadError() text %v", failed.Workflow.Error, loadErr)
+	}
+	if failed.Preflight.ConsecutiveFailures != 2 || !strings.Contains(failed.Preflight.Error, "workflow file cannot be loaded") {
+		t.Errorf("Health().Preflight = %+v, want 2 failures carrying the workflow load failure", failed.Preflight)
+	}
+	if failed.Poll.Outcome != "preflight_failed" || failed.Poll.Error != "" {
+		t.Errorf("Health().Poll = %q with error %q, want outcome %q and no error", failed.Poll.Outcome, failed.Poll.Error, "preflight_failed")
+	}
+
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker: [\n---\n"), 0o644); err != nil {
+		t.Fatalf("writing malformed WORKFLOW.md: %v", err)
+	}
+	tickWithin(o)
+	malformed := o.Health()
+	if !strings.Contains(wm.LastLoadError().Error(), workflowPath) {
+		t.Fatalf("LastLoadError() = %v, want the malformed file's error naming its path", wm.LastLoadError())
+	}
+	dir := filepath.Dir(workflowPath)
+	for name, text := range map[string]string{"Workflow": malformed.Workflow.Error, "Preflight": malformed.Preflight.Error} {
+		if !strings.Contains(text, "WORKFLOW.md") || strings.Contains(text, dir) {
+			t.Errorf("Health().%s.Error = %q, want the base name without directory %s", name, text, dir)
+		}
+	}
+
+	cfg := wm.Config()
+	if !slices.Equal(cfg.Tracker.ActiveStates, []string{"In Progress"}) || !slices.Equal(cfg.Tracker.TerminalStates, []string{"Done"}) {
+		t.Errorf("Config() state lists = %v and %v, want the valid file's [In Progress] and [Done]", cfg.Tracker.ActiveStates, cfg.Tracker.TerminalStates)
+	}
+}
+
 func TestReloadPromotesConfigWithMissingBlockFault(t *testing.T) {
 	t.Parallel()
 

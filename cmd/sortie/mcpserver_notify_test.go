@@ -155,9 +155,6 @@ func newSequentialAgent(sessionIDFor func(call int) string) *sequentialAgent {
 
 var _ domain.AgentAdapter = (*sequentialAgent)(nil)
 
-// notifyE2ESessionMeta lets RunTurn answer a credential verification
-// session immediately, without consuming a slot in the controller
-// queues that drive the working sessions.
 type notifyE2ESessionMeta struct {
 	credentialVerification bool
 }
@@ -253,6 +250,8 @@ func (m *notifyE2EWorkflowManager) PromptTemplateByID(id string) *prompt.Templat
 
 func (m *notifyE2EWorkflowManager) Reload() error           { return nil }
 func (m *notifyE2EWorkflowManager) WorkflowAbsPath() string { return m.absPath }
+
+func (m *notifyE2EWorkflowManager) LoadStatus() workflow.LoadStatus { return workflow.LoadStatus{} }
 
 func notifyE2EBaseConfig(root string) config.ServiceConfig {
 	return config.ServiceConfig{

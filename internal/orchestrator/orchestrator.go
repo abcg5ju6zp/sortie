@@ -17,6 +17,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/prompt"
+	"github.com/sortie-ai/sortie/internal/workflow"
 )
 
 // WorkflowManager provides the current workflow config and prompt template.
@@ -27,11 +28,13 @@ type WorkflowManager interface {
 	PromptTemplateByID(id string) *prompt.Template
 	Reload() error
 	WorkflowAbsPath() string
+	LoadStatus() workflow.LoadStatus
 }
 
 // OrchestratorStore is the persistence interface required by the event
 // loop. Satisfied by [persistence.Store].
 type OrchestratorStore interface {
+	Ping(ctx context.Context) error
 	AppendRunHistory(ctx context.Context, run persistence.RunHistory) (persistence.RunHistory, error)
 	UpsertAggregateMetrics(ctx context.Context, metrics persistence.AggregateMetrics) error
 	UpsertSessionMetadata(ctx context.Context, meta persistence.SessionMetadata) error
@@ -159,6 +162,10 @@ type OrchestratorParams struct {
 	// review comment routing is not configured.
 	SCMAdapter domain.SCMAdapter
 
+	// SCMProvider is the provider kind SCMAdapter and CIProvider were built
+	// for; empty when both are nil.
+	SCMProvider string
+
 	// ReviewConfig holds validated review reaction configuration. Zero when
 	// SCMAdapter is nil.
 	ReviewConfig ReviewReactionConfig
@@ -260,6 +267,11 @@ type Orchestrator struct {
 	toolRegistry                      *domain.ToolRegistry
 	sessionToolRegistryFunc           SessionToolRegistryFunc
 	preflightOK                       atomic.Bool
+	databaseHealth                    *healthRecord
+	preflightHealth                   *healthRecord
+	pollHealth                        *pollRecord
+	scmHealth                         *healthRecord // nil when no reaction uses a source-control provider
+	scmProvider                       string
 	draining                          atomic.Bool
 	hostPool                          *HostPool
 	workflowFileFunc                  func() string
@@ -414,6 +426,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		mcpServerBinary:                   params.MCPServerBinary,
 		ciProvider:                        params.CIProvider,
 		scmAdapter:                        params.SCMAdapter,
+		databaseHealth:                    &healthRecord{},
+		preflightHealth:                   &healthRecord{},
+		pollHealth:                        &pollRecord{},
 		reviewConfig:                      params.ReviewConfig,
 		reviewReactionConfigured:          params.ReviewConfigured,
 		autoMergeConfig:                   params.AutoMergeConfig,
@@ -432,6 +447,16 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 		ciTriage:                          ciTriage,
 		blockerResolver:                   params.BlockerResolver,
 		abandonCh:                         params.AbandonCh,
+	}
+	if params.SCMAdapter != nil || params.CIProvider != nil {
+		o.scmHealth = &healthRecord{}
+		o.scmProvider = params.SCMProvider
+	}
+	if params.SCMAdapter != nil {
+		o.scmAdapter = observeSCM(params.SCMAdapter, o.scmHealth)
+	}
+	if params.CIProvider != nil {
+		o.ciProvider = observeCI(params.CIProvider, o.scmHealth)
 	}
 	if params.WorkflowManager != nil {
 		o.updateRouter(params.WorkflowManager.Config())
@@ -583,12 +608,14 @@ func (o *Orchestrator) Run(ctx context.Context) {
 
 	tickTimer := time.NewTimer(0)
 	defer tickTimer.Stop()
+	o.pollHealth.schedule(time.Now())
 
 	for {
 		select {
 		case <-ctx.Done():
 			o.draining.Store(true)
 			tickTimer.Stop()
+			o.pollHealth.schedule(time.Time{})
 			o.drainRunningWorkers()
 			o.drainTriageRuns()
 			o.drainTrackerOps()
@@ -597,7 +624,9 @@ func (o *Orchestrator) Run(ctx context.Context) {
 
 		case <-tickTimer.C:
 			o.handleTick(ctx)
-			tickTimer.Reset(time.Duration(o.state.PollIntervalMS) * time.Millisecond)
+			interval := time.Duration(o.state.PollIntervalMS) * time.Millisecond
+			tickTimer.Reset(interval)
+			o.pollHealth.schedule(time.Now().Add(interval))
 
 		case workerExit := <-o.workerExitCh:
 			o.handleWorkerExit(ctx, workerExit)
@@ -740,6 +769,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	// reflects the latest disk state.
 	validation := ValidateDispatchConfig(o.preflightParams)
 	o.preflightOK.Store(validation.OK())
+	o.recordPreflight(validation)
 
 	// On reload failure the workflow manager retains last-known-good config.
 	cfg := o.workflowManager.Config()
@@ -759,6 +789,10 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	current := append(cfg.Advisories(), o.applyWorkerConfig(cfg)...)
 	LogAdvisories(ctx, o.logger, newAdvisories(current, o.reportedAdvisories))
 	o.reportedAdvisories = current
+
+	if err := o.store.Ping(ctx); !canceled(ctx, err) {
+		o.databaseHealth.record(time.Now(), err)
+	}
 
 	// Reconcile unconditionally so in-flight workers are monitored even when
 	// dispatch is skipped.
@@ -822,6 +856,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	// On preflight failure, skip dispatch but still notify observers.
 	if !validation.OK() {
 		pollResult = outcomeError
+		o.pollHealth.record(time.Now(), pollOutcomePreflightFailed, nil)
 		o.logger.Error("dispatch preflight failed",
 			slog.Any("error", validation),
 		)
@@ -832,12 +867,17 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 	issues, err := o.trackerAdapter.FetchCandidateIssues(ctx)
 	if err != nil {
 		pollResult = outcomeError
+		if !canceled(ctx, err) {
+			o.pollHealth.record(time.Now(), pollOutcomeTrackerFailed, err)
+		}
 		o.logger.Error("failed to fetch candidate issues",
 			slog.Any("error", err),
 		)
 		o.notifyObservers()
 		return
 	}
+
+	o.pollHealth.record(time.Now(), pollOutcomeSucceeded, nil)
 
 	sorted := SortForDispatch(issues)
 

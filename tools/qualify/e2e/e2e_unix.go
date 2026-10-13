@@ -25,6 +25,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/prompt"
 	"github.com/sortie-ai/sortie/internal/registry"
 	"github.com/sortie-ai/sortie/internal/tracker/file"
+	"github.com/sortie-ai/sortie/internal/workflow"
 	"github.com/sortie-ai/sortie/internal/workspace"
 
 	"github.com/sortie-ai/sortie/tools/qualify/evidence"
@@ -151,6 +152,8 @@ func (m *workflowManager) Reload() error { return nil }
 // settings and MCP configuration against its directory, so a relative value
 // would resolve those against whatever working directory the test binary ran in.
 func (m *workflowManager) WorkflowAbsPath() string { return m.workflowPath }
+
+func (m *workflowManager) LoadStatus() workflow.LoadStatus { return workflow.LoadStatus{} }
 
 // fakeAgent is the fake protocol agent the deterministic oracle drives: a
 // real bounded child process in its own group gives the PGID postcondition
