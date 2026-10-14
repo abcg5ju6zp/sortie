@@ -612,7 +612,12 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 		state.Completed[workerResult.IssueID] = struct{}{}
 
 		for kind, commentIDs := range workerResult.HandedOffComments {
-			recordHandedOffComments(ctx, state, params.Store, workerResult.IssueID, kind, commentIDs, log)
+			if err := recordHandedOffComments(ctx, state, params.Store, workerResult.IssueID, kind, commentIDs, log); err == nil {
+				// Advance the triage round only after the save landed,
+				// so a failed handed-off comment write leaves the stage
+				// for a later exit to confirm instead of moving past it.
+				markTriageRoundHandedOff(params.Store, workerResult.IssueID, kind, log, ctx)
+			}
 		}
 
 		_, claimedAtExit := state.Claimed[workerResult.IssueID]

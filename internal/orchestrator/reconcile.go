@@ -523,8 +523,9 @@ func releaseIssueRuntimeState(ctx context.Context, state *State, store retryEntr
 			continue
 		}
 		// An entry that leaves without being re-inserted takes its
-		// triage subprocess with it rather than orphaning it.
-		cancelReactionTriage(entry)
+		// triage subprocess and its durable round with it rather than
+		// orphaning either.
+		cancelReactionTriage(ctx, store, entryLog, entry)
 		delete(state.PendingReactions, key)
 		counts.PendingReleased++
 	}

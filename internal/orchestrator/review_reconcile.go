@@ -59,7 +59,7 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 
 		reviewData, ok := pending.KindData.(*ReviewReactionData)
 		if !ok {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			log.ErrorContext(ctx, "unexpected KindData type for review reaction",
 				slog.String("issue_id", pending.IssueID),
 				slog.String("type", fmt.Sprintf("%T", pending.KindData)),
@@ -72,7 +72,7 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 
 		// TTL enforcement.
 		if ttl > 0 && now.Sub(watchWindowStart(pending)) > ttl {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			// A spent counter outlives the drop: an entry re-seeded by
 			// another kind's worker exit would otherwise open a fresh
 			// budget over comments every turn already carried. The
@@ -147,7 +147,7 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 			// comment set a run answered for no longer describes
 			// anything. A retained verdict would otherwise be replayed
 			// against the next episode that recomputes the same set.
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			pending.PendingRetryAt = now.Add(pollInterval)
 			pending.LastCheck = commentReactionCheck(now, 0, 0)
 			requeueReaction(state, key, pending, waitPollInterval)
@@ -220,7 +220,7 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 
 		// The gate sits above the dispatch counter so no pass that
 		// dispatches nothing is counted as one.
-		triageVerdict := reactionTriageGate(state, params, pending, params.ReviewConfig.Triage, ReactionTriageRequest{
+		triageReq := ReactionTriageRequest{
 			Kind:          ReactionKindReview,
 			WorkspaceRoot: params.WorkspaceRoot,
 			IssueID:       pending.IssueID,
@@ -232,7 +232,8 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 			AttemptsUsed:  turnCount,
 			MaxAttempts:   params.ReviewConfig.MaxContinuationTurns,
 			Subject:       reviewContext,
-		}, entryLog, ctx)
+		}
+		triageVerdict := reactionTriageGate(state, params, pending, params.ReviewConfig.Triage, triageReq, entryLog, ctx)
 
 		switch triageVerdict {
 		case triageWait:
@@ -276,6 +277,11 @@ func reconcileReviewComments(state *State, params ReconcileParams, log *slog.Log
 		}, params.OnRetryFire)
 
 		state.ReactionAttempts[rkey]++
+
+		// Record the continuation as the round's confirmed next stage
+		// before the entry leaves the map, so a restart resumes from the
+		// continuation instead of re-running triage.
+		markTriageContinuationScheduled(params.Store, pending.IssueID, ReactionKindReview, fingerprint, entryLog, ctx)
 
 		entryLog.Info("review comments detected, scheduling review-fix dispatch",
 			slog.Int("comment_count", len(actionable)),
@@ -403,6 +409,8 @@ func escalateReviewFailure(
 			slog.Any("error", err),
 		)
 	}
+	// The triage round belongs to the episode the escalation ends.
+	deleteTriageRound(params.Store, pending.IssueID, ReactionKindReview, log, ctx)
 }
 
 // buildReviewEscalationComment builds a plain-text escalation comment
@@ -618,8 +626,10 @@ func newCommentCount(state *State, issueID, kind string, comments []domain.Revie
 // issue and kind, writing through to the store after the cache. A cached
 // key gains the absent IDs and only those are stored. For an uncached key
 // every ID is stored and the key stays uncached, because a partial key
-// would read as authoritative. A store error keeps the cache.
-func recordHandedOffComments(ctx context.Context, state *State, store handedOffCommentWriter, issueID, kind string, commentIDs []string, log *slog.Logger) {
+// would read as authoritative. A store error keeps the cache and is
+// returned, so callers advance any durable round only once the save
+// landed; nil (including an empty write) is success.
+func recordHandedOffComments(ctx context.Context, state *State, store handedOffCommentWriter, issueID, kind string, commentIDs []string, log *slog.Logger) error {
 	toStore := commentIDs
 	if cached, loaded := state.ReactionHandedOffComments[ReactionKey(issueID, kind)]; loaded {
 		toStore = nil
@@ -632,14 +642,16 @@ func recordHandedOffComments(ctx context.Context, state *State, store handedOffC
 		}
 	}
 	if len(toStore) == 0 {
-		return
+		return nil
 	}
 	if err := store.AddReactionHandedOffComments(ctx, issueID, kind, toStore); err != nil {
 		log.Warn("failed to persist handed-off comments",
 			slog.String("reaction_kind", kind),
 			slog.Any("error", err),
 		)
+		return err
 	}
+	return nil
 }
 
 // recordReportedComments adds the ID of every comment to the reported set of

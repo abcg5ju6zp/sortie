@@ -54,7 +54,7 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 
 		data, ok := pending.KindData.(*MergeConflictReactionData)
 		if !ok {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			log.ErrorContext(ctx, "unexpected KindData type for merge-conflict reaction",
 				slog.String("issue_id", pending.IssueID),
 				slog.String("type", fmt.Sprintf("%T", pending.KindData)),
@@ -65,7 +65,7 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 		entryLog := logging.WithIssue(log, pending.IssueID, pending.Identifier)
 
 		if ttl > 0 && now.Sub(watchWindowStart(pending)) > ttl {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			delete(state.ReactionAttempts, ReactionKey(pending.IssueID, ReactionKindMergeConflict))
 			entryLog.Warn("merge conflict watch window elapsed, dropping",
 				slog.Int64("window_ms", int64(ttl/time.Millisecond)),
@@ -129,7 +129,7 @@ func reconcileMergeConflicts(state *State, params ReconcileParams, log *slog.Log
 			// re-enqueue. Mirrors the CIStatusPassing branch.
 			// The episode closes, so the fingerprint an in-flight run was
 			// started for no longer describes anything.
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			if delErr := params.Store.DeleteReactionFingerprint(ctx, pending.IssueID, ReactionKindMergeConflict); delErr != nil {
 				entryLog.Warn("failed to delete merge conflict reaction fingerprint",
 					slog.Any("error", delErr),
@@ -259,6 +259,17 @@ func handleMergeConflictDirty(
 		escalateMergeConflictFailure(state, params, pending, state.ReactionAttempts[rkey],
 			EscalationTriggerTriage, data, log, ctx, metrics)
 		return
+	case triageResumeDispatch:
+		// A previous process recorded the dispatch-agent answer but
+		// its continuation creation was never confirmed. Re-create
+		// only that continuation: the command is not re-run, and no
+		// attribution query, cap check, or escalation runs. The
+		// runtime counter was lost with that process, so the re-created
+		// continuation is reported as this episode's first try.
+		state.ReactionAttempts[rkey]++
+		dispatchMergeConflictContinuation(state, params, pending, data, status, log, ctx)
+		metrics.IncMergeConflictChecks("dispatched")
+		return
 	}
 
 	// A new conflicting head this reaction has not dispatched for.
@@ -350,10 +361,19 @@ func dispatchMergeConflictContinuation(
 		IssueIdentity: pending.IssueIdentity,
 	}, params.OnRetryFire)
 
+	// The continuation is the round's confirmed next stage, and this
+	// kind marks the fingerprint dispatched on the same tick, so the
+	// round reaches dispatched here as well. Both marks bind this
+	// scheduling to the triage round a restart resumes from.
+	fingerprint := buildMergeConflictFingerprint(status.HeadSHA)
+	markTriageContinuationScheduled(params.Store, pending.IssueID, ReactionKindMergeConflict, fingerprint, log, ctx)
+
 	if markErr := params.Store.MarkReactionDispatched(ctx, pending.IssueID, ReactionKindMergeConflict); markErr != nil {
 		log.Warn("failed to mark merge conflict dispatched",
 			slog.Any("error", markErr),
 		)
+	} else {
+		markTriageRoundDispatched(params.Store, pending.IssueID, ReactionKindMergeConflict, log, ctx)
 	}
 
 	log.Info("merge conflict detected, scheduling rebase dispatch",
@@ -465,6 +485,8 @@ func escalateMergeConflictFailure(
 			slog.Any("error", err),
 		)
 	}
+	// The triage round belongs to the episode the escalation ends.
+	deleteTriageRound(params.Store, pending.IssueID, ReactionKindMergeConflict, log, ctx)
 	delete(state.ReactionAttempts, ReactionKey(pending.IssueID, ReactionKindMergeConflict))
 }
 

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- Reaction triage now keeps a recoverable processing round per reaction fingerprint in the database (`ci_failure`, `review_comments`, `bot_review`, and `merge_conflicts`). The round binds the observation, the triage command start and its result, the escalation or continuation it produces, the handed-off comment save, and the dispatched marker to one recoverable record. After a restart Sortie resumes from the confirmed stage: a triage command still in flight when the process ended is never run a second time for the same subject, a recorded `handled` or `escalate` answer is applied once, and a continuation whose creation was never confirmed is re-created without re-running the command. A fingerprint change voids the old round. A failed database write, tracker escalation, agent launch, or handed-off comment save is retried from that stage only; actions that already landed are not repeated. Triage disabled, no new fingerprint, an already-dispatched fingerprint, a spent retry budget, and a normal single reconcile keep their previous behavior.
+
 - The JSON API (`/api/v1/state` and `/api/v1/{identifier}`) now identifies every running, retrying, and budget-held issue by its title and tracker link, and reports each running issue's labels, its session's SSH host and agent, and its self-review progress. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
 
 - The JSON API (`/api/v1/state` and `/api/v1/{identifier}`) now reports each running issue's spend against its budgets: the tokens its finished sessions and its running session have used against `agent.max_tokens`, its finished sessions against `agent.max_sessions`, and the estimated cost of the session and of the whole issue when `token_rates` prices its agent. A figure Sortie does not have reads as not measured or unpriced instead of zero, and an issue held by a budget ceiling also reports how many of its sessions the token ceiling stopped mid-run. ([#1071](https://github.com/sortie-ai/sortie/issues/1071))
@@ -41,6 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - A CI or review comment escalation that fires while a fix is running no longer stops Sortie from watching the pull request's CI and review comments afterwards. ([#1288](https://github.com/sortie-ai/sortie/issues/1288))
 
 ### Migrations
+
+- Add the `reaction_triage_rounds` table (migration 028): one recoverable triage round per issue and reaction kind, bound to a fingerprint, recording its stage (`started`, `result`, `continuation`, `escalated`, `dispatched`, `handed_off`), the recorded disposition and fallback, and stage timestamps. A row is replaced wholesale when the fingerprint changes. The table starts empty on upgrade; the first triage run after the upgrade opens a round, and reaction kinds without a `triage` block never write one.
 
 - Add `issue_title` and `issue_url` to `run_history` and `retry_entries`, and `display_identifier` to `retry_entries`. A retry or run recorded before the upgrade reads back with no title or link; a queued retry gets one from the first tracker poll or when it next fires. ([#1286](https://github.com/sortie-ai/sortie/issues/1286))
 

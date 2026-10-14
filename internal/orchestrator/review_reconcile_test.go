@@ -2273,7 +2273,7 @@ func TestRecordHandedOffComments(t *testing.T) {
 			}
 			log, buf := logCapture()
 
-			recordHandedOffComments(context.Background(), state, store, issueID, ReactionKindReview, tt.ids, log)
+			_ = recordHandedOffComments(context.Background(), state, store, issueID, ReactionKindReview, tt.ids, log)
 
 			if !slices.EqualFunc(store.addCalls, tt.wantStored, slices.Equal) {
 				t.Errorf("AddReactionHandedOffComments batches = %v, want %v", store.addCalls, tt.wantStored)
@@ -2301,8 +2301,8 @@ func TestRecordHandedOffComments_KeysAreIndependent(t *testing.T) {
 	seedHandedOff(state, botKey)
 	store := newFingerprintModelStore()
 
-	recordHandedOffComments(context.Background(), state, store, issueID, ReactionKindReview, []string{"a"}, discardLogger())
-	recordHandedOffComments(context.Background(), state, store, issueID, ReactionKindBotReview, []string{"b"}, discardLogger())
+	_ = recordHandedOffComments(context.Background(), state, store, issueID, ReactionKindReview, []string{"a"}, discardLogger())
+	_ = recordHandedOffComments(context.Background(), state, store, issueID, ReactionKindBotReview, []string{"b"}, discardLogger())
 
 	assertHandedOffCached(t, state, reviewKey, "a")
 	assertHandedOffCached(t, state, botKey, "b")

@@ -46,7 +46,7 @@ func reconcileBotReviewComments(state *State, params ReconcileParams, log *slog.
 
 		botReviewData, ok := pending.KindData.(*BotReviewReactionData)
 		if !ok {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			log.ErrorContext(ctx, "unexpected KindData type for bot-review reaction",
 				slog.String("issue_id", pending.IssueID),
 				slog.String("type", fmt.Sprintf("%T", pending.KindData)),
@@ -59,7 +59,7 @@ func reconcileBotReviewComments(state *State, params ReconcileParams, log *slog.
 
 		// TTL enforcement.
 		if ttl > 0 && now.Sub(watchWindowStart(pending)) > ttl {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			// A spent counter outlives the drop, as it outlives a budget
 			// escalation, so the next seeded entry cannot reopen the
 			// budget or re-report comments already reported. The
@@ -118,7 +118,7 @@ func reconcileBotReviewComments(state *State, params ReconcileParams, log *slog.
 			// comment set a run answered for no longer describes
 			// anything. A retained verdict would otherwise be replayed
 			// against the next episode that recomputes the same set.
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			pending.PendingRetryAt = now.Add(pollInterval)
 			pending.LastCheck = commentReactionCheck(now, 0, 0)
 			requeueReaction(state, key, pending, waitPollInterval)
@@ -203,7 +203,7 @@ func reconcileBotReviewComments(state *State, params ReconcileParams, log *slog.
 
 		// The gate sits above the dispatch counter so no pass that
 		// dispatches nothing is counted as one.
-		triageVerdict := reactionTriageGate(state, params, pending, params.BotReviewConfig.Triage, ReactionTriageRequest{
+		triageReq := ReactionTriageRequest{
 			Kind:          ReactionKindBotReview,
 			WorkspaceRoot: params.WorkspaceRoot,
 			IssueID:       pending.IssueID,
@@ -215,7 +215,8 @@ func reconcileBotReviewComments(state *State, params ReconcileParams, log *slog.
 			AttemptsUsed:  turnCount,
 			MaxAttempts:   params.BotReviewConfig.MaxContinuationTurns,
 			Subject:       botContext,
-		}, entryLog, ctx)
+		}
+		triageVerdict := reactionTriageGate(state, params, pending, params.BotReviewConfig.Triage, triageReq, entryLog, ctx)
 
 		switch triageVerdict {
 		case triageWait:
@@ -260,6 +261,11 @@ func reconcileBotReviewComments(state *State, params ReconcileParams, log *slog.
 		}, params.OnRetryFire)
 
 		state.ReactionAttempts[rkey]++
+
+		// Record the continuation as the round's confirmed next stage
+		// before the entry leaves the map, so a restart resumes from the
+		// continuation instead of re-running triage.
+		markTriageContinuationScheduled(params.Store, pending.IssueID, ReactionKindBotReview, fingerprint, entryLog, ctx)
 
 		entryLog.Info("bot review comments detected, scheduling bot-review-fix dispatch",
 			slog.Int("comment_count", len(actionable)),
@@ -350,6 +356,8 @@ func escalateBotReviewFailure(
 			slog.Any("error", err),
 		)
 	}
+	// The triage round belongs to the episode the escalation ends.
+	deleteTriageRound(params.Store, pending.IssueID, ReactionKindBotReview, log, ctx)
 }
 
 // buildBotReviewEscalationComment returns the escalation comment used when

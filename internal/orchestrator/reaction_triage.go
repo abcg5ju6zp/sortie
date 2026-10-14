@@ -13,6 +13,7 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/agent/procutil"
 	"github.com/sortie-ai/sortie/internal/config"
+	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/workspace"
 )
 
@@ -58,6 +59,13 @@ const (
 	triageFallbackResultTooLarge       = "result_too_large"
 	triageFallbackMalformedResult      = "malformed_result"
 	triageFallbackUnknownDisposition   = "unknown_disposition"
+
+	// triageFallbackShutdownInterrupted is not a reason the runner ever
+	// reports: it is recorded by the gate when it resumes a round whose
+	// triage command was still in flight when the previous process ended.
+	// Such a command is never re-run for the fingerprint, because it may
+	// already have acted; the round proceeds as dispatch-agent instead.
+	triageFallbackShutdownInterrupted = "shutdown_interrupted"
 )
 
 // ReactionTriageOutcome is one completed triage run. It holds no
@@ -79,13 +87,16 @@ type ReactionTriageOutcome struct {
 }
 
 // ReactionTriageRun is an in-flight or finished triage run. It is
-// runtime-only and is never persisted.
+// runtime-only: the recoverable half of the run's state lives in the
+// reaction_triage_rounds row the durable gate keeps ([ReactionTriageRound]).
 //
 // Outcome is written by the runner goroutine before Done is closed and
 // MUST NOT be read until a receive on Done has succeeded. That receive
 // is the only synchronization between the goroutine and the reconcile
-// pass. Applied and Marked are written afterwards by the event loop
-// alone, so they need none. No field is written by both.
+// pass. ResultRecorded is written by the event loop alone after a
+// successful receive, Applied and Marked by the in-memory gate alone, so
+// none of them needs synchronization. No field is written by both the
+// goroutine and the event loop.
 type ReactionTriageRun struct {
 	// Fingerprint binds the run to the subject it was started for.
 	Fingerprint string
@@ -102,16 +113,20 @@ type ReactionTriageRun struct {
 	// Outcome is valid only after a successful receive on Done.
 	Outcome *ReactionTriageOutcome
 
-	// Applied reports whether a reconcile pass has already acted on
-	// Outcome. Written only by the event loop, and only after a
-	// successful receive on Done. A consumed outcome is re-applied from
-	// memory rather than re-running the command, which is what bounds a
-	// subject to one run.
+	// ResultRecorded reports whether Outcome has been written through to
+	// the round's durable row. The gate waits until this lands before it
+	// applies the outcome, so a restart never has to guess what a
+	// finished run answered.
+	ResultRecorded bool
+
+	// Applied reports whether the in-memory gate has already acted on
+	// Outcome. Used only by stores without a durable round table.
 	Applied bool
 
 	// Marked reports whether the fingerprint write that a handled or
-	// escalate outcome requires has succeeded. False after a failed
-	// write, which is the one case a later pass retries.
+	// escalate outcome requires has succeeded. Used only by the in-memory
+	// gate; false after a failed write is the one case a later pass
+	// retries.
 	Marked bool
 }
 
@@ -431,24 +446,42 @@ const (
 	// own escalation function with [EscalationTriggerTriage] and
 	// continues to the next entry.
 	triageEscalate
+
+	// triageResumeDispatch means the durable round already holds a
+	// dispatch-agent answer from a previous tick or process and its
+	// continuation creation was never confirmed. The caller creates the
+	// continuation exactly once and skips the once-only bookkeeping a
+	// first drive performs, rather than re-running the triage command.
+	triageResumeDispatch
 )
 
-// startReactionTriage launches a triage run on its own goroutine,
-// registers it with state.TriageWg, counts it in state.TriageInFlight,
-// and returns the handle to store on the pending entry. It returns nil
-// without starting anything when the in-flight cap is already reached;
-// the gate reads a nil handle as a wait.
-func startReactionTriage(
-	state *State,
-	ctx context.Context,
-	cfg config.ReactionTriageConfig,
-	req ReactionTriageRequest,
-	log *slog.Logger,
-) *ReactionTriageRun {
-	if log == nil {
-		log = slog.Default()
-	}
+// triageRoundStore is the optional persistence contract the durable
+// reaction gate drives. [persistence.Store] satisfies it in production.
+// A store that does not (every hand-written test double) makes the gate
+// fall back to the in-memory behavior, so the gate's durability is
+// additive rather than forced on callers.
+type triageRoundStore interface {
+	StartReactionTriageRound(ctx context.Context, issueID, kind, fingerprint string, attemptsUsed int, startedAt time.Time) error
+	SaveReactionTriageRoundResult(ctx context.Context, issueID, kind, fingerprint, disposition, fallback string, resultAt time.Time) error
+	AdvanceReactionTriageRound(ctx context.Context, issueID, kind, fingerprint, stage string, at time.Time) error
+	MarkReactionTriageRoundDispatched(ctx context.Context, issueID, kind string, at time.Time) error
+	MarkReactionTriageRoundHandedOff(ctx context.Context, issueID, kind string, at time.Time) error
+	GetReactionTriageRound(ctx context.Context, issueID, kind string) (*persistence.ReactionTriageRound, error)
+	DeleteReactionTriageRound(ctx context.Context, issueID, kind string) error
+}
 
+// triageRounds returns the durable round store behind params.Store, or
+// nil when the store carries no round table.
+func triageRounds(store any) triageRoundStore {
+	rounds, _ := store.(triageRoundStore)
+	return rounds
+}
+
+// triageCapacityAvailable reports whether a new triage run fits under
+// the in-flight cap. The gate calls this BEFORE it writes the round's
+// started row, so a cap deferral leaves no round behind that a later
+// pass could mistake for an interrupted run.
+func triageCapacityAvailable(state *State, log *slog.Logger, req ReactionTriageRequest) bool {
 	// The cap is sized from the concurrency the operator already chose
 	// for this host. It adds to the agent processes that number bounds
 	// rather than sharing slots with them.
@@ -459,7 +492,29 @@ func startReactionTriage(
 			slog.String("fingerprint", req.Fingerprint),
 			slog.Int64("cap", limit),
 		)
-		return nil
+		return false
+	}
+	return true
+}
+
+// startReactionTriage launches a triage run on its own goroutine,
+// registers it with state.TriageWg, counts it in state.TriageInFlight,
+// and returns the handle to store on the pending entry. The caller MUST
+// have confirmed the in-flight cap with triageCapacityAvailable and, for
+// the durable gate, written the round's started row first. When rounds
+// is non-nil the runner writes the result to the round before it closes
+// Done; a failed write stays recorded on the handle for the gate to
+// retry.
+func startReactionTriage(
+	state *State,
+	ctx context.Context,
+	cfg config.ReactionTriageConfig,
+	req ReactionTriageRequest,
+	rounds triageRoundStore,
+	log *slog.Logger,
+) *ReactionTriageRun {
+	if log == nil {
+		log = slog.Default()
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -482,6 +537,23 @@ func startReactionTriage(
 		defer state.TriageInFlight.Add(-1)
 		outcome := RunReactionTriage(runCtx, cfg, req, log)
 		run.Outcome = &outcome
+		// The result lands in the round row before Done closes: a pass
+		// that can read Outcome can also read it back after a restart.
+		if rounds != nil {
+			if err := rounds.SaveReactionTriageRoundResult(
+				context.WithoutCancel(ctx),
+				req.IssueID, req.Kind, req.Fingerprint,
+				string(outcome.Disposition), outcome.Fallback, time.Now().UTC(),
+			); err != nil {
+				log.Warn("failed to persist reaction triage result, the pass will retry the write",
+					slog.String("reaction_kind", req.Kind),
+					slog.String("fingerprint", req.Fingerprint),
+					slog.Any("error", err),
+				)
+			} else {
+				run.ResultRecorded = true
+			}
+		}
 		close(done)
 		cancel()
 	})
@@ -504,11 +576,13 @@ func triageRunFinished(run *ReactionTriageRun) bool {
 }
 
 // reactionTriageGate advances a pending entry's triage state for one
-// reconcile pass and reports what the pass should do next. It starts,
-// cancels, discards, and applies runs, and marks the reaction
-// fingerprint dispatched on a handled or escalate answer. It never
-// escalates, dispatches, or re-enqueues: those remain the pass's own
-// responsibility.
+// reconcile pass and reports what the pass should do next. With a store
+// that keeps a durable round table it drives the recoverable round:
+// every stage is persisted before the pass acts on it, a restart resumes
+// from the stored stage, and an in-flight command left by a dead process
+// is never re-run. With a store without the table it keeps the former
+// in-memory behavior. The gate never escalates, dispatches, or
+// re-enqueues: those remain the pass's own responsibility.
 func reactionTriageGate(
 	state *State,
 	params ReconcileParams,
@@ -524,9 +598,330 @@ func reactionTriageGate(
 	if params.WorkspaceRoot == "" || !cfg.Enabled() {
 		return triageProceed
 	}
+	if rounds := triageRounds(params.Store); rounds != nil {
+		return reactionTriageGateDurable(state, rounds, params, pending, cfg, req, log, ctx)
+	}
+	return reactionTriageGateInMemory(state, params, pending, cfg, req, log, ctx)
+}
 
+// reactionTriageGateDurable is the restart-safe gate. Its ordering on
+// every pass is: settle the live in-memory run, read the durable round,
+// then act only on the stage that is still unconfirmed.
+func reactionTriageGateDurable(
+	state *State,
+	rounds triageRoundStore,
+	params ReconcileParams,
+	pending *PendingReaction,
+	cfg config.ReactionTriageConfig,
+	req ReactionTriageRequest,
+	log *slog.Logger,
+	ctx context.Context,
+) reactionTriageVerdict {
+	// 1. A live run bound to the current subject is the one producer of
+	//    this round's result.
+	if pending.Triage != nil {
+		run := pending.Triage
+		finished := triageRunFinished(run)
+
+		if run.Fingerprint != req.Fingerprint {
+			// The subject moved: kill the old run if it is still alive
+			// and fall through, where the old round is superseded before
+			// a fresh run starts.
+			logTriageDiscarded(ctx, log, run, req, finished)
+			if !finished && run.Cancel != nil {
+				run.Cancel()
+			}
+			pending.Triage = nil
+		} else if !finished {
+			return triageWait
+		} else {
+			// A finished run only makes its verdict available once the
+			// result row landed; until then the pass waits and retries
+			// the write from the in-memory outcome.
+			if run.Outcome == nil {
+				log.Warn("reaction triage finished without an outcome, dispatching the agent",
+					slog.String("reaction_kind", req.Kind),
+					slog.String("fingerprint", req.Fingerprint),
+				)
+				// Nothing was recorded; record the dispatch-agent
+				// default the runner would have and drive on.
+				if !recordTriageResult(rounds, req, ReactionTriageOutcome{Disposition: TriageDispatchAgent, Fallback: triageFallbackMalformedResult}, log, ctx) {
+					return triageWait
+				}
+			} else if !run.ResultRecorded {
+				if !recordTriageResult(rounds, req, *run.Outcome, log, ctx) {
+					return triageWait
+				}
+				run.ResultRecorded = true
+			}
+		}
+	}
+
+	// 2. Read the durable round, the authority for what is confirmed.
+	round, err := rounds.GetReactionTriageRound(ctx, req.IssueID, req.Kind)
+	if err != nil {
+		log.Warn("failed to read reaction triage round, deferring",
+			slog.String("reaction_kind", req.Kind),
+			slog.String("fingerprint", req.Fingerprint),
+			slog.Any("error", err),
+		)
+		return triageWait
+	}
+
+	// 3. No round, or a round bound to an older subject: open this
+	//    subject's round before launching, so the command never starts
+	//    without a recoverable row.
+	if round == nil || round.Fingerprint != req.Fingerprint {
+		if round != nil {
+			logTriageRoundSuperseded(ctx, log, req, round)
+		}
+		if !triageCapacityAvailable(state, log, req) {
+			return triageWait
+		}
+		now := time.Now().UTC()
+		if err := rounds.StartReactionTriageRound(ctx, req.IssueID, req.Kind, req.Fingerprint, req.AttemptsUsed, now); err != nil {
+			log.Warn("failed to open reaction triage round, deferring",
+				slog.String("reaction_kind", req.Kind),
+				slog.String("fingerprint", req.Fingerprint),
+				slog.Any("error", err),
+			)
+			return triageWait
+		}
+		run := startReactionTriage(state, ctx, cfg, req, rounds, log)
+		if run == nil {
+			// Unreachable after the capacity check on this event loop;
+			// void the just-opened row so it cannot read as interrupted.
+			if delErr := rounds.DeleteReactionTriageRound(ctx, req.IssueID, req.Kind); delErr != nil {
+				log.Warn("failed to void deferred reaction triage round",
+					slog.String("reaction_kind", req.Kind),
+					slog.Any("error", delErr),
+				)
+			}
+			return triageWait
+		}
+		pending.Triage = run
+		return triageWait
+	}
+
+	// 4. Same subject: resume from the confirmed stage.
+	switch round.Stage {
+	case persistence.ReactionTriageStageStarted:
+		// A started row with no live run in this process means the
+		// previous process ended with the command in flight. The command
+		// may already have acted, so it is never re-run: record the
+		// explicit interrupted result and take the universal
+		// dispatch-agent fallback for the first drive.
+		outcome := ReactionTriageOutcome{
+			Disposition: TriageDispatchAgent,
+			Fallback:    triageFallbackShutdownInterrupted,
+		}
+		if !recordTriageResult(rounds, req, outcome, log, ctx) {
+			return triageWait
+		}
+		logTriageInterrupted(ctx, log, req)
+		pending.Triage = nil
+		return triageProceed
+
+	case persistence.ReactionTriageStageResult:
+		verdict, ok := applyTriageResult(rounds, params, req, round, log, ctx)
+		if !ok {
+			return triageWait
+		}
+		pending.Triage = nil
+		return verdict
+
+	case persistence.ReactionTriageStageContinuation:
+		// The answer was dispatch-agent and the continuation creation is
+		// unconfirmed. Re-create that continuation only; the command is
+		// not re-run and no escalation is reposted.
+		pending.Triage = nil
+		return triageResumeDispatch
+
+	case persistence.ReactionTriageStageEscalated,
+		persistence.ReactionTriageStageDispatched,
+		persistence.ReactionTriageStageHandedOff:
+		// A terminal round is the durable equivalent of the memoized
+		// answer: re-enqueue, do nothing twice.
+		pending.Triage = nil
+		return triageHandled
+
+	default:
+		log.Warn("unknown reaction triage round stage, deferring",
+			slog.String("reaction_kind", req.Kind),
+			slog.String("fingerprint", req.Fingerprint),
+			slog.String("stage", round.Stage),
+		)
+		return triageWait
+	}
+}
+
+// recordTriageResult writes outcome to the round's result stage. It
+// returns false when the write fails, in which case the caller waits and
+// retries; the in-memory outcome is retained on the run handle.
+func recordTriageResult(
+	rounds triageRoundStore,
+	req ReactionTriageRequest,
+	outcome ReactionTriageOutcome,
+	log *slog.Logger,
+	ctx context.Context,
+) bool {
+	if err := rounds.SaveReactionTriageRoundResult(
+		ctx, req.IssueID, req.Kind, req.Fingerprint,
+		string(outcome.Disposition), outcome.Fallback, time.Now().UTC(),
+	); err != nil {
+		log.Warn("failed to persist reaction triage result, deferring",
+			slog.String("reaction_kind", req.Kind),
+			slog.String("fingerprint", req.Fingerprint),
+			slog.Any("error", err),
+		)
+		return false
+	}
+	return true
+}
+
+// applyTriageResult acts on a round at the result stage once: handled and
+// escalate mark the fingerprint dispatched and advance the round before
+// reporting their verdict, dispatch-agent reports proceed and leaves the
+// stage for the pass to advance once the continuation is created. The
+// boolean is false when a required write failed and the pass must wait.
+func applyTriageResult(
+	rounds triageRoundStore,
+	params ReconcileParams,
+	req ReactionTriageRequest,
+	round *persistence.ReactionTriageRound,
+	log *slog.Logger,
+	ctx context.Context,
+) (reactionTriageVerdict, bool) {
+	outcome := ReactionTriageOutcome{
+		Disposition: ReactionTriageDisposition(round.Disposition),
+		Fallback:    round.Fallback,
+	}
+	logTriageApplied(ctx, log, req, outcome)
+
+	switch ReactionTriageDisposition(round.Disposition) {
+	case TriageHandled, TriageEscalate:
+		if !markTriageDispatched(params, req, log, ctx) {
+			return triageWait, false
+		}
+		stage := persistence.ReactionTriageStageDispatched
+		verdict := triageHandled
+		if ReactionTriageDisposition(round.Disposition) == TriageEscalate {
+			stage = persistence.ReactionTriageStageEscalated
+			verdict = triageEscalate
+		}
+		if err := rounds.AdvanceReactionTriageRound(ctx, req.IssueID, req.Kind, req.Fingerprint, stage, time.Now().UTC()); err != nil {
+			log.Warn("failed to advance reaction triage round after the dispatched mark",
+				slog.String("reaction_kind", req.Kind),
+				slog.String("fingerprint", req.Fingerprint),
+				slog.String("stage", stage),
+				slog.Any("error", err),
+			)
+			return triageWait, false
+		}
+		return verdict, true
+
+	default:
+		return triageProceed, true
+	}
+}
+
+// markTriageContinuationScheduled records that the dispatch-agent result
+// created its continuation, the confirmation a restart resumes from. It
+// is called by each triage-enabled pass immediately after it schedules
+// the continuation. A failed write is logged: the unconfirmed round
+// would re-create the continuation once after a restart rather than lose
+// it.
+func markTriageContinuationScheduled(
+	store any,
+	issueID, kind, fingerprint string,
+	log *slog.Logger,
+	ctx context.Context,
+) {
+	rounds := triageRounds(store)
+	if rounds == nil {
+		return
+	}
+	if err := rounds.AdvanceReactionTriageRound(ctx, issueID, kind, fingerprint, persistence.ReactionTriageStageContinuation, time.Now().UTC()); err != nil {
+		log.Warn("failed to record the scheduled continuation on the reaction triage round",
+			slog.String("reaction_kind", kind),
+			slog.String("fingerprint", fingerprint),
+			slog.Any("error", err),
+		)
+	}
+}
+
+// markTriageRoundDispatched records the dispatched marker confirmation
+// on the round after the reaction fingerprint itself was marked, from
+// call sites that do not hold the fingerprint (the shared retry-dispatch
+// path and the merge-conflict dispatch site). Best effort: a failed
+// advance only loses the cross-restart confirmation, never the marker.
+func markTriageRoundDispatched(store any, issueID, kind string, log *slog.Logger, ctx context.Context) {
+	rounds := triageRounds(store)
+	if rounds == nil {
+		return
+	}
+	if err := rounds.MarkReactionTriageRoundDispatched(ctx, issueID, kind, time.Now().UTC()); err != nil {
+		log.Warn("failed to advance the reaction triage round to dispatched",
+			slog.String("reaction_kind", kind),
+			slog.String("issue_id", issueID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+// markTriageRoundHandedOff records that the continuation run's
+// handed-off comments were saved, the last stage the review-family
+// rounds reach. Called only after that save succeeded.
+func markTriageRoundHandedOff(store any, issueID, kind string, log *slog.Logger, ctx context.Context) {
+	rounds := triageRounds(store)
+	if rounds == nil {
+		return
+	}
+	if err := rounds.MarkReactionTriageRoundHandedOff(ctx, issueID, kind, time.Now().UTC()); err != nil {
+		log.Warn("failed to advance the reaction triage round to handed off",
+			slog.String("reaction_kind", kind),
+			slog.String("issue_id", issueID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+// deleteTriageRound voids the current round for an episode that ends. It
+// is best effort: a failed void only makes a same-fingerprint next
+// episode take the conservative resume path once.
+func deleteTriageRound(store any, issueID, kind string, log *slog.Logger, ctx context.Context) {
+	rounds := triageRounds(store)
+	if rounds == nil {
+		return
+	}
+	if err := rounds.DeleteReactionTriageRound(ctx, issueID, kind); err != nil {
+		log.Warn("failed to delete reaction triage round",
+			slog.String("reaction_kind", kind),
+			slog.String("issue_id", issueID),
+			slog.Any("error", err),
+		)
+	}
+}
+
+// reactionTriageGateInMemory is the former gate, kept for stores without
+// a durable round table. A consumed outcome is re-applied from memory
+// rather than re-running the command; a memoized escalate re-applies as
+// handled, and the fingerprint write is the one action a later pass
+// repeats, and only while it has failed.
+func reactionTriageGateInMemory(
+	state *State,
+	params ReconcileParams,
+	pending *PendingReaction,
+	cfg config.ReactionTriageConfig,
+	req ReactionTriageRequest,
+	log *slog.Logger,
+	ctx context.Context,
+) reactionTriageVerdict {
 	if pending.Triage == nil {
-		if run := startReactionTriage(state, ctx, cfg, req, log); run != nil {
+		if !triageCapacityAvailable(state, log, req) {
+			return triageWait
+		}
+		if run := startReactionTriage(state, ctx, cfg, req, nil, log); run != nil {
 			pending.Triage = run
 		}
 		return triageWait
@@ -543,7 +938,10 @@ func reactionTriageGate(
 			run.Cancel()
 		}
 		pending.Triage = nil
-		if fresh := startReactionTriage(state, ctx, cfg, req, log); fresh != nil {
+		if !triageCapacityAvailable(state, log, req) {
+			return triageWait
+		}
+		if fresh := startReactionTriage(state, ctx, cfg, req, nil, log); fresh != nil {
 			pending.Triage = fresh
 		}
 		return triageWait
@@ -568,52 +966,50 @@ func reactionTriageGate(
 
 		switch outcome.Disposition {
 		case TriageHandled:
-			markTriageDispatched(params, run, req, log, ctx)
+			if markTriageDispatched(params, req, log, ctx) {
+				run.Marked = true
+			}
 			return triageHandled
 		case TriageEscalate:
-			markTriageDispatched(params, run, req, log, ctx)
+			if markTriageDispatched(params, req, log, ctx) {
+				run.Marked = true
+			}
 			return triageEscalate
 		default:
 			return triageProceed
 		}
 	}
 
-	// A consumed outcome is re-applied from memory rather than re-run.
-	// A memoized escalate re-applies as handled so a stored answer
-	// cannot post a second escalation; the fingerprint write is the one
-	// action a later pass repeats, and only while it has failed.
 	if outcome.Disposition == TriageDispatchAgent {
 		return triageProceed
 	}
-	if !run.Marked {
-		markTriageDispatched(params, run, req, log, ctx)
+	if !run.Marked && markTriageDispatched(params, req, log, ctx) {
+		run.Marked = true
 	}
 	return triageHandled
 }
 
-// markTriageDispatched marks the reaction fingerprint dispatched and
-// records the write's success on the run, so a failed write is retried
-// by a later pass and a successful one is never repeated.
+// markTriageDispatched marks the reaction fingerprint dispatched. It
+// reports whether the write landed, so a failed mark is retried by a
+// later pass and a successful one is never repeated.
 func markTriageDispatched(
 	params ReconcileParams,
-	run *ReactionTriageRun,
 	req ReactionTriageRequest,
 	log *slog.Logger,
 	ctx context.Context,
-) {
+) bool {
 	if params.Store == nil {
-		return
+		return false
 	}
 	if err := params.Store.MarkReactionDispatched(ctx, req.IssueID, req.Kind); err != nil {
-		run.Marked = false
 		log.Warn("failed to mark reaction dispatched after triage",
 			slog.String("reaction_kind", req.Kind),
 			slog.String("fingerprint", req.Fingerprint),
 			slog.Any("error", err),
 		)
-		return
+		return false
 	}
-	run.Marked = true
+	return true
 }
 
 // logTriageApplied writes the record reporting that a pass consumed an
@@ -658,22 +1054,52 @@ func logTriageDiscarded(ctx context.Context, log *slog.Logger, run *ReactionTria
 	log.LogAttrs(ctx, level, "reaction triage discarded: subject changed", attrs...)
 }
 
+// logTriageRoundSuperseded writes the record reporting that a durable
+// round bound to a fingerprint the pass no longer computes is being
+// replaced by a fresh round for the new subject.
+func logTriageRoundSuperseded(ctx context.Context, log *slog.Logger, req ReactionTriageRequest, round *persistence.ReactionTriageRound) {
+	log.LogAttrs(ctx, slog.LevelInfo, "reaction triage round superseded: subject changed",
+		slog.String("reaction_kind", req.Kind),
+		slog.String("fingerprint", req.Fingerprint),
+		slog.String("previous_fingerprint", round.Fingerprint),
+		slog.String("previous_stage", round.Stage),
+	)
+}
+
+// logTriageInterrupted writes the record reporting that a round resumed
+// with its triage command still in flight from a process that has ended,
+// so the command is not re-run and the round falls back to
+// dispatch-agent.
+func logTriageInterrupted(ctx context.Context, log *slog.Logger, req ReactionTriageRequest) {
+	log.LogAttrs(ctx, slog.LevelWarn, "reaction triage interrupted by shutdown, dispatching the agent without re-running the command",
+		slog.String("reaction_kind", req.Kind),
+		slog.String("fingerprint", req.Fingerprint),
+		slog.String("fallback", triageFallbackShutdownInterrupted),
+	)
+}
+
 // cancelReactionTriage detaches an entry's triage run, terminating it
-// first when it is still in flight. It is called by every path that ends
-// the episode the run was started for, whether that path drops the
-// pending entry or re-enqueues it, so no subprocess outlives its episode
-// and no finished verdict is carried into the next one. Detaching a
-// finished run matters as much as cancelling a live one: a retained
-// verdict is replayed by the gate whenever the next episode recomputes
-// an identical fingerprint. A nil entry and a nil handle are no-ops.
-func cancelReactionTriage(pending *PendingReaction) {
-	if pending == nil || pending.Triage == nil {
+// first when it is still in flight, and voids the run's durable round.
+// It is called by every path that ends the episode the run was started
+// for, whether that path drops the pending entry or re-enqueues it, so no
+// subprocess outlives its episode and no verdict or round is carried into
+// the next one. Detaching a finished run and voiding a round with no live
+// run matter as much as cancelling a live one: without the void the gate
+// would resume the old round whenever the next episode recomputes an
+// identical fingerprint. The store is typed as any so callers can pass
+// the ReconcileStore they already hold; a store without round storage
+// voids the run alone. A nil entry is a no-op.
+func cancelReactionTriage(ctx context.Context, store any, log *slog.Logger, pending *PendingReaction) {
+	if pending == nil {
 		return
 	}
-	if !triageRunFinished(pending.Triage) && pending.Triage.Cancel != nil {
-		pending.Triage.Cancel()
+	if pending.Triage != nil {
+		if !triageRunFinished(pending.Triage) && pending.Triage.Cancel != nil {
+			pending.Triage.Cancel()
+		}
+		pending.Triage = nil
 	}
-	pending.Triage = nil
+	deleteTriageRound(store, pending.IssueID, pending.Kind, log, ctx)
 }
 
 // ReactionEscalationTrigger names why an escalation fired. It selects

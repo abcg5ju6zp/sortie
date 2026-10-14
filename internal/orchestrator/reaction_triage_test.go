@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -222,8 +223,9 @@ func (s *triageCancelSpy) calls() int {
 
 // finishedTriageRun builds a completed run whose outcome is already
 // readable, for gate subtests that drive a specific post-completion row
-// without waiting on a real subprocess.
-func finishedTriageRun(fingerprint string, outcome ReactionTriageOutcome, applied, marked bool) *ReactionTriageRun {
+// without waiting on a real subprocess. The durable gate persists the
+// outcome through the round store on the first pass that sees it.
+func finishedTriageRun(fingerprint string, outcome ReactionTriageOutcome) *ReactionTriageRun {
 	done := make(chan struct{})
 	close(done)
 	o := outcome
@@ -233,8 +235,6 @@ func finishedTriageRun(fingerprint string, outcome ReactionTriageOutcome, applie
 		Cancel:      func() {},
 		Done:        done,
 		Outcome:     &o,
-		Applied:     applied,
-		Marked:      marked,
 	}
 }
 
@@ -252,17 +252,44 @@ func inFlightTriageRun(fingerprint string, cancel func()) *ReactionTriageRun {
 	}
 }
 
-// triageGateStore is a minimal ReconcileStore for gate tests: only
-// MarkReactionDispatched carries behavior, the rest satisfy the
-// interface but are never expected to be called by the gate.
+// triageGateStore is a minimal ReconcileStore for gate tests. Besides
+// MarkReactionDispatched it keeps an in-memory reaction_triage_rounds
+// table with the same conditional transition semantics as the SQLite
+// store, so gate tests drive the durable round machinery without a real
+// database.
 type triageGateStore struct {
 	unsupportedReactionObservationStore
 
 	markCalls int
 	markErr   error
+
+	// roundFailAt maps a stage transition to an injected failure:
+	// "start", "result", "advance:<stage>", "delete".
+	roundFailAt map[string]error
+
+	mu     sync.Mutex
+	rounds map[string]*persistence.ReactionTriageRound
 }
 
-var _ ReconcileStore = (*triageGateStore)(nil)
+var (
+	_ ReconcileStore   = (*triageGateStore)(nil)
+	_ triageRoundStore = (*triageGateStore)(nil)
+)
+
+func newTriageGateStore() *triageGateStore {
+	return &triageGateStore{rounds: make(map[string]*persistence.ReactionTriageRound)}
+}
+
+func triageRoundKey(issueID, kind string) string {
+	return issueID + ":" + kind
+}
+
+func (s *triageGateStore) failAt(stage string) error {
+	if s.roundFailAt == nil {
+		return nil
+	}
+	return s.roundFailAt[stage]
+}
 
 func (s *triageGateStore) SaveRetryEntry(context.Context, persistence.RetryEntry) error {
 	return nil
@@ -291,6 +318,138 @@ func (s *triageGateStore) DeleteRetryEntry(context.Context, string) error {
 
 func (s *triageGateStore) AppendRunHistory(_ context.Context, run persistence.RunHistory) (persistence.RunHistory, error) {
 	return run, nil
+}
+
+func (s *triageGateStore) StartReactionTriageRound(_ context.Context, issueID, kind, fingerprint string, attemptsUsed int, startedAt time.Time) error {
+	if err := s.failAt("start"); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := triageRoundKey(issueID, kind)
+	if existing, ok := s.rounds[key]; ok && existing.Fingerprint == fingerprint {
+		return nil
+	}
+	s.rounds[key] = &persistence.ReactionTriageRound{
+		IssueID:      issueID,
+		Kind:         kind,
+		Fingerprint:  fingerprint,
+		Stage:        persistence.ReactionTriageStageStarted,
+		AttemptsUsed: attemptsUsed,
+		StartedAt:    startedAt,
+	}
+	return nil
+}
+
+func (s *triageGateStore) SaveReactionTriageRoundResult(_ context.Context, issueID, kind, fingerprint, disposition, fallback string, resultAt time.Time) error {
+	if err := s.failAt("result"); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round, ok := s.rounds[triageRoundKey(issueID, kind)]
+	if !ok || round.Fingerprint != fingerprint || round.Stage != persistence.ReactionTriageStageStarted {
+		return nil
+	}
+	round.Stage = persistence.ReactionTriageStageResult
+	round.Disposition = disposition
+	round.Fallback = fallback
+	round.ResultAt = resultAt
+	return nil
+}
+
+func (s *triageGateStore) AdvanceReactionTriageRound(_ context.Context, issueID, kind, fingerprint, stage string, at time.Time) error {
+	if err := s.failAt("advance:" + stage); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round, ok := s.rounds[triageRoundKey(issueID, kind)]
+	if !ok || round.Fingerprint != fingerprint {
+		return nil
+	}
+	allowed := map[string]map[string]bool{
+		persistence.ReactionTriageStageContinuation: {persistence.ReactionTriageStageResult: true},
+		persistence.ReactionTriageStageEscalated:    {persistence.ReactionTriageStageResult: true},
+		persistence.ReactionTriageStageDispatched:   {persistence.ReactionTriageStageResult: true, persistence.ReactionTriageStageContinuation: true},
+		persistence.ReactionTriageStageHandedOff:    {persistence.ReactionTriageStageContinuation: true, persistence.ReactionTriageStageDispatched: true},
+	}
+	if !allowed[stage][round.Stage] {
+		return nil
+	}
+	round.Stage = stage
+	if stage == persistence.ReactionTriageStageEscalated ||
+		stage == persistence.ReactionTriageStageDispatched ||
+		stage == persistence.ReactionTriageStageHandedOff {
+		round.CompletedAt = at
+	}
+	return nil
+}
+
+func (s *triageGateStore) MarkReactionTriageRoundDispatched(_ context.Context, issueID, kind string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round, ok := s.rounds[triageRoundKey(issueID, kind)]
+	if !ok {
+		return nil
+	}
+	if round.Stage != persistence.ReactionTriageStageResult && round.Stage != persistence.ReactionTriageStageContinuation {
+		return nil
+	}
+	round.Stage = persistence.ReactionTriageStageDispatched
+	round.CompletedAt = at
+	return nil
+}
+
+func (s *triageGateStore) MarkReactionTriageRoundHandedOff(_ context.Context, issueID, kind string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round, ok := s.rounds[triageRoundKey(issueID, kind)]
+	if !ok {
+		return nil
+	}
+	if round.Stage != persistence.ReactionTriageStageContinuation && round.Stage != persistence.ReactionTriageStageDispatched {
+		return nil
+	}
+	round.Stage = persistence.ReactionTriageStageHandedOff
+	round.CompletedAt = at
+	return nil
+}
+
+func (s *triageGateStore) GetReactionTriageRound(_ context.Context, issueID, kind string) (*persistence.ReactionTriageRound, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round, ok := s.rounds[triageRoundKey(issueID, kind)]
+	if !ok {
+		return nil, nil
+	}
+	copy := *round
+	return &copy, nil
+}
+
+func (s *triageGateStore) DeleteReactionTriageRound(_ context.Context, issueID, kind string) error {
+	if err := s.failAt("delete"); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rounds, triageRoundKey(issueID, kind))
+	return nil
+}
+
+// seedTriageRound puts the store's round table directly at stage for the
+// request's subject, the way a previous process could have left it.
+func (s *triageGateStore) seedTriageRound(req ReactionTriageRequest, stage, disposition string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rounds[triageRoundKey(req.IssueID, req.Kind)] = &persistence.ReactionTriageRound{
+		IssueID:     req.IssueID,
+		Kind:        req.Kind,
+		Fingerprint: req.Fingerprint,
+		Stage:       stage,
+		Disposition: disposition,
+		StartedAt:   time.Now().UTC(),
+	}
 }
 
 // gateParams returns a ReconcileParams and State wired for
@@ -695,7 +854,7 @@ func TestReactionTriageGate(t *testing.T) {
 	t.Run("no workspace root proceeds without acting", func(t *testing.T) {
 		t.Parallel()
 
-		store := &triageGateStore{}
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, "")
 		pending := &PendingReaction{IssueID: "ISS-1"}
 		req := gateRequest(params.WorkspaceRoot, "ISS-1", "fp")
@@ -715,7 +874,7 @@ func TestReactionTriageGate(t *testing.T) {
 
 		identifier := "ISS-2"
 		root := mustTriageWorkspace(t, identifier)
-		store := &triageGateStore{}
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, root)
 		pending := &PendingReaction{IssueID: identifier}
 		req := gateRequest(params.WorkspaceRoot, identifier, "fp")
@@ -735,7 +894,7 @@ func TestReactionTriageGate(t *testing.T) {
 
 		identifier := "ISS-3"
 		root := mustTriageWorkspace(t, identifier)
-		store := &triageGateStore{}
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, root)
 		pending := &PendingReaction{IssueID: identifier}
 		req := gateRequest(params.WorkspaceRoot, identifier, "fp-3")
@@ -760,7 +919,7 @@ func TestReactionTriageGate(t *testing.T) {
 
 		spy := &triageCancelSpy{}
 		run := inFlightTriageRun("fp-4", spy.cancel)
-		store := &triageGateStore{}
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-4"))
 		pending := &PendingReaction{IssueID: "ISS-4", Triage: run}
 		req := gateRequest(params.WorkspaceRoot, "ISS-4", "fp-4")
@@ -785,7 +944,7 @@ func TestReactionTriageGate(t *testing.T) {
 		oldRun := inFlightTriageRun("fp-old", spy.cancel)
 		identifier := "ISS-5"
 		root := mustTriageWorkspace(t, identifier)
-		store := &triageGateStore{}
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, root)
 		pending := &PendingReaction{IssueID: identifier, Triage: oldRun}
 		req := gateRequest(params.WorkspaceRoot, identifier, "fp-new")
@@ -811,10 +970,10 @@ func TestReactionTriageGate(t *testing.T) {
 	t.Run("done different fingerprint discards and starts a new run", func(t *testing.T) {
 		t.Parallel()
 
-		oldRun := finishedTriageRun("fp-old", ReactionTriageOutcome{Disposition: TriageDispatchAgent}, false, false)
+		oldRun := finishedTriageRun("fp-old", ReactionTriageOutcome{Disposition: TriageDispatchAgent})
 		identifier := "ISS-6"
 		root := mustTriageWorkspace(t, identifier)
-		store := &triageGateStore{}
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, root)
 		pending := &PendingReaction{IssueID: identifier, Triage: oldRun}
 		req := gateRequest(params.WorkspaceRoot, identifier, "fp-new-2")
@@ -834,132 +993,280 @@ func TestReactionTriageGate(t *testing.T) {
 		waitTriageRunDone(t, pending.Triage)
 	})
 
-	t.Run("done same fingerprint unapplied dispatch-agent proceeds", func(t *testing.T) {
+	t.Run("done same fingerprint dispatch-agent records the result and proceeds", func(t *testing.T) {
 		t.Parallel()
 
-		run := finishedTriageRun("fp-7", ReactionTriageOutcome{Disposition: TriageDispatchAgent}, false, false)
-		store := &triageGateStore{}
+		run := finishedTriageRun("fp-7", ReactionTriageOutcome{Disposition: TriageDispatchAgent})
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-7"))
 		pending := &PendingReaction{IssueID: "ISS-7", Triage: run}
 		req := gateRequest(params.WorkspaceRoot, "ISS-7", "fp-7")
+		// The started round the run launch wrote before the command ran.
+		store.seedTriageRound(req, persistence.ReactionTriageStageStarted, "")
 
 		verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
 
 		if verdict != triageProceed {
 			t.Errorf("reactionTriageGate() = %v, want triageProceed", verdict)
 		}
-		if !run.Applied {
-			t.Error("run.Applied = false, want true after the first application")
-		}
 		if store.markCalls != 0 {
 			t.Errorf("MarkReactionDispatched called %d times, want 0 for dispatch-agent", store.markCalls)
 		}
+		round, err := store.GetReactionTriageRound(context.Background(), req.IssueID, req.Kind)
+		if err != nil || round == nil {
+			t.Fatalf("round = %v, %v; want the recorded result", round, err)
+		}
+		if round.Stage != persistence.ReactionTriageStageResult || round.Disposition != string(TriageDispatchAgent) {
+			t.Errorf("round = stage %q disposition %q, want result/dispatch-agent", round.Stage, round.Disposition)
+		}
 	})
 
-	t.Run("done same fingerprint unapplied handled marks dispatched", func(t *testing.T) {
+	t.Run("done same fingerprint handled marks dispatched and completes the round", func(t *testing.T) {
 		t.Parallel()
 
-		run := finishedTriageRun("fp-8", ReactionTriageOutcome{Disposition: TriageHandled}, false, false)
-		store := &triageGateStore{}
+		run := finishedTriageRun("fp-8", ReactionTriageOutcome{Disposition: TriageHandled})
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-8"))
 		pending := &PendingReaction{IssueID: "ISS-8", Triage: run}
 		req := gateRequest(params.WorkspaceRoot, "ISS-8", "fp-8")
+		store.seedTriageRound(req, persistence.ReactionTriageStageStarted, "")
 
 		verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
 
 		if verdict != triageHandled {
 			t.Errorf("reactionTriageGate() = %v, want triageHandled", verdict)
 		}
-		if !run.Applied {
-			t.Error("run.Applied = false, want true")
-		}
-		if !run.Marked {
-			t.Error("run.Marked = false, want true after a successful MarkReactionDispatched")
-		}
 		if store.markCalls != 1 {
 			t.Errorf("MarkReactionDispatched called %d times, want 1", store.markCalls)
 		}
+		round, _ := store.GetReactionTriageRound(context.Background(), req.IssueID, req.Kind)
+		if round == nil || round.Stage != persistence.ReactionTriageStageDispatched || round.CompletedAt.IsZero() {
+			t.Errorf("round = %+v, want a completed dispatched round", round)
+		}
 	})
 
-	t.Run("done same fingerprint unapplied escalate marks dispatched", func(t *testing.T) {
+	t.Run("done same fingerprint escalate marks dispatched and records the escalated round", func(t *testing.T) {
 		t.Parallel()
 
-		run := finishedTriageRun("fp-9", ReactionTriageOutcome{Disposition: TriageEscalate}, false, false)
-		store := &triageGateStore{}
+		run := finishedTriageRun("fp-9", ReactionTriageOutcome{Disposition: TriageEscalate})
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-9"))
 		pending := &PendingReaction{IssueID: "ISS-9", Triage: run}
 		req := gateRequest(params.WorkspaceRoot, "ISS-9", "fp-9")
+		store.seedTriageRound(req, persistence.ReactionTriageStageStarted, "")
 
 		verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
 
 		if verdict != triageEscalate {
 			t.Errorf("reactionTriageGate() = %v, want triageEscalate", verdict)
 		}
-		if !run.Marked {
-			t.Error("run.Marked = false, want true")
+		if store.markCalls != 1 {
+			t.Errorf("MarkReactionDispatched called %d times, want 1", store.markCalls)
+		}
+		round, _ := store.GetReactionTriageRound(context.Background(), req.IssueID, req.Kind)
+		if round == nil || round.Stage != persistence.ReactionTriageStageEscalated {
+			t.Errorf("round = %+v, want an escalated round", round)
+		}
+	})
+
+	t.Run("a failed dispatched mark waits at the result stage and retries only the write", func(t *testing.T) {
+		t.Parallel()
+
+		run := finishedTriageRun("fp-11", ReactionTriageOutcome{Disposition: TriageHandled})
+		store := newTriageGateStore()
+		store.markErr = errors.New("disk full")
+		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-11"))
+		pending := &PendingReaction{IssueID: "ISS-11", Triage: run}
+		req := gateRequest(params.WorkspaceRoot, "ISS-11", "fp-11")
+		store.seedTriageRound(req, persistence.ReactionTriageStageStarted, "")
+
+		first := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
+		if first != triageWait {
+			t.Fatalf("first gate verdict = %v, want triageWait while the mark fails", first)
+		}
+		round, _ := store.GetReactionTriageRound(context.Background(), req.IssueID, req.Kind)
+		if round == nil || round.Stage != persistence.ReactionTriageStageResult {
+			t.Fatalf("round = %+v, want it held at result while the mark fails", round)
+		}
+
+		store.markErr = nil
+		second := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
+		if second != triageHandled {
+			t.Errorf("second gate verdict = %v, want triageHandled", second)
+		}
+		if store.markCalls != 2 {
+			t.Errorf("MarkReactionDispatched called %d times, want 2 (one retried write)", store.markCalls)
+		}
+	})
+
+	t.Run("a restart with the command still in flight does not re-run it and falls back to dispatch-agent", func(t *testing.T) {
+		t.Parallel()
+
+		store := newTriageGateStore()
+		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-R1"))
+		pending := &PendingReaction{IssueID: "ISS-R1"} // recovered entry: no live run
+		req := gateRequest(params.WorkspaceRoot, "ISS-R1", "fp-restart-1")
+		store.seedTriageRound(req, persistence.ReactionTriageStageStarted, "")
+
+		before := state.TriageInFlight.Load()
+		verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
+
+		if verdict != triageProceed {
+			t.Errorf("reactionTriageGate() = %v, want triageProceed", verdict)
+		}
+		if pending.Triage != nil {
+			t.Error("a command was started for the interrupted subject, want none")
+		}
+		if state.TriageInFlight.Load() != before {
+			t.Errorf("TriageInFlight = %d, want unchanged %d", state.TriageInFlight.Load(), before)
+		}
+		round, _ := store.GetReactionTriageRound(context.Background(), req.IssueID, req.Kind)
+		if round == nil || round.Stage != persistence.ReactionTriageStageResult {
+			t.Fatalf("round = %+v, want an explicit result recorded", round)
+		}
+		if round.Disposition != string(TriageDispatchAgent) || round.Fallback != triageFallbackShutdownInterrupted {
+			t.Errorf("round result = %q/%q, want dispatch-agent/%s", round.Disposition, round.Fallback, triageFallbackShutdownInterrupted)
+		}
+	})
+
+	t.Run("a restart with a recorded handled answer does not run the command again", func(t *testing.T) {
+		t.Parallel()
+
+		store := newTriageGateStore()
+		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-R2"))
+		pending := &PendingReaction{IssueID: "ISS-R2"}
+		req := gateRequest(params.WorkspaceRoot, "ISS-R2", "fp-restart-2")
+		store.seedTriageRound(req, persistence.ReactionTriageStageResult, string(TriageHandled))
+
+		verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
+
+		if verdict != triageHandled {
+			t.Errorf("reactionTriageGate() = %v, want triageHandled", verdict)
+		}
+		if pending.Triage != nil {
+			t.Error("a command was started although the answer was recorded, want none")
 		}
 		if store.markCalls != 1 {
 			t.Errorf("MarkReactionDispatched called %d times, want 1", store.markCalls)
 		}
 	})
 
-	t.Run("applied dispatch-agent takes no further action", func(t *testing.T) {
+	t.Run("a restart with a recorded escalate answer escalates exactly once", func(t *testing.T) {
 		t.Parallel()
 
-		run := finishedTriageRun("fp-10", ReactionTriageOutcome{Disposition: TriageDispatchAgent}, true, false)
-		store := &triageGateStore{}
-		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-10"))
-		pending := &PendingReaction{IssueID: "ISS-10", Triage: run}
-		req := gateRequest(params.WorkspaceRoot, "ISS-10", "fp-10")
+		store := newTriageGateStore()
+		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-R3"))
+		pending := &PendingReaction{IssueID: "ISS-R3"}
+		req := gateRequest(params.WorkspaceRoot, "ISS-R3", "fp-restart-3")
+		store.seedTriageRound(req, persistence.ReactionTriageStageResult, string(TriageEscalate))
+
+		if verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background()); verdict != triageEscalate {
+			t.Errorf("first verdict = %v, want triageEscalate", verdict)
+		}
+		if store.markCalls != 1 {
+			t.Fatalf("mark calls after first pass = %d, want 1", store.markCalls)
+		}
+		// A second pass over the same subject must never re-escalate.
+		if verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background()); verdict != triageHandled {
+			t.Errorf("second verdict = %v, want triageHandled (memoized escalation)", verdict)
+		}
+		if store.markCalls != 1 {
+			t.Errorf("mark calls after second pass = %d, want 1", store.markCalls)
+		}
+	})
+
+	t.Run("a restart at the continuation stage re-creates only the continuation", func(t *testing.T) {
+		t.Parallel()
+
+		store := newTriageGateStore()
+		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-R4"))
+		pending := &PendingReaction{IssueID: "ISS-R4"}
+		req := gateRequest(params.WorkspaceRoot, "ISS-R4", "fp-restart-4")
+		store.seedTriageRound(req, persistence.ReactionTriageStageContinuation, string(TriageDispatchAgent))
 
 		verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
 
-		if verdict != triageProceed {
-			t.Errorf("reactionTriageGate() = %v, want triageProceed", verdict)
+		if verdict != triageResumeDispatch {
+			t.Errorf("reactionTriageGate() = %v, want triageResumeDispatch", verdict)
+		}
+		if pending.Triage != nil {
+			t.Error("a command was started although the answer was dispatch-agent, want none")
 		}
 		if store.markCalls != 0 {
 			t.Errorf("MarkReactionDispatched called %d times, want 0", store.markCalls)
 		}
 	})
 
-	t.Run("applied handled with a failed mark retries only the write", func(t *testing.T) {
+	t.Run("terminal rounds re-enqueue and do nothing", func(t *testing.T) {
 		t.Parallel()
 
-		run := finishedTriageRun("fp-11", ReactionTriageOutcome{Disposition: TriageHandled}, true, false)
-		store := &triageGateStore{}
-		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-11"))
-		pending := &PendingReaction{IssueID: "ISS-11", Triage: run}
-		req := gateRequest(params.WorkspaceRoot, "ISS-11", "fp-11")
+		for _, stage := range []string{
+			persistence.ReactionTriageStageEscalated,
+			persistence.ReactionTriageStageDispatched,
+			persistence.ReactionTriageStageHandedOff,
+		} {
+			store := newTriageGateStore()
+			state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-R5"))
+			pending := &PendingReaction{IssueID: "ISS-R5"}
+			req := gateRequest(params.WorkspaceRoot, "ISS-R5", "fp-restart-5")
+			store.seedTriageRound(req, stage, "")
 
-		verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
+			verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
 
-		if verdict != triageHandled {
-			t.Errorf("reactionTriageGate() = %v, want triageHandled", verdict)
-		}
-		if store.markCalls != 1 {
-			t.Errorf("MarkReactionDispatched called %d times, want 1 (retry)", store.markCalls)
-		}
-		if !run.Marked {
-			t.Error("run.Marked = false, want true after the retried write succeeds")
+			if verdict != triageHandled {
+				t.Errorf("stage %q: verdict = %v, want triageHandled", stage, verdict)
+			}
+			if pending.Triage != nil {
+				t.Errorf("stage %q: a command was started, want none", stage)
+			}
+			if store.markCalls != 0 {
+				t.Errorf("stage %q: MarkReactionDispatched called %d times, want 0", stage, store.markCalls)
+			}
 		}
 	})
 
-	t.Run("applied and marked handled takes no further action", func(t *testing.T) {
+	t.Run("a round bound to a different fingerprint is superseded by a fresh run", func(t *testing.T) {
 		t.Parallel()
 
-		run := finishedTriageRun("fp-12", ReactionTriageOutcome{Disposition: TriageHandled}, true, true)
-		store := &triageGateStore{}
-		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-12"))
-		pending := &PendingReaction{IssueID: "ISS-12", Triage: run}
-		req := gateRequest(params.WorkspaceRoot, "ISS-12", "fp-12")
+		store := newTriageGateStore()
+		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-R6"))
+		pending := &PendingReaction{IssueID: "ISS-R6"}
+		old := gateRequest(params.WorkspaceRoot, "ISS-R6", "fp-old")
+		store.seedTriageRound(old, persistence.ReactionTriageStageEscalated, string(TriageEscalate))
+		req := gateRequest(params.WorkspaceRoot, "ISS-R6", "fp-new-subject")
 
 		verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background())
 
-		if verdict != triageHandled {
-			t.Errorf("reactionTriageGate() = %v, want triageHandled", verdict)
+		if verdict != triageWait {
+			t.Fatalf("reactionTriageGate() = %v, want triageWait", verdict)
 		}
-		if store.markCalls != 0 {
-			t.Errorf("MarkReactionDispatched called %d times, want 0 (already marked)", store.markCalls)
+		if pending.Triage == nil || pending.Triage.Fingerprint != "fp-new-subject" {
+			t.Fatalf("pending.Triage = %+v, want a fresh run for the new fingerprint", pending.Triage)
+		}
+		round, _ := store.GetReactionTriageRound(context.Background(), req.IssueID, req.Kind)
+		if round == nil || round.Fingerprint != "fp-new-subject" || round.Stage != persistence.ReactionTriageStageStarted {
+			t.Errorf("round = %+v, want a fresh started round for the new subject", round)
+		}
+		waitTriageRunDone(t, pending.Triage)
+	})
+
+	t.Run("a failed result write keeps waiting and applies on the next pass", func(t *testing.T) {
+		t.Parallel()
+
+		run := finishedTriageRun("fp-rw", ReactionTriageOutcome{Disposition: TriageDispatchAgent})
+		store := newTriageGateStore()
+		store.roundFailAt = map[string]error{"result": errors.New("disk full")}
+		state, params := gateParams(t, store, mustTriageWorkspace(t, "ISS-RW"))
+		pending := &PendingReaction{IssueID: "ISS-RW", Triage: run}
+		req := gateRequest(params.WorkspaceRoot, "ISS-RW", "fp-rw")
+		store.seedTriageRound(req, persistence.ReactionTriageStageStarted, "")
+
+		if verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background()); verdict != triageWait {
+			t.Fatalf("first verdict = %v, want triageWait while the result write fails", verdict)
+		}
+		store.roundFailAt = nil
+		if verdict := reactionTriageGate(state, params, pending, probeTriageConfig(t), req, discardLogger(), context.Background()); verdict != triageProceed {
+			t.Errorf("second verdict = %v, want triageProceed", verdict)
 		}
 	})
 
@@ -968,7 +1275,7 @@ func TestReactionTriageGate(t *testing.T) {
 
 		identifier := "ISS-CAP"
 		root := mustTriageWorkspace(t, identifier)
-		store := &triageGateStore{}
+		store := newTriageGateStore()
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
 		state.TriageInFlight.Add(1) // saturate the cap of max(MaxConcurrentAgents, 1) == 1
 		params := ReconcileParams{Store: store, WorkspaceRoot: root}
@@ -994,7 +1301,7 @@ func TestReactionTriageGate(t *testing.T) {
 		slowCfg := config.ReactionTriageConfig{Script: writeHookScript(t, triageSleepScript(5)), TimeoutMS: 5000}
 		identifier := "ISS-SEQ"
 		root := mustTriageWorkspace(t, identifier)
-		store := &triageGateStore{}
+		store := newTriageGateStore()
 		state, params := gateParams(t, store, root)
 		state.MaxConcurrentAgents = 5 // headroom: up to three runs may overlap briefly
 		pending := &PendingReaction{IssueID: identifier}
@@ -1067,7 +1374,7 @@ func TestStartReactionTriage_UnconsumedRun_StillLogsCompletion(t *testing.T) {
 	}
 	req.WorkspaceRoot = root
 
-	run := startReactionTriage(state, context.Background(), probeTriageConfig(t), req, logger)
+	run := startReactionTriage(state, context.Background(), probeTriageConfig(t), req, nil, logger)
 	if run == nil {
 		t.Fatal("startReactionTriage() = nil, want a started run")
 	}

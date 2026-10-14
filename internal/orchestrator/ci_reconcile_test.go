@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2927,6 +2928,148 @@ func TestReconcileCIStatus_Triage_DispatchAgent_ProceedsNormally(t *testing.T) {
 	}
 	if _, scheduled := state.RetryAttempts[issueID]; !scheduled {
 		t.Error("no retry scheduled for a dispatch-agent verdict, want the normal CI-fix continuation")
+	}
+}
+
+// ciRoundStore wraps ciReconcileStore with an in-memory round table, so
+// a CI reconcile test can start from a durable round a previous process
+// would have left.
+type ciRoundStore struct {
+	*ciReconcileStore
+
+	mu     sync.Mutex
+	rounds map[string]*persistence.ReactionTriageRound
+}
+
+var _ triageRoundStore = (*ciRoundStore)(nil)
+
+func (s *ciRoundStore) StartReactionTriageRound(_ context.Context, issueID, kind, fingerprint string, attemptsUsed int, startedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rounds[triageRoundKey(issueID, kind)] = &persistence.ReactionTriageRound{
+		IssueID: issueID, Kind: kind, Fingerprint: fingerprint,
+		Stage: persistence.ReactionTriageStageStarted, AttemptsUsed: attemptsUsed, StartedAt: startedAt,
+	}
+	return nil
+}
+
+func (s *ciRoundStore) SaveReactionTriageRoundResult(_ context.Context, issueID, kind, fingerprint, disposition, fallback string, resultAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round := s.rounds[triageRoundKey(issueID, kind)]
+	if round == nil || round.Fingerprint != fingerprint {
+		return nil
+	}
+	round.Stage, round.Disposition, round.Fallback, round.ResultAt =
+		persistence.ReactionTriageStageResult, disposition, fallback, resultAt
+	return nil
+}
+
+func (s *ciRoundStore) AdvanceReactionTriageRound(_ context.Context, issueID, kind, fingerprint, stage string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round := s.rounds[triageRoundKey(issueID, kind)]
+	if round == nil || round.Fingerprint != fingerprint || round.Stage != persistence.ReactionTriageStageResult {
+		return nil
+	}
+	round.Stage = stage
+	return nil
+}
+
+func (s *ciRoundStore) MarkReactionTriageRoundDispatched(_ context.Context, issueID, kind string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round := s.rounds[triageRoundKey(issueID, kind)]
+	if round != nil && (round.Stage == persistence.ReactionTriageStageResult || round.Stage == persistence.ReactionTriageStageContinuation) {
+		round.Stage = persistence.ReactionTriageStageDispatched
+		round.CompletedAt = at
+	}
+	return nil
+}
+
+func (s *ciRoundStore) MarkReactionTriageRoundHandedOff(_ context.Context, issueID, kind string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round := s.rounds[triageRoundKey(issueID, kind)]
+	if round != nil && (round.Stage == persistence.ReactionTriageStageContinuation || round.Stage == persistence.ReactionTriageStageDispatched) {
+		round.Stage = persistence.ReactionTriageStageHandedOff
+		round.CompletedAt = at
+	}
+	return nil
+}
+
+func (s *ciRoundStore) GetReactionTriageRound(_ context.Context, issueID, kind string) (*persistence.ReactionTriageRound, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	round, ok := s.rounds[triageRoundKey(issueID, kind)]
+	if !ok {
+		return nil, nil
+	}
+	copy := *round
+	return &copy, nil
+}
+
+func (s *ciRoundStore) DeleteReactionTriageRound(_ context.Context, issueID, kind string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rounds, triageRoundKey(issueID, kind))
+	return nil
+}
+
+// TestReconcileCIStatus_Triage_ResumeDispatchAfterRestart verifies the
+// restart scenario: the durable round already records a dispatch-agent
+// answer at the continuation stage, meaning a previous process created
+// the continuation but never confirmed it. The recovered pass re-creates
+// exactly one continuation without re-running the triage command,
+// appending a run-history row, or escalating.
+func TestReconcileCIStatus_Triage_ResumeDispatchAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	const issueID = "ISS-CI-TRIAGE-RESUME"
+	identifier := issueID + "-ident"
+	root := mustTriageWorkspace(t, identifier)
+	state := stateWithPendingReaction(t, issueID, "feature/resume", 1)
+	rkey := ReactionKey(issueID, ReactionKindCI)
+
+	base := &ciReconcileStore{getFingerprintResult: ciDefaultHead}
+	store := &ciRoundStore{
+		ciReconcileStore: base,
+		rounds: map[string]*persistence.ReactionTriageRound{
+			triageRoundKey(issueID, ReactionKindCI): {
+				IssueID:     issueID,
+				Kind:        ReactionKindCI,
+				Fingerprint: ciDefaultHead,
+				Stage:       persistence.ReactionTriageStageContinuation,
+				Disposition: string(TriageDispatchAgent),
+			},
+		},
+	}
+	metrics := newCIMetricsSpy()
+	ci := &mockCIProvider{result: domain.CIResult{Status: domain.CIStatusFailing}}
+	params := ciTriageParams(t, base, ci, nil, defaultCISCM(), root, handledScript)
+	params.Store = store // promote the round-capable store for the gate
+
+	before := state.TriageInFlight.Load()
+	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
+
+	if state.TriageInFlight.Load() != before {
+		t.Errorf("TriageInFlight = %d, want %d (the interrupted command is not re-run)", state.TriageInFlight.Load(), before)
+	}
+	if entry, ok := state.PendingReactions[rkey]; ok && entry.Triage != nil {
+		t.Error("a triage run was started for a round already past its result, want none")
+	}
+	if len(base.runHistories) != 0 {
+		t.Errorf("AppendRunHistory calls = %d, want 0 on the resume path", len(base.runHistories))
+	}
+	if _, scheduled := state.RetryAttempts[issueID]; !scheduled {
+		t.Error("no retry scheduled on the resume path, want the one unconfirmed continuation")
+	}
+	if base.markDispatchedCalls != 0 {
+		t.Errorf("MarkReactionDispatched calls = %d, want 0 (the marker lands when the retry fires)", base.markDispatchedCalls)
+	}
+	round, _ := store.GetReactionTriageRound(context.Background(), issueID, ReactionKindCI)
+	if round == nil || round.Stage != persistence.ReactionTriageStageContinuation {
+		t.Errorf("round = %+v, want it held at continuation until the retry fires", round)
 	}
 }
 

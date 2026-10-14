@@ -75,7 +75,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 
 		ciData, ok := pending.KindData.(*CIReactionData)
 		if !ok {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			log.ErrorContext(ctx, "unexpected KindData type for CI reaction",
 				slog.String("issue_id", pending.IssueID),
 				slog.String("type", fmt.Sprintf("%T", pending.KindData)),
@@ -91,7 +91,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			ageBasis = pending.HeadRecordedAt
 		}
 		if params.CIWatchWindow > 0 && now.Sub(ageBasis) > params.CIWatchWindow {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			delete(state.ReactionAttempts, rkey)
 			entryLog.Warn("ci watch window elapsed, dropping",
 				slog.Int64("window_ms", int64(params.CIWatchWindow/time.Millisecond)),
@@ -118,7 +118,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 		if mergeErr != nil {
 			var scmErr *domain.SCMError
 			if errors.As(mergeErr, &scmErr) && scmErr.Kind == domain.ErrSCMNotFound {
-				cancelReactionTriage(pending)
+				cancelReactionTriage(ctx, params.Store, log, pending)
 				delete(state.ReactionAttempts, rkey)
 				entryLog.Warn("ci watch pull request not found, dropping",
 					slog.Int("pr_number", ciData.PRNumber),
@@ -143,7 +143,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 		// through the merged branch and logs the merge rather than a
 		// close.
 		if status.Merged {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			delete(state.ReactionAttempts, rkey)
 			entryLog.Info("ci watch ended: pull request merged",
 				slog.String("head_sha", status.HeadSHA),
@@ -151,7 +151,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			continue
 		}
 		if status.Closed {
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			delete(state.ReactionAttempts, rkey)
 			entryLog.Info("ci watch ended: pull request closed without merging",
 				slog.Int("pr_number", ciData.PRNumber),
@@ -257,7 +257,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			// describes anything. A retained verdict would otherwise be
 			// replayed against the next episode that recomputes the same
 			// head.
-			cancelReactionTriage(pending)
+			cancelReactionTriage(ctx, params.Store, log, pending)
 			delete(state.ReactionAttempts, rkey)
 			pending.PendingAttempts++
 			delay := computeCIPendingDelay(base, pending.PendingAttempts)
@@ -291,7 +291,7 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			// The gate sits above handleCIFailure because that function
 			// appends a run history row as its first act, which the
 			// resuming pass would append a second time.
-			triageVerdict := reactionTriageGate(state, params, pending, params.CITriage, ReactionTriageRequest{
+			triageReq := ReactionTriageRequest{
 				Kind:          ReactionKindCI,
 				WorkspaceRoot: params.WorkspaceRoot,
 				IssueID:       pending.IssueID,
@@ -303,7 +303,8 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 				AttemptsUsed:  state.ReactionAttempts[rkey],
 				MaxAttempts:   params.CIFeedback.MaxRetries,
 				Subject:       result.ToTemplateMap(),
-			}, entryLog, ctx)
+			}
+			triageVerdict := reactionTriageGate(state, params, pending, params.CITriage, triageReq, entryLog, ctx)
 
 			switch triageVerdict {
 			case triageWait:
@@ -321,6 +322,13 @@ func reconcileCIStatus(state *State, params ReconcileParams, log *slog.Logger, c
 			case triageEscalate:
 				escalateCIFailure(state, params, pending, result, status.HeadSHA, state.ReactionAttempts[rkey],
 					EscalationTriggerTriage, now, base, entryLog, ctx, metrics)
+
+			case triageResumeDispatch:
+				// A previous process recorded the dispatch-agent answer
+				// but its continuation creation was never confirmed.
+				// Re-create only that continuation: no command re-run, no
+				// run-history row, no escalation.
+				dispatchCIFixContinuation(state, params, pending, result.ToTemplateMap(), status.HeadSHA, state.ReactionAttempts[rkey], result.FailingCount, entryLog, ctx, metrics)
 
 			default:
 				handleCIFailure(state, params, pending, result, status.HeadSHA, now, base, entryLog, ctx, metrics)
@@ -456,8 +464,28 @@ func handleCIFailure(
 	}
 	state.ReactionAttempts[rkey] = attempts + 1
 
-	ciContext := result.ToTemplateMap()
+	dispatchCIFixContinuation(state, params, pending, result.ToTemplateMap(), ref, attempts, result.FailingCount, log, ctx, metrics)
+}
 
+// dispatchCIFixContinuation schedules one CI-fix continuation. It is
+// shared by the first drive (from [handleCIFailure]) and by the durable
+// gate's resume verdict, which must create the continuation without
+// re-appending a run-history row. attempts is the count of fixes already
+// dispatched before this one; the scheduled continuation is try
+// attempts+1. Recording the continuation on the triage round is the
+// confirmation the resume path re-creates exactly once.
+func dispatchCIFixContinuation(
+	state *State,
+	params ReconcileParams,
+	pending *PendingReaction,
+	ciContext map[string]any,
+	ref string,
+	attempts int,
+	failingCount int,
+	log *slog.Logger,
+	ctx context.Context,
+	metrics domain.Metrics,
+) {
 	nextAttempt := pending.Attempt
 
 	ScheduleRetry(state, ScheduleRetryParams{
@@ -486,11 +514,13 @@ func handleCIFailure(
 	}, params.OnRetryFire)
 	metrics.IncRetries(triggerCIFix)
 
+	markTriageContinuationScheduled(params.Store, pending.IssueID, ReactionKindCI, ref, log, ctx)
+
 	log.Info("CI failure detected, scheduling CI fix dispatch",
 		slog.String("ref", ref),
-		slog.Int("failing_count", result.FailingCount),
+		slog.Int("failing_count", failingCount),
 		slog.Int("ci_fix_attempt", attempts+1),
-		slog.Int("max_retries", maxRetries),
+		slog.Int("max_retries", params.CIFeedback.MaxRetries),
 	)
 }
 

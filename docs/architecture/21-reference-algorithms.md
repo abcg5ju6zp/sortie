@@ -265,7 +265,9 @@ function reconcile_review_comments(state):
 
     review_context = build_review_template_map(actionable)
 
-    # Triage gate, above the dispatch counter
+    # Triage gate, above the dispatch counter. The gate drives one
+    # durable round in reaction_triage_rounds, persisting started before
+    # the command launch and result before applying the answer.
     verdict = triage_gate(state, pending, review_config.triage, review_context)
     if verdict in ("wait", "handled"):
       pending.pending_retry_at = now + poll_interval
@@ -274,6 +276,10 @@ function reconcile_review_comments(state):
     if verdict == "escalate":
       escalate_review_failure(state, pending, turn_count)
       continue
+
+    # verdict is "proceed" (first drive from a dispatch-agent result) or
+    # "resume-dispatch" (a restart re-creates an unconfirmed continuation;
+    # the gate never re-ran the command and no once-only bookkeeping reruns)
 
     # The fingerprint is marked dispatched by the retry handler, after the
     # scheduled retry fires and dispatch succeeds
@@ -284,8 +290,9 @@ function reconcile_review_comments(state):
       reaction_kind: "review"
     })
     state.reaction_attempts[rkey]++
+    store.advance_triage_round(pending.issue_id, "review", fingerprint, "continuation")
     # The comments join the handed-off set when the run exits normally,
-    # not here (Section 16.6)
+    # not here (Section 16.6); that save advances the round to handed_off
 
   return state
 ```

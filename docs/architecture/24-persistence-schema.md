@@ -159,6 +159,35 @@ Cleanup is owned by an active merge-completion pass. Such a pass deletes the obs
 
 Primary key: `(issue_id, kind, comment_id)`. One row per comment a run's first prompt presented under the kind's prompt variable (`review_comments` or `bot_review_comments`) when the run exited normally. The orchestrator's worker-exit handler is the only writer: it inserts the absent IDs in one transaction and ignores stored ones. Nothing deletes a row: the set outlives watch windows, escalations, the terminal release, and restarts, so a comment an agent already received is never handed over as new a second time. The orchestrator loads a key's rows on first use and keeps them as a cache, so a failed load defers the review pass instead of dispatching an empty turn. The table starts empty on upgrade, so a comment given before the upgrade counts as new once. The runtime-only reported set of `bot-review` never reaches this table.
 
+**`reaction_triage_rounds`**: recoverable reaction triage processing rounds (migration 028)
+
+| Column          | Type | Notes                                                                                                |
+| --------------- | ---- | ---------------------------------------------------------------------------------------------------- |
+| `issue_id`      | TEXT | Tracker-internal issue ID (composite PK with `kind`)                                                 |
+| `kind`          | TEXT | Reaction kind with a `triage` block: `ci`, `review`, `bot-review`, or `merge-conflict`               |
+| `fingerprint`   | TEXT | The subject the round is bound to, in the owning kind's own `reaction_fingerprints` encoding         |
+| `stage`         | TEXT | The round's confirmed stage (see below)                                                              |
+| `disposition`   | TEXT | The recorded answer, `handled`, `dispatch-agent`, or `escalate`; empty before `result`               |
+| `fallback`      | TEXT | The fallback reason when the answer was defaulted, including `shutdown_interrupted`; empty otherwise |
+| `attempts_used` | INTEGER | The kind's continuation counter snapshot when the command started                                  |
+| `started_at`    | TEXT | RFC 3339Nano timestamp the round opened, before the command launched                                 |
+| `result_at`     | TEXT | RFC 3339Nano timestamp the result landed; empty before `result`                                      |
+| `completed_at`  | TEXT | RFC 3339Nano timestamp the round reached a terminal stage; empty while open                          |
+| `updated_at`    | TEXT | RFC 3339Nano timestamp of the last stage write                                                       |
+
+Primary key: `(issue_id, kind)`: one current round per issue and kind, each bound to exactly one fingerprint. The stage machine is linear and confirmed:
+
+- `started`: the row is written before the external triage command launches, so the command never starts without a recoverable record.
+- `result`: the command result, or the fallback that defaulted it, is recorded before any reconcile pass applies it.
+- `continuation`: a `dispatch-agent` result created its continuation. Reaction continuation retries are deliberately not stored in `retry_entries`, so this is the confirmation a restart reads to re-create an unconfirmed continuation exactly once.
+- `escalated` (terminal): an `escalate` result's escalation was applied. The fingerprint's dispatched marker is set in the same step.
+- `dispatched` (terminal): the fingerprint's dispatched marker landed, either from a `handled` result or after the continuation fired.
+- `handed_off` (terminal): the continuation run's handed-off comments were saved (`review` and `bot-review` only).
+
+Every transition is a conditional UPDATE that lands only from the stage it legitimately follows and only while the row carries the same fingerprint, so a write that fails after its side effect lands is simply re-confirmed and one that fails before it is retried: the side effect is performed at most once for the round. A round whose fingerprint changes is replaced wholesale with a fresh `started` round (the old command is cancelled when it is still running), so a previous subject's round never affects a new one. Episode-ending paths delete the row; the `ci` row otherwise behaves like that kind's fingerprint row and lingers as its epoch record.
+
+A row left at `started` across a restart names a command still in flight when the previous process ended. The command is never re-run for that fingerprint, because it may already have acted: the recovered pass records an explicit `dispatch-agent` result with the `shutdown_interrupted` fallback, writes one WARN log record, and takes the universal dispatch-agent fallback from the `result` stage, so the failure costs at most one agent turn, the same as any other triage failure, and never strands the reaction. Rounds are inert without a `triage` block, and the table starts empty on upgrade.
+
 **`handoff_absence_resets`**: end of a consecutive handoff-absence sequence (migration 013)
 
 | Column         | Type    | Notes                                                              |

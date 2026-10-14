@@ -766,6 +766,11 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 				slog.String("kind", popped.ReactionKind),
 				slog.Any("error", err),
 			)
+		} else {
+			// Advance the triage round bound to this continuation, so a
+			// restart after the launched run ends reads dispatched rather
+			// than re-creating the continuation.
+			markTriageRoundDispatched(params.Store, issueID, popped.ReactionKind, log, ctx)
 		}
 	}
 
