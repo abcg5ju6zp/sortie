@@ -573,7 +573,7 @@ func escalateCIFailure(
 		if params.CIFeedback.Escalation != "label" {
 			record = metrics.IncCIEscalations
 		}
-		publishEscalation(ctx, &state.TrackerOpsWg, delivery, log, record, func(err error) {
+		publishEscalation(state.Outbox, delivery, log, record, func(err error) {
 			log.Warn("CI escalation comment failed", slog.Any("error", err))
 		})
 	}

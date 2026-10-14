@@ -379,7 +379,7 @@ func escalateReviewFailure(
 	if params.ReviewConfig.Escalation != "label" {
 		record = metrics.IncReviewEscalations
 	}
-	publishEscalation(ctx, &state.TrackerOpsWg, delivery, log, record, func(err error) {
+	publishEscalation(state.Outbox, delivery, log, record, func(err error) {
 		log.Warn("review escalation comment failed", slog.Any("error", err))
 	})
 

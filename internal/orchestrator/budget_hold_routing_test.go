@@ -24,6 +24,7 @@ func rebuildHoldLane(t *testing.T, routerHasTracker bool, entries []config.Notif
 	wm.config.Notifications.Backends = entries
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -49,7 +50,7 @@ func rebuildHoldLane(t *testing.T, routerHasTracker bool, entries []config.Notif
 	return holdLane{
 		pass: func() {
 			orch.handleTick(context.Background())
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 		},
 		subscribe: func(entries []config.NotificationBackend) {
 			wm.mu.Lock()
@@ -82,7 +83,7 @@ func retryHoldLane(t *testing.T, routerHasTracker bool, entries []config.Notific
 			state.RetryAttempts[id] = &RetryEntry{IssueID: id, Identifier: "PROJ-HOLD", Attempt: 1}
 			state.Claimed[id] = struct{}{}
 			HandleRetryTimer(state, id, params)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 		},
 		subscribe: func(entries []config.NotificationBackend) {
 			if err := router.Update(route.Inputs{Entries: entries}); err != nil {

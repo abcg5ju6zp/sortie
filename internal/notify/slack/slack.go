@@ -73,7 +73,7 @@ type slackPayload struct {
 func (n *notifier) Send(ctx context.Context, notification domain.Notification) error {
 	encoded, err := json.Marshal(slackPayload{Text: renderText(notification)})
 	if err != nil {
-		return fmt.Errorf("slack notifier: encode payload: %w", err)
+		return &domain.PermanentNotifierError{Err: fmt.Errorf("slack notifier: encode payload: %w", err)}
 	}
 
 	if _, err := n.client.Send(ctx, http.MethodPost, "", bytes.NewReader(encoded)); err != nil {

@@ -101,10 +101,7 @@ func postBudgetHoldNotice(state *State, params budgetHoldNoticeParams) {
 	m := params.Metrics
 	noticeLog := log
 
-	deliverDetached(ctx, &state.TrackerOpsWg, params.Delivery, log, func(received bool, err error) {
-		if !received {
-			return
-		}
+	deliverDetached(state.Outbox, params.Delivery, log, func(received bool, err error) {
 		if err != nil {
 			noticeLog.Warn("budget hold notice failed", slog.Any("error", err))
 			m.IncTrackerComments("budget_hold", "error")

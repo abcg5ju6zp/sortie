@@ -41,11 +41,67 @@ type Inputs struct {
 	CommentEscalations []domain.EventType
 }
 
-// target is one destination a delivery sends to.
+// target is one destination a delivery sends to. config is the
+// entry's pass-through configuration exactly as written in WORKFLOW.md,
+// before $VAR expansion; it is nil for the built-in tracker_comment
+// target. It freezes the routing decision so a durable delivery can
+// reconstruct the backend after a restart without resolving it against
+// a later configuration snapshot.
 type target struct {
 	destination string
 	kind        string
+	config      map[string]any
 	notifier    domain.Notifier
+}
+
+// TargetSpec is one frozen destination of a routed event. The pair of
+// [Delivery.Specs] and [Delivery.Notification] is everything a durable
+// sender needs to persist before the first send and to reconstruct the
+// target after a restart.
+type TargetSpec struct {
+	// Destination is "tracker_comment" or "notifications[<i>]".
+	Destination string
+
+	// Kind is the destination's notifications kind, or
+	// [domain.TrackerCommentKind] for the built-in tracker comment
+	// target.
+	Kind string
+
+	// Config is the entry's pass-through configuration as written in
+	// WORKFLOW.md, before $VAR expansion. It is nil for
+	// tracker_comment. Reconstruct a backend by expanding references
+	// with config.ResolveEnvReferences and passing the result through
+	// the NotifierLookup that constructed it.
+	Config map[string]any
+
+	// Notifier is the main-process destination built from the loaded
+	// configuration, ready for immediate use; nil only for
+	// tracker_comment, which a durable sender reconstructs from the
+	// tracker adapter through [NewTrackerComment].
+	Notifier domain.Notifier
+}
+
+// Specs returns the frozen destinations in target order:
+// tracker_comment first when selected, then the notifications entries
+// by index.
+func (d Delivery) Specs() []TargetSpec {
+	specs := make([]TargetSpec, len(d.targets))
+	for i, t := range d.targets {
+		specs[i] = TargetSpec{
+			Destination: t.destination,
+			Kind:        t.kind,
+			Config:      t.config,
+			Notifier:    t.notifier,
+		}
+	}
+	return specs
+}
+
+// Notification returns the stamped event every target of the delivery
+// receives. Its envelope id, timestamp, and source are fixed at
+// routing time.
+func (d Delivery) Notification() domain.Notification {
+	return d.notification
 }
 
 type eventSet map[domain.EventType]struct{}
@@ -179,7 +235,7 @@ func (r *Router) Route(n domain.Notification) Delivery {
 		targets = append(targets, target{
 			destination: domain.TrackerCommentKind,
 			kind:        domain.TrackerCommentKind,
-			notifier:    trackerComment{adapter: r.tracker},
+			notifier:    NewTrackerComment(r.tracker),
 		})
 	}
 	for i, destination := range snap.destinations {
@@ -189,6 +245,7 @@ func (r *Router) Route(n domain.Notification) Delivery {
 		targets = append(targets, target{
 			destination: fmt.Sprintf("notifications[%d]", i),
 			kind:        snap.entries[i].Kind,
+			config:      snap.entries[i].RawConfig,
 			notifier:    destination,
 		})
 	}

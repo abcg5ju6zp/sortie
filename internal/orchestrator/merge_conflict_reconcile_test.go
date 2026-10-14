@@ -202,6 +202,7 @@ func newMergeConflictPending(issueID string, prNumber int) *PendingReaction {
 func stateWithMergeConflict(t *testing.T, issueID string, prNumber int) *State {
 	t.Helper()
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, s, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindMergeConflict)
 	s.PendingReactions[rkey] = newMergeConflictPending(issueID, prNumber)
 	s.Claimed[issueID] = struct{}{}
@@ -577,7 +578,7 @@ func TestReconcileMergeConflicts_Escalate(t *testing.T) {
 	state.PendingReactions[rkey] = newMergeConflictPending(issueID, 77)
 
 	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if scm.calls != 2 {
 		t.Errorf("GetMergeability calls = %d, want 2 (read NOT skipped on tick 2)", scm.calls)
@@ -638,7 +639,7 @@ func TestReconcileMergeConflicts_EscalationResetsCounterReArm(t *testing.T) {
 	CancelRetry(state, issueID)
 	state.PendingReactions[rkey] = newMergeConflictPending(issueID, 88)
 	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if _, ok := state.ReactionAttempts[rkey]; ok {
 		t.Fatalf("after tick 2: ReactionAttempts present, want absent (escalation reset)")
 	}
@@ -657,7 +658,7 @@ func TestReconcileMergeConflicts_EscalationResetsCounterReArm(t *testing.T) {
 	// escalate at attempts 3 with zero rebase dispatches.
 	head = "H3"
 	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if state.ReactionAttempts[rkey] != 1 {
 		t.Errorf("after tick 3: ReactionAttempts = %d, want 1 (fresh episode, no intervening clean tick)", state.ReactionAttempts[rkey])
@@ -678,7 +679,7 @@ func TestReconcileMergeConflicts_CrossKindIsolation(t *testing.T) {
 
 	issueID := "MC-ISO"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+	wireTestOutbox(t, state, nil, nil)
 	ciKey := ReactionKey(issueID, ReactionKindCI)
 	state.PendingReactions[ciKey] = &PendingReaction{
 		IssueID: issueID, Identifier: issueID + "-ident", Kind: ReactionKindCI,
@@ -1158,7 +1159,7 @@ func TestReconcileMergeConflicts_Coexists(t *testing.T) {
 
 	issueID := "MC-COEXIST"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+	wireTestOutbox(t, state, nil, nil)
 	// An auto-merge slot for the same PR, alongside the merge-conflict slot.
 	mergeKey := ReactionKey(issueID, ReactionKindAutoMerge)
 	state.PendingReactions[mergeKey] = newAutoMergePending(issueID, 5)
@@ -1647,7 +1648,7 @@ func TestReconcileMergeConflicts_Triage_Escalate(t *testing.T) {
 	runMergeConflictTriageToCompletion(t, state, params, rkey, metrics)
 
 	reconcileMergeConflicts(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Errorf("AddLabel calls = %d, want 1 (triage escalation uses the kind's own escalation action)", tracker.addLabelCalled)

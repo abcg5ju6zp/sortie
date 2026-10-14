@@ -313,6 +313,8 @@ func TestReconcileMergeConflict_LiveAPI_E2E(t *testing.T) {
 	metrics := newMergeConflictMetricsSpy()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindMergeConflict)
 	state.PendingReactions[rkey] = &PendingReaction{
 		IssueID:    issueID,

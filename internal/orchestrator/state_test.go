@@ -390,6 +390,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.RetryAttempts["retry-1"] = &RetryEntry{
 			IssueID:    "retry-1",
 			Identifier: "MT-301",
@@ -440,6 +442,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		origData := map[string]any{
 			"requests_remaining": 42,
 			"reset_at":           "2026-03-24T13:00:00Z",
@@ -471,6 +475,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		result := RuntimeSnapshot(state, fixedNow)
 
 		if result.RateLimits != nil {
@@ -516,6 +522,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["ws-issue"] = &RunningEntry{
 			Identifier:    "MT-600",
 			Issue:         domain.Issue{ID: "ws-issue", State: "In Progress"},
@@ -537,6 +545,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["no-ws"] = &RunningEntry{
 			Identifier: "MT-700",
 			Issue:      domain.Issue{ID: "no-ws", State: "To Do"},
@@ -604,6 +614,7 @@ func TestRuntimeSnapshot(t *testing.T) {
 
 		rbm := map[string]int{"model-a": 3}
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["iso-1"] = &RunningEntry{
 			Identifier:       "MT-ISO",
 			Issue:            domain.Issue{ID: "iso-1", State: "In Progress"},
@@ -632,6 +643,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["nil-rbm"] = &RunningEntry{
 			Identifier:      "MT-NIL",
 			Issue:           domain.Issue{ID: "nil-rbm", State: "In Progress"},
@@ -654,6 +667,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["unmeasured"] = &RunningEntry{
 			Identifier:       "MT-UNMEASURED",
 			Issue:            domain.Issue{ID: "unmeasured", State: "In Progress"},
@@ -680,6 +695,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["session-total"] = &RunningEntry{
 			Identifier:       "MT-SESSTOTAL",
 			Issue:            domain.Issue{ID: "session-total", State: "In Progress"},
@@ -705,6 +722,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["timing-1"] = &RunningEntry{
 			Identifier: "MT-TIM",
 			Issue:      domain.Issue{ID: "timing-1", State: "In Progress"},
@@ -731,6 +750,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["zero-time"] = &RunningEntry{
 			Identifier: "MT-ZT",
 			Issue:      domain.Issue{ID: "zero-time", State: "In Progress"},
@@ -753,6 +774,7 @@ func TestRuntimeSnapshot(t *testing.T) {
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
 
+		wireTestOutbox(t, state, nil, nil)
 		result := RuntimeSnapshot(state, fixedNow)
 
 		if result.BudgetExhaustedCount != 0 {
@@ -767,6 +789,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		// Out of order, with empty Identifiers, so the sort falls through
 		// to the IssueID tiebreaker.
 		state.BudgetExhausted["ISS-C"] = &BudgetExhaustedEntry{}
@@ -793,6 +817,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted["ISS-X"] = &BudgetExhaustedEntry{}
 
 		result := RuntimeSnapshot(state, fixedNow)
@@ -811,6 +837,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted["ISS-A"] = &BudgetExhaustedEntry{Reason: budgetReasonToken}
 		state.BudgetExhausted["ISS-B"] = &BudgetExhaustedEntry{Reason: budgetReasonSession}
 
@@ -832,6 +860,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted["iss-z"] = &BudgetExhaustedEntry{Identifier: "PROJ-2"}
 		state.BudgetExhausted["iss-a"] = &BudgetExhaustedEntry{Identifier: "PROJ-1"}
 		// Two entries share an Identifier: the IssueID breaks the tie.
@@ -863,6 +893,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		entry := &BudgetExhaustedEntry{Identifier: "PROJ-9", Reason: budgetReasonSession, UsedSessions: 3}
 		state.BudgetExhausted["iss-9"] = entry
 
@@ -889,6 +921,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted["iss-noident"] = &BudgetExhaustedEntry{Reason: budgetReasonSession}
 
 		result := RuntimeSnapshot(state, fixedNow)
@@ -909,6 +943,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["gh-9"] = &RunningEntry{
 			Identifier: "9",
 			Issue:      domain.Issue{ID: "gh-9", State: "In Progress", DisplayID: "owner/repo#9"},
@@ -929,6 +965,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["jira-1"] = &RunningEntry{
 			Identifier: "PROJ-1",
 			Issue:      domain.Issue{ID: "jira-1", State: "In Progress", DisplayID: ""},
@@ -949,6 +987,8 @@ func TestRuntimeSnapshot(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.RetryAttempts["gh-7"] = &RetryEntry{
 			IssueID:    "gh-7",
 			Identifier: "7",
@@ -974,6 +1014,7 @@ func TestRuntimeSnapshot_ConfiguredSettingsBesideTheReportedModel(t *testing.T) 
 
 	now := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["ISS-1"] = &RunningEntry{
 		Issue: domain.Issue{ID: "ISS-1"}, StartedAt: now, RuleName: "cheap",
 		ConfiguredModel: "configured-model", ConfiguredEffort: "low", ModelName: "reported-model",
@@ -1017,6 +1058,8 @@ func TestRuntimeSnapshot_StagePosition(t *testing.T) {
 			t.Parallel()
 
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, state, nil, nil)
 			state.StageChains, state.HopCeiling = tt.chains, 4
 			lineage := StageLineage{PreviousRule: tt.previous}
 			state.Running["run"] = &RunningEntry{Issue: domain.Issue{ID: "run"}, RuleName: tt.rule, StageLineage: lineage}
@@ -1054,6 +1097,7 @@ func TestRuntimeSnapshot_MasksRegisteredValueInIssueIdentity(t *testing.T) {
 	redact.Add("test.state issue identity", value)
 	now := time.Date(2026, 3, 24, 12, 0, 0, 0, time.UTC)
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["ISS-1"] = &RunningEntry{
 		Issue: domain.Issue{
 			ID: "ISS-1", Title: "rotate " + value, Labels: []string{"ops", "leak-" + value},
@@ -1179,6 +1223,8 @@ func TestRuntimeSnapshot_WorkflowFile(t *testing.T) {
 			t.Parallel()
 
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, state, nil, nil)
 			state.Running["ISS-1"] = &RunningEntry{
 				Identifier:   "PROJ-1",
 				Issue:        domain.Issue{ID: "ISS-1", State: "In Progress"},
@@ -1554,6 +1600,8 @@ func TestNewState_AutoMergePreflightFlagDefaultsFalse(t *testing.T) {
 	t.Parallel()
 
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, s, nil, nil)
 	if s.AutoMergePreflightFailed {
 		t.Error("NewState().AutoMergePreflightFailed = true, want false")
 	}
@@ -1563,6 +1611,8 @@ func TestNewState_AutoMergePreflightRetryDueAtDefaultsZero(t *testing.T) {
 	t.Parallel()
 
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, s, nil, nil)
 	if !s.AutoMergePreflightRetryDueAt.IsZero() {
 		t.Errorf("NewState().AutoMergePreflightRetryDueAt = %v, want zero", s.AutoMergePreflightRetryDueAt)
 	}
@@ -1572,6 +1622,8 @@ func TestNewState_AutoMergeAuthLoggedInitialized(t *testing.T) {
 	t.Parallel()
 
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, s, nil, nil)
 	if s.AutoMergeAuthLogged == nil {
 		t.Error("NewState().AutoMergeAuthLogged = nil, want non-nil map")
 	}
@@ -1625,6 +1677,8 @@ func TestRuntimeSnapshot_SelfReviewFields(t *testing.T) {
 			t.Parallel()
 
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, state, nil, nil)
 			state.Running["ISS-SR"] = &RunningEntry{
 				Identifier:          "PROJ-99",
 				Issue:               domain.Issue{ID: "ISS-SR", State: "In Progress"},
@@ -2177,6 +2231,8 @@ func TestPopulateParked(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		rows := []persistence.ParkedIssue{
 			{
 				IssueID:      "id-1",
@@ -2232,6 +2288,8 @@ func TestPopulateParked(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		rows := []persistence.ParkedIssue{
 			{IssueID: "", Identifier: "PROJ-MALFORMED", Reason: parkReasonAgentBlocked, ParkedAt: "2026-08-17T00:00:00Z"},
 			{IssueID: "id-3", Identifier: "PROJ-3", Reason: parkReasonAgentBlocked, ParkedAt: "2026-08-17T00:00:00Z"},
@@ -2255,6 +2313,8 @@ func TestPopulateParked(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		PopulateParked(state, []persistence.ParkedIssue{
 			{IssueID: "id-4", Identifier: "PROJ-4", Reason: parkReasonAgentBlocked, ParkedAt: "2026-08-17T00:00:00Z"},
 		}, nil)
@@ -2276,6 +2336,7 @@ func TestRuntimeSnapshot_ParkedFields(t *testing.T) {
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
 
+		wireTestOutbox(t, state, nil, nil)
 		result := RuntimeSnapshot(state, fixedNow)
 
 		if result.ParkedCount != 0 {
@@ -2290,6 +2351,8 @@ func TestRuntimeSnapshot_ParkedFields(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 10, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Parked["ISS-C"] = &ParkedEntry{Identifier: "PROJ-C", Reason: parkReasonAgentBlocked}
 		state.Parked["ISS-A"] = &ParkedEntry{Identifier: "PROJ-A", Reason: parkReasonHandoffAbsence}
 		state.Parked["ISS-B"] = &ParkedEntry{Identifier: "PROJ-B", Reason: parkReasonAgentBlocked}
@@ -2403,6 +2466,8 @@ func TestRuntimeSnapshot_UsageDispositionFields(t *testing.T) {
 			t.Parallel()
 
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, state, nil, nil)
 			state.Running["ISS-USAGE"] = &RunningEntry{
 				Identifier:       "PROJ-1",
 				Issue:            domain.Issue{ID: "ISS-USAGE", State: "In Progress"},
@@ -2662,6 +2727,8 @@ func TestRuntimeSnapshot_TokensAwaited(t *testing.T) {
 			t.Parallel()
 
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, state, nil, nil)
 			state.Running["iss"] = &RunningEntry{
 				Identifier:     "PROJ-1",
 				Issue:          domain.Issue{ID: "iss", State: "In Progress"},

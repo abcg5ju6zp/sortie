@@ -18,6 +18,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/logging"
+	"github.com/sortie-ai/sortie/internal/notify/outbox"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/prompt"
 	"github.com/sortie-ai/sortie/internal/redact"
@@ -278,6 +279,10 @@ type WorkerDeps struct {
 	// Router selects the destinations of the session.started event. Nil
 	// routes nothing.
 	Router *route.Router
+
+	// Outbox persists and delivers the session.started event. Nil
+	// persists and sends nothing.
+	Outbox *outbox.Dispatcher
 
 	// TrackerOpsWg counts the detached part of the session.started
 	// delivery, so shutdown drains it with the other tracker writes. Nil

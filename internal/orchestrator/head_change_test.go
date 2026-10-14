@@ -65,6 +65,8 @@ func TestClassifyHeadChange(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		store := &headChangeStore{count: 0, err: nil}
 		pending := &PendingReaction{IssueID: "ISS-HC-1"}
 
@@ -82,6 +84,8 @@ func TestClassifyHeadChange(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		store := &headChangeStore{count: 0, err: nil}
 		pending := &PendingReaction{IssueID: "ISS-HC-2", HeadRecordedAt: headChangeBaseTime}
 
@@ -99,6 +103,8 @@ func TestClassifyHeadChange(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		store := &headChangeStore{count: 1, err: nil}
 		pending := &PendingReaction{IssueID: "ISS-HC-3", HeadRecordedAt: headChangeBaseTime}
 
@@ -113,6 +119,8 @@ func TestClassifyHeadChange(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["ISS-HC-4"] = &RunningEntry{Identifier: "ISS-HC-4-ident"}
 		store := &headChangeStore{count: 0, err: nil}
 		pending := &PendingReaction{IssueID: "ISS-HC-4", HeadRecordedAt: headChangeBaseTime}
@@ -131,6 +139,8 @@ func TestClassifyHeadChange(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.RetryAttempts["ISS-HC-5"] = &RetryEntry{IssueID: "ISS-HC-5"}
 		store := &headChangeStore{count: 0, err: nil}
 		pending := &PendingReaction{IssueID: "ISS-HC-5", HeadRecordedAt: headChangeBaseTime}
@@ -149,6 +159,8 @@ func TestClassifyHeadChange(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed["ISS-HC-6"] = struct{}{}
 		store := &headChangeStore{count: 0, err: nil}
 		pending := &PendingReaction{IssueID: "ISS-HC-6", HeadRecordedAt: headChangeBaseTime}
@@ -167,6 +179,8 @@ func TestClassifyHeadChange(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		store := &headChangeStore{err: errors.New("db unavailable")}
 		pending := &PendingReaction{IssueID: "ISS-HC-7", HeadRecordedAt: headChangeBaseTime}
 

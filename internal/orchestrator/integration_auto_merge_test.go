@@ -489,6 +489,8 @@ func TestReconcileAutoMerge_LiveAPI_E2E(t *testing.T) {
 	metrics := newAutoMergeMetricsCounter()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindAutoMerge)
 	state.PendingReactions[rkey] = &PendingReaction{
 		IssueID:    issueID,
@@ -535,7 +537,7 @@ func TestReconcileAutoMerge_LiveAPI_E2E(t *testing.T) {
 		reconcileAutoMerge(state, params, discardLogger(), ctx, metrics)
 
 		// Drain any post-merge background goroutines (comment + branch delete).
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		// Break early once merged.
 		if metrics.mergedCount() > 0 {

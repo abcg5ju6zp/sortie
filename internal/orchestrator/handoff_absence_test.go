@@ -152,7 +152,7 @@ func TestHandleWorkerExitParksAtHandoffAbsenceCeiling(t *testing.T) {
 				HandoffEvidenceBaseline: baseline,
 				AgentAdapter:            "mock",
 			}, params)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			if len(tracker.transitionCalls) != 0 {
 				t.Errorf("TransitionIssue calls = %d, want 0", len(tracker.transitionCalls))
@@ -223,6 +223,7 @@ func TestParkExhaustedAbsencesZeroValueConfigResolvesDefaultCeiling(t *testing.T
 	store := &stubStore{absenceCounts: map[string]int{issueID: 0}}
 	tracker := newRecordingHandoffTracker()
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	orchestrator := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -277,7 +278,7 @@ func TestAbsenceCeilingParkPointStableAcrossMaxSessions(t *testing.T) {
 					HandoffEvidenceBaseline: baseline,
 					AgentAdapter:            "mock",
 				}, params)
-				state.TrackerOpsWg.Wait()
+				waitNotifications(t, state)
 
 				if _, ok := state.Parked[issueID]; !ok {
 					t.Errorf("issue not parked at the two-absence ceiling, want the same park point regardless of max_sessions=%d", maxSessions)
@@ -302,7 +303,7 @@ func TestAbsenceCeilingParkPointStableAcrossMaxSessions(t *testing.T) {
 				params.MaxConsecutiveAbsences = 2
 
 				HandleRetryTimer(state, issueID, params)
-				state.TrackerOpsWg.Wait()
+				waitNotifications(t, state)
 
 				entry := state.Parked[issueID]
 				if entry == nil || entry.Reason != parkReasonHandoffAbsence {
@@ -327,6 +328,7 @@ func TestAbsenceCeilingParkPointStableAcrossMaxSessions(t *testing.T) {
 				store := &stubStore{absenceCounts: map[string]int{issueID: 2}}
 				tracker := newRecordingHandoffTracker()
 				state := NewState(1000, 1, 0, nil, AgentTotals{})
+				wireTestOutbox(t, state, nil, nil)
 				orchestrator := NewOrchestrator(OrchestratorParams{
 					State:           state,
 					Logger:          discardLogger(),
@@ -337,7 +339,7 @@ func TestAbsenceCeilingParkPointStableAcrossMaxSessions(t *testing.T) {
 				})
 
 				orchestrator.parkExhaustedAbsences(context.Background(), cfg, []domain.Issue{issue})
-				state.TrackerOpsWg.Wait()
+				waitNotifications(t, state)
 
 				entry := state.Parked[issueID]
 				if entry == nil || entry.Reason != parkReasonHandoffAbsence {
@@ -379,7 +381,7 @@ func TestHandleWorkerExitDefaultCeilingAllowsSecondAbsenceRetry(t *testing.T) {
 	if _, ok := state.Parked[issueID]; ok {
 		t.Error("issue parked before the default ceiling of three")
 	}
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if calls := tracker.labels(); len(calls) != 0 {
 		t.Errorf("AddLabel calls = %+v, want none before the ceiling", calls)
 	}
@@ -567,7 +569,7 @@ func TestHandleRetryTimerKeepsRecoveredExhaustedAbsenceParkedWhenLabelFails(t *t
 	params.Logger = debugLogger(t, &logs)
 
 	HandleRetryTimer(state, issueID, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.fetchCount != 0 {
 		t.Errorf("FetchIssueByID calls = %d, want 0 for an exhausted recovered retry", tracker.fetchCount)
@@ -638,7 +640,7 @@ func TestHandleRetryTimerFallsBackWhenAbsenceQueryFails(t *testing.T) {
 	params.Logger = debugLogger(t, &logs)
 
 	HandleRetryTimer(state, issueID, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if !strings.Contains(logs.String(), "handoff absence count query failed") {
 		t.Errorf("missing query failure log\nlogs: %s", logs.String())
@@ -657,6 +659,7 @@ func TestRebuildBudgetExhaustedRetainsAbsenceParkingOnQueryError(t *testing.T) {
 	cfg := config.ServiceConfig{}
 	store := &stubStore{absenceCountErr: errors.New("database is locked")}
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Parked[issueID] = &ParkedEntry{Identifier: "PROJ-REBUILD", Reason: parkReasonHandoffAbsence}
 	orchestrator := NewOrchestrator(OrchestratorParams{
 		State:           state,
@@ -688,7 +691,7 @@ func TestHandleRetryTimerExemptsReactionContinuationFromAbsenceGate(t *testing.T
 	params.MaxSessions = 0
 
 	HandleRetryTimer(state, issueID, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.fetchCount != 1 {
 		t.Errorf("FetchIssueByID calls = %d, want 1: the reaction retry was cancelled by unrelated absences", tracker.fetchCount)
@@ -711,7 +714,7 @@ func TestHandleRetryTimerSkipsAbsenceGateUnderOffPolicy(t *testing.T) {
 	params.HandoffEvidencePolicy = config.HandoffEvidenceOff
 
 	HandleRetryTimer(state, issueID, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(store.absenceCountedIssueIDs) != 0 {
 		t.Errorf("absence query ran for %v under the off policy, want no query", store.absenceCountedIssueIDs)
@@ -730,6 +733,7 @@ func TestRebuildBudgetExhaustedSkipsAbsenceGateUnderOffPolicy(t *testing.T) {
 	store := &stubStore{absenceCounts: map[string]int{issueID: 5}}
 	tracker := newRecordingHandoffTracker()
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	orchestrator := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -740,7 +744,7 @@ func TestRebuildBudgetExhaustedSkipsAbsenceGateUnderOffPolicy(t *testing.T) {
 	})
 
 	orchestrator.parkExhaustedAbsences(context.Background(), cfg, []domain.Issue{issue})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if store.absenceQueryCalls != 0 {
 		t.Errorf("absence query ran %d times under the off policy, want 0", store.absenceQueryCalls)
@@ -773,6 +777,7 @@ func TestRebuildBudgetExhaustedRestoresAbsenceParkingAfterRestart(t *testing.T) 
 	store := &stubStore{absenceCounts: map[string]int{issueID: 3}}
 	tracker := newRecordingHandoffTracker()
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	orchestrator := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -793,7 +798,7 @@ func TestRebuildBudgetExhaustedRestoresAbsenceParkingAfterRestart(t *testing.T) 
 	}
 	manager.setConfig(reloadedCfg)
 	orchestrator.parkExhaustedAbsences(context.Background(), reloadedCfg, []domain.Issue{issue})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if ShouldDispatch(issue, state, []string{"To Do"}, []string{"Done"}) {
 		t.Error("ordinary polling would dispatch an absence-exhausted issue after restart")
@@ -821,6 +826,7 @@ func TestParkExhaustedAbsencesLeavesBudgetExhaustedEmpty(t *testing.T) {
 	store := &stubStore{absenceCounts: map[string]int{issueID: 3}}
 	tracker := newRecordingHandoffTracker()
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	orchestrator := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -831,7 +837,7 @@ func TestParkExhaustedAbsencesLeavesBudgetExhaustedEmpty(t *testing.T) {
 	})
 
 	orchestrator.parkExhaustedAbsences(context.Background(), cfg, []domain.Issue{issue})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	entry := state.Parked[issueID]
 	if entry == nil || entry.Reason != parkReasonHandoffAbsence {
@@ -852,6 +858,7 @@ func TestUnparkIssueAgentBlockedResetsAbsenceSequence(t *testing.T) {
 	const issueID = "BLK-UNPARK"
 	store := &mockExitStore{}
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Parked[issueID] = &ParkedEntry{Identifier: "PROJ-BLK", Reason: parkReasonAgentBlocked}
 
 	unparkIssue(context.Background(), state, issueID, unparkTriggerStateChanged, store, discardLogger())
@@ -920,6 +927,8 @@ func TestHandleTickAbsenceReleaseOrdering(t *testing.T) {
 	}
 
 	state := NewState(1000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Parked[issueID] = &ParkedEntry{
 		Identifier:  "PROJ-ORD",
 		Reason:      parkReasonHandoffAbsence,
@@ -943,7 +952,7 @@ func TestHandleTickAbsenceReleaseOrdering(t *testing.T) {
 
 	orchestrator.refreshParkedIssues(ctx, candidates)
 	orchestrator.parkExhaustedAbsences(ctx, config.ServiceConfig{}, candidates)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.Parked[issueID]; ok {
 		t.Error("the issue was re-parked on the same tick it was released")
@@ -975,6 +984,7 @@ func TestParkExhaustedAbsencesOffPolicyHoldsExistingParkAndSkipsNewPark(t *testi
 	store := &stubStore{absenceCounts: map[string]int{freshIssueID: 5}}
 	tracker := newRecordingHandoffTracker()
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Parked[heldIssueID] = &ParkedEntry{
 		Identifier:  "PROJ-HELD",
 		Reason:      parkReasonHandoffAbsence,
@@ -998,7 +1008,7 @@ func TestParkExhaustedAbsencesOffPolicyHoldsExistingParkAndSkipsNewPark(t *testi
 
 	orchestrator.refreshParkedIssues(context.Background(), candidates)
 	orchestrator.parkExhaustedAbsences(context.Background(), cfg, candidates)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.Parked[heldIssueID]; !ok {
 		t.Error("the off policy released a park it does not govern")
@@ -1042,7 +1052,7 @@ func TestParkRetryLaneBackfillAndRelease(t *testing.T) {
 	retryParams.MaxSessions = 0
 
 	HandleRetryTimer(state, issueID, retryParams)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	entry := state.Parked[issueID]
 	if entry == nil {
@@ -1115,7 +1125,7 @@ func TestParkSingleLogRecordPerTrigger(t *testing.T) {
 			SoftStop:       true,
 			SoftStopReason: "blocked",
 		}, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		output := logs.String()
 		if got := strings.Count(output, `msg="issue parked"`); got != 1 {
@@ -1145,6 +1155,7 @@ func TestParkSingleLogRecordPerTrigger(t *testing.T) {
 		tracker := newRecordingHandoffTracker()
 		spy := &spyMetrics{}
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		var logs bytes.Buffer
 		orchestrator := NewOrchestrator(OrchestratorParams{
 			State:           state,
@@ -1157,7 +1168,7 @@ func TestParkSingleLogRecordPerTrigger(t *testing.T) {
 		})
 
 		orchestrator.parkExhaustedAbsences(context.Background(), cfg, []domain.Issue{issue})
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		output := logs.String()
 		if got := strings.Count(output, `msg="issue parked"`); got != 1 {
@@ -1207,7 +1218,7 @@ func TestHandleWorkerExitAbsenceParkRecordsObservedStateAndReleasesWithoutBackfi
 		HandoffEvidenceBaseline: baseline,
 		AgentAdapter:            "mock",
 	}, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	entry := state.Parked[issueID]
 	if entry == nil {

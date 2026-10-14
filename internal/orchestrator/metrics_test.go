@@ -303,6 +303,8 @@ func TestActiveElapsedSeconds(t *testing.T) {
 			t.Parallel()
 
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, state, nil, nil)
 			state.Running = tt.entries
 
 			got := ActiveElapsedSeconds(state, now)
@@ -320,6 +322,8 @@ func TestUpdateGauges(t *testing.T) {
 	spy := &spyMetrics{}
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["A-1"] = &RunningEntry{StartedAt: now.Add(-30 * time.Second)}
 	state.Running["A-2"] = &RunningEntry{StartedAt: now.Add(-60 * time.Second)}
 	state.RetryAttempts["B-1"] = &RetryEntry{IssueID: "B-1"}
@@ -364,6 +368,7 @@ func TestUpdateGauges_SSH(t *testing.T) {
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
 
+	wireTestOutbox(t, state, nil, nil)
 	o := &Orchestrator{
 		state:    state,
 		metrics:  spy,
@@ -400,6 +405,7 @@ func TestUpdateGauges_BudgetLevels(t *testing.T) {
 		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 		spy := &spyMetrics{}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted["iss-1"] = &BudgetExhaustedEntry{Reason: budgetReasonSession}
 		state.BudgetExhausted["iss-2"] = &BudgetExhaustedEntry{Reason: budgetReasonSession}
 		state.BudgetExhausted["iss-3"] = &BudgetExhaustedEntry{Reason: budgetReasonToken}
@@ -429,7 +435,7 @@ func TestUpdateGauges_BudgetLevels(t *testing.T) {
 		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 		spy := &spyMetrics{}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		o := &Orchestrator{
 			state:    state,
 			metrics:  spy,
@@ -487,6 +493,7 @@ func TestHandleTick_BudgetGaugeRecompute(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -514,6 +521,7 @@ func TestHandleTick_BudgetGaugeRecompute(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		present := true
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
@@ -530,7 +538,7 @@ func TestHandleTick_BudgetGaugeRecompute(t *testing.T) {
 		orch := budgetOrchestratorWithMetrics(state, wm, store, tracker, logger, spy)
 
 		orch.handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		if got := lastSessionBudgetGaugeReading(spy); got != 1 {
 			t.Fatalf("session_budget gauge after the first tick = %d, want 1", got)
 		}
@@ -539,7 +547,7 @@ func TestHandleTick_BudgetGaugeRecompute(t *testing.T) {
 		present = false
 		store.budgetExhaustedIDs = map[string]int{}
 		orch.handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if got := lastSessionBudgetGaugeReading(spy); got != 0 {
 			t.Errorf("session_budget gauge after the issue left the candidate set = %d, want 0 (derived from the set)", got)
@@ -846,7 +854,7 @@ func TestHandleRetryTimerMetrics(t *testing.T) {
 		spy := &spyMetrics{}
 		store := &mockRetryStore{}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		issueID := "RT-1"
 		state.Claimed[issueID] = struct{}{}
 		state.RetryAttempts[issueID] = &RetryEntry{
@@ -894,7 +902,7 @@ func TestHandleRetryTimerMetrics(t *testing.T) {
 		spy := &spyMetrics{}
 		store := &mockRetryStore{}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		issueID := "RT-2"
 		state.Claimed[issueID] = struct{}{}
 		state.Running[issueID] = &RunningEntry{}
@@ -924,7 +932,7 @@ func TestHandleRetryTimerMetrics(t *testing.T) {
 		spy := &spyMetrics{}
 		store := &mockRetryStore{}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		issueID := "RT-3"
 		state.Claimed[issueID] = struct{}{}
 		state.RetryAttempts[issueID] = &RetryEntry{
@@ -957,6 +965,7 @@ func TestHandleRetryTimerMetrics(t *testing.T) {
 		store := &mockRetryStore{}
 		// Max 1 concurrent, with 1 already running.
 		state := NewState(5000, 1, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["OTHER"] = &RunningEntry{Issue: domain.Issue{State: "To Do"}}
 
 		issueID := "RT-4"
@@ -998,6 +1007,8 @@ func TestReconcileMetrics(t *testing.T) {
 		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		// Entry started 10 minutes ago with no agent activity.
 		state.Running["ST-1"] = &RunningEntry{
 			Identifier: "ST-1-ident",
@@ -1032,6 +1043,8 @@ func TestReconcileMetrics(t *testing.T) {
 		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		cancelled := false
 		state.Running["TM-1"] = &RunningEntry{
 			Identifier: "TM-1-ident",
@@ -1070,6 +1083,8 @@ func TestReconcileMetrics(t *testing.T) {
 		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["AC-1"] = &RunningEntry{
 			Identifier: "AC-1-ident",
 			StartedAt:  now.Add(-10 * time.Second),
@@ -1104,6 +1119,8 @@ func TestReconcileMetrics(t *testing.T) {
 		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["NA-1"] = &RunningEntry{
 			Identifier: "NA-1-ident",
 			StartedAt:  now.Add(-10 * time.Second),
@@ -1136,6 +1153,8 @@ func TestReconcileMetrics(t *testing.T) {
 		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["NP-1"] = &RunningEntry{
 			Identifier: "NP-1-ident",
 			StartedAt:  now.Add(-10 * time.Second),

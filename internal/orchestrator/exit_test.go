@@ -152,6 +152,11 @@ func noopRetryFire(_ string) {}
 func exitState(t *testing.T, issueID string, retryAttempt *int) *State {
 	t.Helper()
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
+	// Durable notification delivery for exit assertions. In-process
+	// targets carry the router's ready notifiers, so no tracker or
+	// lookup is needed here.
+	wireTestOutbox(t, state, nil, nil)
 	state.Running[issueID] = &RunningEntry{
 		Identifier:   issueID + "-ident",
 		StartedAt:    baseTime,
@@ -1496,6 +1501,8 @@ func TestHandleWorkerExit_ContextsReleased(t *testing.T) {
 			const issueID = "ISSUE-CONTEXT-RELEASE"
 
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, state, nil, nil)
 			var workerCtx context.Context
 			workerDone := make(chan struct{})
 			DispatchIssue(context.Background(), state, domain.Issue{ID: issueID, Identifier: issueID + "-ident"}, nil, "",
@@ -1626,7 +1633,7 @@ func TestHandleWorkerExit_UnmeasuredSessionsAccumulatesAcrossExits(t *testing.T)
 
 	store := &mockExitStore{}
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+	wireTestOutbox(t, state, nil, nil)
 	for _, issueID := range []string{"ISSUE-A", "ISSUE-B", "ISSUE-C"} {
 		state.Running[issueID] = &RunningEntry{
 			Identifier: issueID + "-ident",
@@ -1780,6 +1787,7 @@ func TestHandleWorkerExit_UnknownIssueNoOp(t *testing.T) {
 
 	store := &mockExitStore{}
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	params := defaultExitParams(t, store)
 
 	HandleWorkerExit(state, WorkerResult{
@@ -2252,7 +2260,7 @@ func TestHandleWorkerExit_SessionIDPrefersResult(t *testing.T) {
 			SessionID:    "S1",
 			AgentAdapter: "mock",
 		}, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if len(store.sessionMetadata) != 1 {
 			t.Fatalf("UpsertSessionMetadata called %d times, want 1", len(store.sessionMetadata))
@@ -2824,7 +2832,7 @@ func TestHandleWorkerExit_WithheldReadGating(t *testing.T) {
 			AgentAdapter:            "mock",
 		}, params)
 		t.Cleanup(func() { CancelRetry(state, issueID) })
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if got := tracker.fetchStatesCalls.Load(); got != 1 {
 			t.Errorf("FetchIssueStatesByIDs called %d times, want 1", got)
@@ -6012,7 +6020,7 @@ func TestHandleWorkerExitBlockedDrivingDispatchParksIssue(t *testing.T) {
 		SoftStop:       true,
 		SoftStopReason: "blocked",
 	}, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	entry, ok := state.Parked["BLK-1"]
 	if !ok {
@@ -6064,7 +6072,7 @@ func TestHandleWorkerExitBlockedWithReviewMetadataTakesBlockedDisposition(t *tes
 		SoftStopReason: "blocked",
 		ReviewMetadata: &domain.ReviewMetadata{FinalVerdict: "iterate"},
 	}, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(tracker.transitionCalls) != 0 {
 		t.Errorf("TransitionIssue called %d times, want 0", len(tracker.transitionCalls))
@@ -6126,7 +6134,7 @@ func TestHandleWorkerExitBlockedLabelCommandPostureTakesUnchangedDisposition(t *
 		SoftStop:       true,
 		SoftStopReason: "blocked",
 	}, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.Parked["BLK-2"]; ok {
 		t.Error("issue parked despite a posture that does not drive issue state")
@@ -6173,7 +6181,7 @@ func TestHandleWorkerExitNeedsHumanReviewPerformsHandoffWithoutParking(t *testin
 		SoftStop:       true,
 		SoftStopReason: "needs-human-review",
 	}, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(tracker.transitionCalls) != 1 || tracker.transitionCalls[0].TargetState != "Human Review" {
 		t.Errorf("TransitionIssue calls = %+v, want one transition to %q", tracker.transitionCalls, "Human Review")
@@ -6533,8 +6541,10 @@ func TestHandleWorkerExit_TrackerOpsWgDrains(t *testing.T) {
 	t.Parallel()
 
 	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
 	tracker := &mockTrackerAdapter{
 		commentIssueFn: func(_ context.Context, _, _ string) error {
+			entered <- struct{}{}
 			<-gate
 			return nil
 		},
@@ -6552,9 +6562,15 @@ func TestHandleWorkerExit_TrackerOpsWgDrains(t *testing.T) {
 		AgentAdapter: "mock",
 	}, params)
 
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CommentIssue never started")
+	}
+
 	waitDone := make(chan struct{})
 	go func() {
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		close(waitDone)
 	}()
 
@@ -9154,7 +9170,7 @@ func TestHandleWorkerExit_DeclaredRunCompletionComment(t *testing.T) {
 			SoftStop:       true,
 			SoftStopReason: "no-change-needed",
 		}, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if len(tracker.commentCalls) != 1 {
 			t.Fatalf("CommentIssue calls = %d, want 1", len(tracker.commentCalls))
@@ -9473,6 +9489,7 @@ func TestDrainRunningWorkers_NoChangeState(t *testing.T) {
 
 	const issueID = "DRAIN-NC"
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Running[issueID] = &RunningEntry{
 		Identifier: "PROJ-DRAIN-NC",
 		Issue:      domain.Issue{ID: issueID, Identifier: "PROJ-DRAIN-NC", State: "In Progress"},
@@ -9509,7 +9526,7 @@ func TestDrainRunningWorkers_NoChangeState(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("drainRunningWorkers did not return within 10 seconds")
 	}
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(tracker.transitionCalls) != 1 || tracker.transitionCalls[0].TargetState != "Done" {
 		t.Errorf("TransitionIssue calls = %+v, want one transition to %q", tracker.transitionCalls, "Done")
@@ -10138,6 +10155,11 @@ func (f *hopExitFixture) assertDecision(t *testing.T, wantResults []recordedStag
 
 func (f *hopExitFixture) exit() {
 	HandleWorkerExit(f.state, f.result, f.params)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.state.Outbox.WaitIdle(ctx); err != nil {
+		panic(fmt.Sprintf("stage event targets did not settle: %v", err))
+	}
 	f.state.TrackerOpsWg.Wait()
 }
 

@@ -233,6 +233,7 @@ func newReviewPendingEntry(issueID string, prNumber int) *PendingReaction {
 func stateWithReviewReaction(t *testing.T, issueID string, prNumber int) *State {
 	t.Helper()
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, s, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindReview)
 	s.PendingReactions[rkey] = newReviewPendingEntry(issueID, prNumber)
 	s.Claimed[issueID] = struct{}{}
@@ -668,6 +669,8 @@ func TestReconcileReviewComments_NoPendingReviewEntries(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	// Add a CI reaction entry, should not be processed by review reconcile.
 	rkey := ReactionKey("ISS-R-CI", ReactionKindCI)
 	state.PendingReactions[rkey] = &PendingReaction{
@@ -1135,7 +1138,7 @@ func TestReconcileReviewComments_TurnCapExceeded_Escalates(t *testing.T) {
 	log, buf := logCapture()
 
 	reconcileReviewComments(state, params, log, context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.PendingReactions[rkey]; ok {
 		t.Error("PendingReactions entry still present after turn cap; want consumed")
@@ -1185,7 +1188,7 @@ func TestReconcileReviewComments_TurnCapExceeded_CrossKindIsolation(t *testing.T
 	params := reviewEscalationParams(t, store, scm, tracker)
 
 	reconcileReviewComments(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.PendingReactions[rkey]; ok {
 		t.Error("review PendingReactions entry present after escalation; want consumed")
@@ -2050,7 +2053,7 @@ func TestReconcileReviewComments_Triage_Escalate(t *testing.T) {
 	runReviewTriageToCompletion(t, state, params, rkey, metrics)
 
 	reconcileReviewComments(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Errorf("AddLabel calls = %d, want 1 (triage escalation uses the kind's own escalation action)", tracker.addLabelCalled)
@@ -2225,7 +2228,7 @@ func TestReconcileReviewComments_Triage_EpisodeCloseClearsHandledForNextEpisode(
 
 	runReviewTriageToCompletion(t, state, params, rkey, metrics)
 	reconcileReviewComments(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Errorf("AddLabel calls = %d, want 1 (the replayed handled verdict from episode 1 must not suppress the fresh escalate)", tracker.addLabelCalled)
@@ -2265,6 +2268,7 @@ func TestRecordHandedOffComments(t *testing.T) {
 
 			const issueID = "ISS-H-1"
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			rkey := ReactionKey(issueID, ReactionKindReview)
 			store := newFingerprintModelStore()
 			store.addErr = tt.addErr
@@ -2295,6 +2299,7 @@ func TestRecordHandedOffComments_KeysAreIndependent(t *testing.T) {
 
 	const issueID = "ISS-H-2"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	reviewKey := ReactionKey(issueID, ReactionKindReview)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	seedHandedOff(state, reviewKey)
@@ -2348,6 +2353,7 @@ func TestCarriesNewComment(t *testing.T) {
 
 			const issueID = "ISS-H-3"
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			rkey := ReactionKey(issueID, tt.kind)
 			if len(tt.seed) > 0 {
 				seedHandedOff(state, rkey, tt.seed...)
@@ -2437,7 +2443,7 @@ func TestReconcileReviewComments_SpentBudget_NoNewComment(t *testing.T) {
 			log, buf := logCapture()
 
 			reconcileReviewComments(state, params, log, context.Background(), metrics)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			entry, ok := state.PendingReactions[rkey]
 			if !ok {
@@ -2575,7 +2581,7 @@ func TestReconcileReviewComments_SpentBudget_NoDecisionBeforeObservation(t *test
 			params := reviewEscalationParams(t, store, scm, tracker)
 
 			reconcileReviewComments(state, params, discardLogger(), context.Background(), metrics)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			entry, ok := state.PendingReactions[rkey]
 			if !ok {
@@ -2634,7 +2640,7 @@ func TestReconcileReviewComments_SpentBudget_NewCommentEscalatesOnce(t *testing.
 			log, buf := logCapture()
 
 			reconcileReviewComments(state, params, log, context.Background(), metrics)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			if scm.calls != 1 {
 				t.Errorf("FetchPendingReviews calls = %d, want 1", scm.calls)
@@ -2691,7 +2697,7 @@ func TestReconcileReviewComments_SpentBudget_TriageGateNotReached(t *testing.T) 
 			params.Router = commentRouter(t, tracker, domain.EventEscalationReviewComments)
 
 			reconcileReviewComments(state, params, discardLogger(), context.Background(), newReviewMetricsSpy())
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			assertEscalations(t, tracker, tt.wantEscalation)
 			if entry, ok := state.PendingReactions[rkey]; ok && entry.Triage != nil {
@@ -2883,7 +2889,7 @@ func TestReconcileReviewComments_HandedOff_TriageEscalationKeepsSet(t *testing.T
 
 	runReviewTriageToCompletion(t, state, params, rkey, metrics)
 	reconcileReviewComments(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Fatalf("AddLabel calls = %d, want 1", tracker.addLabelCalled)
@@ -2913,7 +2919,7 @@ func TestReconcileReviewComments_HandedOff_ReseededEntryAfterSpentDrop(t *testin
 	metrics := newReviewMetricsSpy()
 	pass := func() {
 		reconcileReviewComments(state, params, discardLogger(), context.Background(), metrics)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 	}
 
 	pass()
@@ -2966,7 +2972,7 @@ func TestReconcileReviewComments_NoEscalationAfterSuccessfulLastTurn(t *testing.
 	const escalatingMsg = "review fix continuation turns exhausted, escalating"
 	pass := func() {
 		reconcileReviewComments(state, params, log, context.Background(), metrics)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 	}
 
 	turns := [][]domain.ReviewComment{
@@ -3080,6 +3086,7 @@ func (c *reactionCycle) newPending() *PendingReaction {
 
 func (c *reactionCycle) restart() {
 	c.state = NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(c.t, c.state, nil, nil)
 	c.state.Claimed[c.issueID] = struct{}{}
 	c.state.PendingReactions[c.rkey()] = c.newPending()
 }
@@ -3091,7 +3098,7 @@ func (c *reactionCycle) pass() {
 	} else {
 		reconcileBotReviewComments(c.state, c.params, c.log, context.Background(), c.botMetrics)
 	}
-	c.state.TrackerOpsWg.Wait()
+	waitNotifications(c.t, c.state)
 }
 
 func (c *reactionCycle) setComments(comments []domain.ReviewComment) {
@@ -3798,6 +3805,8 @@ func TestSettleHandedOffCommentSet(t *testing.T) {
 			t.Parallel()
 
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, state, nil, nil)
 			rkey := ReactionKey(issueID, tt.kind)
 			store := newFingerprintModelStore()
 			store.seedRows(issueID, tt.kind, tt.rows...)

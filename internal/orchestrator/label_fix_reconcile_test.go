@@ -93,6 +93,7 @@ func newLabelFixPending(issueID string, prNumber int, branch string) *PendingRea
 func stateWithLabelFixPending(t *testing.T, issueID string, prNumber int, branch string) *State {
 	t.Helper()
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, s, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindLabelFix)
 	s.PendingReactions[rkey] = newLabelFixPending(issueID, prNumber, branch)
 	return s

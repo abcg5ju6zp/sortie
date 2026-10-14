@@ -455,8 +455,8 @@ func escalateMergeConflictFailure(
 	if params.MergeConflictConfig.Escalation != "label" {
 		record = metrics.IncMergeConflictEscalations
 	}
-	publishEscalation(ctx, &state.TrackerOpsWg, delivery, log, record, func(err error) {
-		log.Warn("merge conflict escalation comment failed", slog.Any("error", err))
+	publishEscalation(state.Outbox, delivery, log, record, func(err error) {
+		log.Warn("merge_conflict escalation comment failed", slog.Any("error", err))
 	})
 
 	delete(state.PendingReactions, ReactionKey(pending.IssueID, ReactionKindMergeConflict))

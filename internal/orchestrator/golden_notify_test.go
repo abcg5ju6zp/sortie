@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/notify/outbox"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/prompt"
@@ -64,7 +64,10 @@ func (r *goldenRecorder) record(op, issueID, text string) error {
 	defer r.mu.Unlock()
 	r.ops = append(r.ops, goldenOp{Op: op, IssueID: issueID, Text: text})
 	if r.failing && (op == "comment" || op == "label") {
-		return errors.New("golden tracker write failure")
+		// A deterministic rejection: the durable dispatcher records the
+		// failure without spending its retry budget, matching the
+		// golden one-write expectation.
+		return permanentTrackerErr("golden tracker write failure")
 	}
 	return nil
 }
@@ -105,9 +108,16 @@ type goldenWired struct {
 	cfg       config.ServiceConfig
 	rec       *goldenRecorder
 	router    *route.Router
+	box       *outbox.Dispatcher
+	trackerWg *sync.WaitGroup
 	exit      HandleWorkerExitParams
 	reconcile ReconcileParams
 	budget    budgetHoldNoticeParams
+}
+
+func (w goldenWired) wait(t *testing.T) {
+	t.Helper()
+	waitForOutboxSettle(t, w.box, w.trackerWg)
 }
 
 func goldenCommentEscalations(cfg config.ServiceConfig, reconcile ReconcileParams) []domain.EventType {
@@ -173,10 +183,30 @@ func goldenWiring(t *testing.T, cfg config.ServiceConfig, rec *goldenRecorder) g
 	}
 	reconcile.Router = router
 
+	trackerWg := &sync.WaitGroup{}
+	boxStore, err := persistence.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open golden outbox store: %v", err)
+	}
+	t.Cleanup(func() { boxStore.Close() }) //nolint:errcheck
+	if err := boxStore.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate golden outbox store: %v", err)
+	}
+	box := outbox.New(outbox.Params{
+		Store:         boxStore,
+		Tracker:       rec,
+		Logger:        discardLogger(),
+		WaitGroup:     trackerWg,
+		RetryBackoffs: []time.Duration{time.Millisecond, 2 * time.Millisecond},
+	})
+	t.Cleanup(box.StopScheduling)
+
 	return goldenWired{
-		cfg:    cfg,
-		rec:    rec,
-		router: router,
+		cfg:       cfg,
+		rec:       rec,
+		router:    router,
+		box:       box,
+		trackerWg: trackerWg,
 		exit: HandleWorkerExitParams{
 			MaxRetryBackoffMS: 300_000,
 			OnRetryFire:       func(string) {},
@@ -252,11 +282,11 @@ func dispatchStep(name string, posture DispatchPosture) goldenStep {
 
 		ec := newExitCapture()
 		cfg := w.cfg
-		var trackerOps sync.WaitGroup
 		RunWorkerAttempt(context.Background(), domain.Issue{ID: goldenIssueID, Identifier: "GOLD-1", Title: "Golden", State: "To Do"}, nil, WorkerDeps{
 			TrackerAdapter:         w.rec,
 			Router:                 w.router,
-			TrackerOpsWg:           &trackerOps,
+			Outbox:                 w.box,
+			TrackerOpsWg:           w.trackerWg,
 			AgentAdapter:           &mockAgentAdapter{},
 			Posture:                posture,
 			ConfigFunc:             func() config.ServiceConfig { return cfg },
@@ -267,7 +297,7 @@ func dispatchStep(name string, posture DispatchPosture) goldenStep {
 			Metrics:                &domain.NoopMetrics{},
 		})
 		ec.waitResult(t)
-		trackerOps.Wait()
+		w.wait(t)
 	}}
 }
 
@@ -276,6 +306,9 @@ func exitStep(name string, result WorkerResult, adjust func(t *testing.T, p *Han
 		t.Helper()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
+		state.Outbox = w.box
 		state.Running[goldenIssueID] = &RunningEntry{
 			Identifier: goldenIssueID,
 			StartedAt:  goldenNow.Add(-90 * time.Second),
@@ -293,7 +326,7 @@ func exitStep(name string, result WorkerResult, adjust func(t *testing.T, p *Han
 		}
 
 		HandleWorkerExit(state, result, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		CancelRetry(state, goldenIssueID)
 	}}
 }
@@ -327,11 +360,14 @@ func escalationStep(name string, run func(t *testing.T, w goldenWired, state *St
 		t.Helper()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
+		state.Outbox = w.box
 		pending := &PendingReaction{IssueID: goldenIssueID, Identifier: goldenIssueID, CreatedAt: goldenNow}
 		state.Claimed[goldenIssueID] = struct{}{}
 
 		run(t, w, state, pending)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		CancelRetry(state, goldenIssueID)
 	}}
 }
@@ -407,12 +443,12 @@ func escalationScript(reaction string) []goldenStep {
 				pending.Kind = ReactionKindMergeCompletion
 				escalateMergeCompletionMissingSHA(state, w.reconcile, pending, data, 10*time.Minute, log, ctx)
 			}),
-			escalationStep("missing_sha_tracker_write_fails", func(_ *testing.T, w goldenWired, state *State, pending *PendingReaction) {
+			escalationStep("missing_sha_tracker_write_fails", func(t *testing.T, w goldenWired, state *State, pending *PendingReaction) {
 				pending.Kind = ReactionKindMergeCompletion
 				w.rec.setFailing(true)
 				defer w.rec.setFailing(false)
 				escalateMergeCompletionMissingSHA(state, w.reconcile, pending, data, 10*time.Minute, log, ctx)
-				state.TrackerOpsWg.Wait()
+				waitNotifications(t, state)
 			}),
 		)
 	}

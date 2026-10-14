@@ -14,6 +14,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/logging"
+	"github.com/sortie-ai/sortie/internal/notify/outbox"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/prompt"
@@ -133,6 +134,11 @@ type OrchestratorParams struct {
 	// Router selects the destinations of every outbound event. Nil
 	// routes nothing, so no event reaches a tracker or a notifier.
 	Router *route.Router
+
+	// Outbox persists every outbound event and its per-target results
+	// and resumes open targets after a restart. Nil persists and sends
+	// nothing, the legacy callers' posture.
+	Outbox *outbox.Dispatcher
 
 	// SessionToolRegistryFunc builds the per-session tool registry so the
 	// first-turn advertisement matches the MCP sidecar's set. May be nil,
@@ -461,6 +467,9 @@ func NewOrchestrator(params OrchestratorParams) *Orchestrator {
 	if params.WorkflowManager != nil {
 		o.updateRouter(params.WorkflowManager.Config())
 	}
+	if params.Outbox != nil {
+		o.state.Outbox = params.Outbox
+	}
 	// Startup preflight must have passed for construction to reach here.
 	o.preflightOK.Store(true)
 	return o
@@ -605,6 +614,11 @@ func (o *Orchestrator) Run(ctx context.Context) {
 	o.state.StageChains = startCfg.Dispatch.Chains()
 	o.state.HopCeiling = startCfg.Dispatch.HopCeiling()
 	o.activateReconstructedRetries()
+	if o.state.Outbox != nil {
+		if err := o.state.Outbox.Recover(ctx); err != nil {
+			o.logger.Error("notification outbox recovery failed", slog.Any("error", err))
+		}
+	}
 
 	tickTimer := time.NewTimer(0)
 	defer tickTimer.Stop()
@@ -617,6 +631,13 @@ func (o *Orchestrator) Run(ctx context.Context) {
 			tickTimer.Stop()
 			o.pollHealth.schedule(time.Time{})
 			o.drainRunningWorkers()
+			if o.state.Outbox != nil {
+				// Stop new attempts before the bounded wait, so the wait
+				// covers only in-flight attempts; each finishes and
+				// records its result there, and everything still open is
+				// resumed by the next process.
+				o.state.Outbox.StopScheduling()
+			}
 			o.drainTriageRuns()
 			o.drainTrackerOps()
 			o.cancelRetryTimers()
@@ -1126,6 +1147,7 @@ func (o *Orchestrator) makeWorkerFn(resumeSessionID, sshHost, agentKind, templat
 		deps := WorkerDeps{
 			TrackerAdapter:         o.trackerAdapter,
 			Router:                 o.router,
+			Outbox:                 o.state.Outbox,
 			TrackerOpsWg:           &o.state.TrackerOpsWg,
 			AgentAdapter:           adapter,
 			ConfigFunc:             o.workflowManager.Config,

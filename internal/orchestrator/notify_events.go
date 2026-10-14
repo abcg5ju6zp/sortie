@@ -3,18 +3,14 @@ package orchestrator
 import (
 	"cmp"
 	"context"
+	"errors"
 	"log/slog"
-	"sync"
-	"time"
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/notify/outbox"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 )
-
-// outboundDeliveryTimeout bounds one detached delivery. Shutdown waits
-// trackerOpsDrainTimeout for it, which is set above this value.
-const outboundDeliveryTimeout = 30 * time.Second
 
 // sessionEvent holds the identity of the run an orchestrator session
 // event describes.
@@ -73,84 +69,75 @@ func orchestratorNotification(t domain.EventType, severity string, envelope doma
 	}
 }
 
-// deliverEvent sends d to every destination and logs the outcome of each
-// one except tracker_comment, whose outcome belongs to the producer that
-// owns its metric and log line.
-func deliverEvent(ctx context.Context, d route.Delivery, log *slog.Logger) route.Outcomes {
-	outcomes := d.Deliver(ctx)
-	for _, outcome := range outcomes {
-		if outcome.Kind == domain.TrackerCommentKind {
-			continue
-		}
-		if outcome.Err != nil {
-			log.Warn("notification delivery failed",
-				slog.String("event_type", string(d.EventType())),
-				slog.String("destination", outcome.Destination),
-				slog.String("notifier_kind", outcome.Kind),
-				slog.Any("error", outcome.Err),
-			)
-			continue
-		}
-		log.Debug("notification delivered",
-			slog.String("event_type", string(d.EventType())),
-			slog.String("destination", outcome.Destination),
-			slog.String("notifier_kind", outcome.Kind),
-		)
-	}
-	return outcomes
-}
-
-// deliverDetached sends d from a goroutine counted by wg, under one
-// deadline that outlives ctx's cancellation so a shutdown drains it.
-// onTrackerComment, when non-nil, receives the tracker_comment outcome
-// after every send returned; received is false when tracker_comment was
-// not a target. An empty delivery starts no goroutine and never calls
-// onTrackerComment.
-func deliverDetached(ctx context.Context, wg *sync.WaitGroup, d route.Delivery, log *slog.Logger, onTrackerComment func(received bool, err error)) {
+// deliverDetached durably persists d and delivers it through the
+// outbox. onTrackerComment, when non-nil, runs exactly once after the
+// tracker_comment target reaches a terminal result; it never runs when
+// tracker_comment is not a target. An empty delivery starts nothing. A
+// nil outbox (a caller with no durable sender) drops the event: this
+// only happens in callers that route nowhere.
+func deliverDetached(box *outbox.Dispatcher, d route.Delivery, log *slog.Logger, onTrackerComment func(received bool, err error)) {
 	if d.Empty() {
 		return
 	}
-	wg.Go(func() {
-		dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), outboundDeliveryTimeout)
-		defer cancel()
-
-		outcomes := deliverEvent(dctx, d, log)
-		if onTrackerComment == nil {
-			return
-		}
-		onTrackerComment(outcomes.TrackerComment())
-	})
+	if box == nil {
+		log.Debug("notification outbox unavailable; notification not persisted or sent",
+			slog.String("event_type", string(d.EventType())),
+		)
+		return
+	}
+	if _, _, err := box.Enqueue(d, onTrackerComment); err != nil {
+		log.Error("failed to persist notification for delivery",
+			slog.String("event_type", string(d.EventType())),
+			slog.Any("error", err),
+		)
+	}
 }
 
-// publishEscalation delivers an escalation event detached. logFailure
-// receives a failed tracker comment. record, when non-nil, receives the
-// escalation counter action: comment on a posted comment, error on a
-// failed one, and none when tracker_comment was no target, including an
-// empty delivery; a producer that applied a label passes nil because the
-// label owns the counter.
-func publishEscalation(ctx context.Context, wg *sync.WaitGroup, d route.Delivery, log *slog.Logger, record func(action string), logFailure func(err error)) {
-	if d.Empty() {
+// publishEscalation durably delivers an escalation event. logFailure
+// receives a failed tracker comment, and record receives the escalation
+// counter action: comment on a confirmed comment, error on a
+// permanently failed one, and none when tracker_comment was no target
+// (including an empty delivery). A producer that applied a label passes
+// nil because the label owns the counter.
+func publishEscalation(box *outbox.Dispatcher, d route.Delivery, log *slog.Logger, record func(action string), logFailure func(err error)) {
+	if d.Empty() || box == nil {
 		if record != nil {
 			record(escalationActionNone)
 		}
 		return
 	}
-	deliverDetached(ctx, wg, d, log, func(received bool, err error) {
-		if received && err != nil {
-			logFailure(err)
-		}
-		if record == nil {
-			return
-		}
-		switch {
-		case !received:
-			record(escalationActionNone)
-		case err != nil:
-			record(outcomeError)
-		default:
+
+	var onTracker func(received bool, err error)
+	if record != nil || logFailure != nil {
+		onTracker = func(received bool, err error) {
+			if err != nil && logFailure != nil {
+				logFailure(err)
+			}
+			if record == nil {
+				return
+			}
+			if err != nil {
+				record(outcomeError)
+				return
+			}
 			record(escalationActionComment)
 		}
-	})
+	}
+
+	_, trackerTarget, err := box.Enqueue(d, onTracker)
+	if err != nil {
+		log.Error("failed to persist escalation notification",
+			slog.String("event_type", string(d.EventType())),
+			slog.Any("error", err),
+		)
+		if record != nil {
+			record(escalationActionNone)
+		}
+		return
+	}
+	if !trackerTarget && record != nil {
+		record(escalationActionNone)
+	}
 }
 
 const (
@@ -198,12 +185,14 @@ func (o *Orchestrator) updateRouter(cfg config.ServiceConfig) {
 	}
 }
 
-// publishSessionStarted routes the session.started event and delivers it.
-// Every destination but tracker_comment is sent detached, and only while
-// ctx is live, so a slow operator endpoint never delays the agent's start;
-// the tracker comment is then posted on ctx, as the dispatch comment
-// always was. The tracker outcome is logged and counted before the caller
-// goes on.
+// publishSessionStarted routes the session.started event, persists it
+// with its frozen identity, body, and routing snapshot, and delivers it.
+// Every target sends through the outbox independently. The dispatch
+// comment is confirmed before the caller goes on: the tracker_comment
+// target's first result is awaited on ctx, and its success or failure is
+// logged and counted from the persisted target result, so a callback lost
+// to a crash never misjudges it; a retryable first attempt lets the
+// agent start while the retry chain finishes the count.
 func publishSessionStarted(ctx context.Context, issue domain.Issue, attempt *int, agentKind string, deps WorkerDeps, log *slog.Logger) {
 	event := sessionEvent{
 		IssueID:    issue.ID,
@@ -214,24 +203,34 @@ func publishSessionStarted(ctx context.Context, issue domain.Issue, attempt *int
 		Agent:      agentKind,
 	}.notification(domain.EventTypeSessionStarted, "", dispatchComment)
 
-	trackerDelivery, others := deps.Router.Route(event).SplitTrackerComment()
-
-	if ctx.Err() == nil {
-		wg := deps.TrackerOpsWg
-		if wg == nil {
-			wg = new(sync.WaitGroup)
-		}
-		deliverDetached(ctx, wg, others, log, nil)
+	delivery := deps.Router.Route(event)
+	if delivery.Empty() || deps.Outbox == nil {
+		return
 	}
 
-	received, err := deliverEvent(ctx, trackerDelivery, log).TrackerComment()
-	switch {
-	case !received:
-	case err != nil:
-		log.Warn("dispatch comment failed", slog.Any("error", err))
-		deps.Metrics.IncTrackerComments("dispatch", "error")
-	default:
+	box := deps.Outbox
+	id, trackerTarget, err := box.Enqueue(delivery, func(received bool, err error) {
+		if err != nil {
+			log.Warn("dispatch comment failed", slog.Any("error", err))
+			deps.Metrics.IncTrackerComments("dispatch", "error")
+			return
+		}
 		log.Info("dispatch comment posted")
 		deps.Metrics.IncTrackerComments("dispatch", "success")
+	})
+	if err != nil {
+		log.Error("failed to persist session.started notification", slog.Any("error", err))
+		return
+	}
+
+	if trackerTarget {
+		// Order the dispatch comment ahead of the agent's start for the
+		// normal one-shot case. A wait ended by the caller's context
+		// (shutdown) returns while the attempt still drains and persists.
+		if _, awaitErr := box.AwaitTrackerSettled(ctx, id); awaitErr != nil && !errors.Is(awaitErr, context.Canceled) && !errors.Is(awaitErr, context.DeadlineExceeded) {
+			if _, ok := errors.AsType[*outbox.TrackerResultError](awaitErr); !ok {
+				log.Warn("dispatch comment confirmation interrupted", slog.Any("error", awaitErr))
+			}
+		}
 	}
 }

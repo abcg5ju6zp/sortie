@@ -342,6 +342,8 @@ func TestShouldDispatch(t *testing.T) {
 			t.Parallel()
 
 			s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, s, nil, nil)
 			if tt.setupState != nil {
 				tt.setupState(s)
 			}
@@ -368,6 +370,7 @@ func TestShouldDispatchParkedIssue(t *testing.T) {
 
 	newParkedState := func() *State {
 		s := NewState(1000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, s, nil, nil)
 		s.Parked[issue.ID] = &ParkedEntry{Identifier: issue.Identifier, Reason: parkReasonAgentBlocked}
 		return s
 	}
@@ -411,6 +414,8 @@ func TestShouldDispatch_ReopenAfterTerminalRelease(t *testing.T) {
 	issue := domain.Issue{ID: "REOPEN-1", Identifier: "REOPEN-1", Title: "T", State: "To Do"}
 
 	state := NewState(1000, 10, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[issue.ID] = struct{}{}
 
 	if ShouldDispatch(issue, state, active, terminal) {
@@ -1536,6 +1541,8 @@ func TestEvaluateCandidate(t *testing.T) {
 			t.Parallel()
 
 			s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, s, nil, nil)
 			pass := &TickResolution{}
 
 			var resolver BlockerResolver
@@ -1597,6 +1604,8 @@ func TestEvaluateCandidate_ParityWithShouldDispatchWithSets(t *testing.T) {
 			t.Parallel()
 
 			s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, s, nil, nil)
 			pass := &TickResolution{}
 
 			decision := EvaluateCandidate(context.Background(), issue, s, activeSet, terminalSet, nil, pass)
@@ -1707,6 +1716,8 @@ func TestEvaluateCandidate_HaltLatch(t *testing.T) {
 	deploymentErr := &domain.TrackerError{Kind: domain.ErrTrackerAuth}
 
 	s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, s, nil, nil)
 	pass := &TickResolution{}
 
 	resolver := &fakeBlockerResolver{
@@ -1760,6 +1771,8 @@ func TestEvaluateCandidate_TransientFailureDoesNotHalt(t *testing.T) {
 	transientErr := &domain.TrackerError{Kind: domain.ErrTrackerTransport}
 
 	s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, s, nil, nil)
 	pass := &TickResolution{}
 
 	resolver := &fakeBlockerResolver{
@@ -1834,6 +1847,8 @@ func TestEvaluateCandidate_ReadBudgetWindow(t *testing.T) {
 	}
 
 	s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, s, nil, nil)
 	offset := 0
 
 	wantPasses := (needyCount + maxBlockerReadsPerPass - 1) / maxBlockerReadsPerPass
@@ -1913,6 +1928,8 @@ func TestEvaluateCandidate_OffsetResetsOnCapacityBreak(t *testing.T) {
 	}
 
 	s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, s, nil, nil)
 	pass := &TickResolution{offset: 0}
 
 	// A capacity break stops the walk after two candidates, well under
@@ -2038,6 +2055,8 @@ func TestEvaluateCandidate_BudgetSpentWithoutBinding(t *testing.T) {
 	}
 
 	s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, s, nil, nil)
 	offset := 0
 
 	for passNum := range 2 {

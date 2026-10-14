@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/domain"
@@ -495,7 +494,7 @@ func escalateMergeCompletion(
 			}
 		})
 	}
-	publishEscalation(ctx, &state.TrackerOpsWg, delivery, log, nil, func(err error) {
+	publishEscalation(state.Outbox, delivery, log, nil, func(err error) {
 		log.Warn("merge_completion escalation comment failed", slog.Any("error", err))
 	})
 
@@ -508,10 +507,11 @@ func escalateMergeCompletion(
 // leaves it undispatched so only delivery can be retried by a later fresh
 // pending entry, without reopening this process's polling loop.
 //
-// The tracker write and the marker write share one 30-second deadline
-// instead of each getting its own, so the goroutine as a whole stays
-// within the budget trackerOpsDrainTimeout assumes for a single
-// TrackerOpsWg goroutine.
+// The event is persisted before the wait, so its other targets and its
+// retries do not spend the deadline the tracker confirmation and the
+// marker share. The wait and the marker share one 30-second deadline, so
+// the goroutine stays within the budget trackerOpsDrainTimeout assumes
+// for a single TrackerOpsWg goroutine.
 func escalateMergeCompletionMissingSHA(
 	state *State,
 	params ReconcileParams,
@@ -523,6 +523,7 @@ func escalateMergeCompletionMissingSHA(
 ) {
 	issueID := pending.IssueID
 	tracker := params.TrackerAdapter
+	box := state.Outbox
 	escalLog := log
 	markDelivered := func(dctx context.Context) {
 		if err := params.Store.MarkReactionObservationDispatched(
@@ -562,23 +563,45 @@ func escalateMergeCompletionMissingSHA(
 				return
 			}
 			markDelivered(dctx)
-			deliverEvent(dctx, delivery, escalLog)
+			deliverDetached(box, delivery, escalLog, nil)
 			return
 		}
 
-		// Only the tracker comment decides the marker, so a slow Slack or
-		// webhook send must not spend the shared deadline first.
-		trackerDelivery, others := delivery.SplitTrackerComment()
-		var sends sync.WaitGroup
-		defer sends.Wait()
-		if !others.Empty() {
-			sends.Go(func() { deliverEvent(dctx, others, escalLog) })
+		// No durable sender or no target at all: the observation is due
+		// regardless, the same result an empty delivery had.
+		if box == nil || delivery.Empty() {
+			markDelivered(dctx)
+			return
 		}
 
-		received, err := deliverEvent(dctx, trackerDelivery, escalLog).TrackerComment()
-		if received && err != nil {
-			escalLog.Error("merge_completion missing-SHA escalation comment failed; polling remains stopped and a fresh pending entry can retry delivery",
+		// Persist first so a slow Slack or webhook target, and any
+		// tracker retry, never spend the shared deadline. Only the
+		// tracker comment's terminal result decides the marker.
+		id, trackerTarget, err := box.Enqueue(delivery, nil)
+		if err != nil {
+			escalLog.Error("merge_completion missing-SHA escalation could not be persisted; polling remains stopped and a fresh pending entry can retry delivery",
 				slog.Any("error", err),
+				slog.String("repository", data.Owner+"/"+data.Repo),
+				slog.Int("pr_number", data.PRNumber),
+			)
+			return
+		}
+		if !trackerTarget {
+			markDelivered(dctx)
+			return
+		}
+
+		terminal, awaitErr := box.AwaitTrackerTerminal(dctx, id)
+		if !terminal {
+			escalLog.Error("merge_completion missing-SHA escalation comment unconfirmed before the deadline; its durable result remains open and a fresh pending entry can retry delivery",
+				slog.String("repository", data.Owner+"/"+data.Repo),
+				slog.Int("pr_number", data.PRNumber),
+			)
+			return
+		}
+		if awaitErr != nil {
+			escalLog.Error("merge_completion missing-SHA escalation comment failed; polling remains stopped and a fresh pending entry can retry delivery",
+				slog.Any("error", awaitErr),
 				slog.String("repository", data.Owner+"/"+data.Repo),
 				slog.Int("pr_number", data.PRNumber),
 			)

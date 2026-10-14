@@ -204,6 +204,7 @@ func newLabelReviewPending(issueID string, prNumber int) *PendingReaction {
 func stateWithLabelReviewPending(t *testing.T, issueID string, prNumber int) *State {
 	t.Helper()
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, s, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindLabelReview)
 	s.PendingReactions[rkey] = newLabelReviewPending(issueID, prNumber)
 	return s

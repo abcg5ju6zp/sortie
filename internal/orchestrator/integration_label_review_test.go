@@ -297,6 +297,8 @@ func TestReconcileLabelReview_LiveAPI_E2E(t *testing.T) {
 	store := openInMemoryStore(t)
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindLabelReview)
 	state.PendingReactions[rkey] = &PendingReaction{
 		IssueID:    issueID,

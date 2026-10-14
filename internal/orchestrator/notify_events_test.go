@@ -47,25 +47,18 @@ func (s *notifierSpy) Send(ctx context.Context, n domain.Notification) error {
 	s.mu.Lock()
 	s.ctxErrs = append(s.ctxErrs, ctx.Err())
 	s.mu.Unlock()
-	return s.err
-}
-
-func (s *notifierSpy) contextErrsAtReturn() []error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.ctxErrs)
+	if s.err != nil {
+		// Tests model an explicit rejection: fail permanently so the
+		// durable dispatcher does not spend retries in a unit test.
+		return permanentTestErr(s.err.Error())
+	}
+	return nil
 }
 
 func (s *notifierSpy) notifications() []domain.Notification {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.received)
-}
-
-func (s *notifierSpy) sendDeadlines() []time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return slices.Clone(s.deadlines)
 }
 
 func spyLookup(spy *notifierSpy) route.NotifierLookup {
@@ -243,10 +236,10 @@ func TestNotifyEvents_EscalationCounters(t *testing.T) {
 		wantSlack    int
 	}{
 		{name: "comment mode posts the comment", mode: "comment", want: []string{"comment"}, wantComments: 1},
-		{name: "comment mode with a failing tracker", mode: "comment", commentErr: errors.New("tracker down"), want: []string{"error"}, wantComments: 1},
+		{name: "comment mode with a rejecting tracker", mode: "comment", commentErr: permanentTrackerErr("tracker down"), want: []string{"error"}, wantComments: 1},
 		{name: "comment mode without a tracker", mode: "comment", noTracker: true, want: []string{"none"}},
 		{
-			name: "comment mode with a failing subscriber", mode: "comment",
+			name: "comment mode with a rejecting subscriber", mode: "comment",
 			subscriber: true, subscriberEr: errors.New("endpoint refused"),
 			want: []string{"comment"}, wantComments: 1, wantSlack: 1,
 		},
@@ -287,11 +280,12 @@ func TestNotifyEvents_EscalationCounters(t *testing.T) {
 				kind.configure(&params, tt.mode)
 				counters := &escalationCounters{}
 				state := NewState(5000, 4, 0, nil, AgentTotals{})
+				wireTestOutbox(t, state, nil, nil)
 				pending := &PendingReaction{IssueID: goldenIssueID, Identifier: goldenIssueID, CreatedAt: goldenNow}
 				state.Claimed[goldenIssueID] = struct{}{}
 
 				kind.escalate(state, params, pending, counters)
-				state.TrackerOpsWg.Wait()
+				waitNotifications(t, state)
 				CancelRetry(state, goldenIssueID)
 
 				if got := counters.recorded(kind.counter); !slices.Equal(got, tt.want) {
@@ -334,11 +328,12 @@ func TestNotifyEvents_AutoMergeEscalationCountsOnce(t *testing.T) {
 			}
 			counters := &escalationCounters{}
 			state := NewState(5000, 4, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			pending := &PendingReaction{IssueID: goldenIssueID, Identifier: goldenIssueID, Kind: ReactionKindAutoMerge, CreatedAt: goldenNow}
 			data := &AutoMergeReactionData{PRNumber: 42, Owner: "acme", Repo: "widgets"}
 
 			escalateAutoMergeFailure(state, params, pending, 3, data, discardLogger(), context.Background(), counters)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			if got := counters.recorded("auto_merge"); !slices.Equal(got, []string{"escalated"}) {
 				t.Errorf(`IncAutoMergeReactions actions = %v, want ["escalated"]`, got)
@@ -376,7 +371,7 @@ func TestNotifyEvents_MissingSHAMarkedDeliveredPerRule(t *testing.T) {
 		{name: "label failed stays undispatched and sends nothing", mode: "label", labelErr: errors.New("tracker down"), wantLabels: 1},
 		{name: "comment accepted", mode: "comment", wantDelivered: true, wantComments: 1, wantSlack: 1},
 		{name: "comment accepted and subscriber failing", mode: "comment", slackErr: errors.New("refused"), wantDelivered: true, wantComments: 1, wantSlack: 1},
-		{name: "comment failed beside a successful subscriber stays undispatched", mode: "comment", commentErr: errors.New("tracker down"), wantComments: 1, wantSlack: 1},
+		{name: "comment rejected beside a successful subscriber stays undispatched", mode: "comment", commentErr: permanentTrackerErr("tracker down"), wantComments: 1, wantSlack: 1},
 		{name: "none mode counts as delivered on a subscriber outcome", mode: "none", wantDelivered: true, wantSlack: 1},
 		{name: "none mode counts as delivered with a failing subscriber", mode: "none", slackErr: errors.New("refused"), wantDelivered: true, wantSlack: 1},
 	}
@@ -386,7 +381,7 @@ func TestNotifyEvents_MissingSHAMarkedDeliveredPerRule(t *testing.T) {
 			t.Parallel()
 
 			issueID := "MGC-SHA-RULE"
-			state := mgcStateWithPending(issueID, 36)
+			state := mgcStateWithPending(t, issueID, 36)
 			store := newMGCStore()
 			tracker := &mgcTrackerFake{
 				states:      map[string]string{issueID: "In Review"},
@@ -404,11 +399,12 @@ func TestNotifyEvents_MissingSHAMarkedDeliveredPerRule(t *testing.T) {
 			params.Router = mustRouter(t, tracker, spyLookup(slack), in)
 			now := mgcBaseTime
 			params.NowFunc = func() time.Time { return now }
+			wireTestOutbox(t, state, tracker, spyLookup(slack))
 
 			reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
 			now = now.Add(31 * time.Minute)
 			reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			observation, ok := store.missingSHAObservation(issueID)
 			if !ok || observation.dispatched != tt.wantDelivered {
@@ -536,121 +532,6 @@ func TestNotifyEvents_RoutingUpdateFailureKeepsInstalledTable(t *testing.T) {
 	}
 	if o.router.Route(reactionNotification(domain.EventSessionFailed, &PendingReaction{IssueID: "ISS-1"}, "x")).Empty() {
 		t.Error("session.failed is no longer routed after a failed update, want the installed table kept")
-	}
-}
-
-func TestNotifyEvents_DeliverEventLogsOutcomes(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		trackerErr   error
-		slackErr     error
-		wantContains []string
-		wantAbsent   []string
-	}{
-		{
-			name:         "a failing destination logs a warning",
-			slackErr:     errors.New("endpoint refused"),
-			wantContains: []string{"level=WARN", `msg="notification delivery failed"`, "event_type=budget.held", "destination=notifications[1]", "notifier_kind=slack", "endpoint refused"},
-		},
-		{
-			name:         "a delivered destination logs at debug",
-			wantContains: []string{"level=DEBUG", `msg="notification delivered"`, "event_type=budget.held", "destination=notifications[1]", "notifier_kind=slack"},
-			wantAbsent:   []string{"level=WARN"},
-		},
-		{
-			name:       "the tracker comment outcome is left to its producer",
-			trackerErr: errors.New("tracker down"),
-			wantAbsent: []string{"destination=tracker_comment", "tracker down"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ops := &opsTracker{mockTrackerAdapter: &mockTrackerAdapter{}, commentErr: tt.trackerErr}
-			slack := &notifierSpy{err: tt.slackErr}
-			router := mustRouter(t, ops, spyLookup(slack), route.Inputs{Entries: []config.NotificationBackend{
-				subscribe(domain.TrackerCommentKind, domain.EventBudgetHeld),
-				subscribe("slack", domain.EventBudgetHeld),
-			}})
-			var logs bytes.Buffer
-			log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-			delivery := router.Route(budgetHeldNotification("ISS-1", &BudgetExhaustedEntry{Reason: budgetReasonSession, ExhaustedAt: goldenNow}))
-
-			outcomes := deliverEvent(context.Background(), delivery, log)
-
-			if len(outcomes) != 2 {
-				t.Fatalf("deliverEvent() outcomes = %d, want 2", len(outcomes))
-			}
-			for _, want := range tt.wantContains {
-				if !strings.Contains(logs.String(), want) {
-					t.Errorf("log = %q, want it to contain %q", logs.String(), want)
-				}
-			}
-			for _, absent := range tt.wantAbsent {
-				if strings.Contains(logs.String(), absent) {
-					t.Errorf("log = %q, want it to omit %q", logs.String(), absent)
-				}
-			}
-		})
-	}
-}
-
-func TestNotifyEvents_DeliverDetachedOutlivesCallerAndIsCounted(t *testing.T) {
-	t.Parallel()
-
-	slack := &notifierSpy{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	router := mustRouter(t, nil, spyLookup(slack), route.Inputs{Entries: []config.NotificationBackend{subscribe("slack", domain.EventBudgetHeld)}})
-	delivery := router.Route(budgetHeldNotification("ISS-1", &BudgetExhaustedEntry{Reason: budgetReasonSession, ExhaustedAt: goldenNow}))
-	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-
-	deliverDetached(ctx, &wg, delivery, discardLogger(), nil)
-	<-slack.entered
-	cancel()
-
-	waited := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(waited)
-	}()
-	select {
-	case <-waited:
-		t.Fatal("WaitGroup.Wait returned while the delivery was still sending")
-	default:
-	}
-	close(slack.release)
-	<-waited
-
-	deadlines := slack.sendDeadlines()
-	if len(deadlines) != 1 {
-		t.Fatalf("Send deadlines = %d, want 1", len(deadlines))
-	}
-	if errs := slack.contextErrsAtReturn(); len(errs) != 1 || errs[0] != nil {
-		t.Errorf("Send context error after the caller was cancelled = %v, want nil (the delivery outlives its caller)", errs)
-	}
-	if remaining := time.Until(deadlines[0]); remaining <= 0 || remaining > outboundDeliveryTimeout {
-		t.Errorf("Send deadline in %v, want within (0, %v]", remaining, outboundDeliveryTimeout)
-	}
-	if outboundDeliveryTimeout >= trackerOpsDrainTimeout {
-		t.Errorf("outboundDeliveryTimeout = %v, want below trackerOpsDrainTimeout %v so shutdown drains it", outboundDeliveryTimeout, trackerOpsDrainTimeout)
-	}
-}
-
-func TestNotifyEvents_DeliverDetachedEmptyDeliveryStartsNothing(t *testing.T) {
-	t.Parallel()
-
-	var wg sync.WaitGroup
-	called := false
-
-	deliverDetached(context.Background(), &wg, route.Delivery{}, discardLogger(), func(bool, error) { called = true })
-	wg.Wait()
-
-	if called {
-		t.Error("onTrackerComment called for an empty delivery, want no goroutine started")
 	}
 }
 
@@ -812,6 +693,7 @@ func TestNotifyEvents_WorkerExitPublishesSessionEvents(t *testing.T) {
 			state := exitStateWithIssue(t, issueID, "In Progress")
 			state.Running[issueID].DispatchID = "dispatch-1"
 			state.Running[issueID].SessionID = "entry-session"
+			wireTestOutbox(t, state, nil, spyLookup(slack))
 			params := handoffEvidenceExitParams(t, &mockExitStore{}, &mockTrackerAdapter{}, &domain.NoopMetrics{})
 			params.Router = router
 			result := tt.result
@@ -828,7 +710,7 @@ func TestNotifyEvents_WorkerExitPublishesSessionEvents(t *testing.T) {
 			}
 
 			HandleWorkerExit(state, result, params)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 			t.Cleanup(func() { CancelRetry(state, issueID) })
 
 			sent := slack.notifications()
@@ -874,6 +756,7 @@ func TestNotifyEvents_OrchestratorEventsCreateNoSlotFiles(t *testing.T) {
 		subscribe("slack", domain.EventSessionCompleted, domain.EventEscalationCIFailure),
 	}})
 	state := exitStateWithIssue(t, issueID, "In Progress")
+	wireTestOutbox(t, state, nil, spyLookup(slack))
 	params := handoffEvidenceExitParams(t, &mockExitStore{}, &mockTrackerAdapter{}, &domain.NoopMetrics{})
 	params.Router = router
 
@@ -884,7 +767,7 @@ func TestNotifyEvents_OrchestratorEventsCreateNoSlotFiles(t *testing.T) {
 		WorkspacePath: workspaceDir,
 		AgentAdapter:  "mock",
 	}, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	t.Cleanup(func() { CancelRetry(state, issueID) })
 
 	if len(slack.notifications()) != 1 {

@@ -316,8 +316,8 @@ func reportStageHop(ctx context.Context, state *State, params HandleWorkerExitPa
 		Reason:     reason,
 	}
 
-	deliverDetached(ctx, &state.TrackerOpsWg, params.Router.Route(notification), log, func(received bool, err error) {
-		if received && err != nil {
+	deliverDetached(state.Outbox, params.Router.Route(notification), log, func(received bool, err error) {
+		if err != nil {
 			log.Warn("stage event comment failed",
 				slog.String("event_type", string(eventType)),
 				slog.Any("error", err),

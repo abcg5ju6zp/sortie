@@ -41,6 +41,8 @@ func TestHandleAgentEvent_UnknownIssue(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	HandleAgentEvent(state, "GHOST-999", domain.AgentEvent{
 		Type:      domain.EventNotification,
 		Timestamp: time.Now().UTC(),
@@ -392,6 +394,8 @@ func TestHandleAgentEvent_TwoSessions_AgentTotals(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	entryA := &RunningEntry{}
 	entryB := &RunningEntry{}
 	state.Running["A-1"] = entryA
@@ -724,6 +728,7 @@ func TestHandleAgentEvent_DebugLogging(t *testing.T) {
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
 
+		wireTestOutbox(t, state, nil, nil)
 		HandleAgentEvent(state, "GHOST-1", domain.AgentEvent{
 			Type:      domain.EventNotification,
 			Timestamp: time.Now().UTC(),
@@ -1460,6 +1465,8 @@ func TestHandleAgentEvent_TwoSessions_CacheReadTotals(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["A-1"] = &RunningEntry{}
 	state.Running["B-1"] = &RunningEntry{}
 	ts := time.Now().UTC()

@@ -342,8 +342,10 @@ func newMGCPending(issueID string, prNumber int) *PendingReaction {
 
 // mgcStateWithPending creates a State with one merge-completion
 // PendingReaction entry, not claimed.
-func mgcStateWithPending(issueID string, prNumber int) *State {
+func mgcStateWithPending(t *testing.T, issueID string, prNumber int) *State {
+	t.Helper()
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, s, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindMergeCompletion)
 	s.PendingReactions[rkey] = newMGCPending(issueID, prNumber)
 	return s
@@ -408,7 +410,7 @@ func TestReconcileMergeCompletion_MergedTransitionsOnce(t *testing.T) {
 	t.Parallel()
 
 	issueID := "MGC-1"
-	state := mgcStateWithPending(issueID, 10)
+	state := mgcStateWithPending(t, issueID, 10)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) { return mergedStatus("sha-1"), nil }}
@@ -442,7 +444,7 @@ func TestReconcileMergeCompletion_UnmergedReenqueues(t *testing.T) {
 	t.Parallel()
 
 	issueID := "MGC-2"
-	state := mgcStateWithPending(issueID, 11)
+	state := mgcStateWithPending(t, issueID, 11)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) {
@@ -474,7 +476,7 @@ func TestReconcileMergeCompletion_RepeatTicksTransitionOnce(t *testing.T) {
 	t.Parallel()
 
 	issueID := "MGC-3"
-	state := mgcStateWithPending(issueID, 12)
+	state := mgcStateWithPending(t, issueID, 12)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) { return mergedStatus("sha-3"), nil }}
@@ -521,6 +523,7 @@ func TestReconcileMergeCompletion_RecoveryOverDispatchedFingerprintNoTransition(
 
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	run := freshRun(issueID, identifier, "owner/repo#13", 1)
 
 	recoverParams := PendingReactionRecoveryParams{
@@ -560,7 +563,7 @@ func TestReconcileMergeCompletion_NewMergeCommitResetsLatch(t *testing.T) {
 	t.Parallel()
 
 	issueID := "MGC-5"
-	state := mgcStateWithPending(issueID, 14)
+	state := mgcStateWithPending(t, issueID, 14)
 	store := newMGCStore()
 	store.fingerprints[issueID+":"+ReactionKindMergeCompletion] = mgcFingerprintRecord{fingerprint: "sha-old", dispatched: true}
 
@@ -586,7 +589,7 @@ func TestReconcileMergeCompletion_MergedNoCommitSHAWarns(t *testing.T) {
 	t.Parallel()
 
 	issueID := "MGC-6"
-	state := mgcStateWithPending(issueID, 15)
+	state := mgcStateWithPending(t, issueID, 15)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) {
@@ -613,7 +616,7 @@ func TestReconcileMergeCompletion_LongReviewDoesNotStartMissingSHAClock(t *testi
 	t.Parallel()
 
 	issueID := "MGC-LONG-REVIEW"
-	state := mgcStateWithPending(issueID, 30)
+	state := mgcStateWithPending(t, issueID, 30)
 	rkey := ReactionKey(issueID, ReactionKindMergeCompletion)
 	state.PendingReactions[rkey].CreatedAt = mgcBaseTime.Add(-7 * 24 * time.Hour)
 	store := newMGCStore()
@@ -646,7 +649,7 @@ func TestReconcileMergeCompletion_FirstMissingSHAObservationStartsAtMergeObserva
 	t.Parallel()
 
 	issueID := "MGC-FIRST-MISSING"
-	state := mgcStateWithPending(issueID, 31)
+	state := mgcStateWithPending(t, issueID, 31)
 	rkey := ReactionKey(issueID, ReactionKindMergeCompletion)
 	state.PendingReactions[rkey].CreatedAt = mgcBaseTime.Add(-14 * 24 * time.Hour)
 	store := newMGCStore()
@@ -677,7 +680,7 @@ func TestReconcileMergeCompletion_MissingSHAUsesBackoffAndIgnoresTransitionRetry
 	t.Parallel()
 
 	issueID := "MGC-MISSING-BACKOFF"
-	state := mgcStateWithPending(issueID, 32)
+	state := mgcStateWithPending(t, issueID, 32)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) {
@@ -716,7 +719,7 @@ func TestReconcileMergeCompletion_SHAAppearsDuringGraceTransitionsAndCleansObser
 	t.Parallel()
 
 	issueID := "MGC-SHA-APPEARS"
-	state := mgcStateWithPending(issueID, 33)
+	state := mgcStateWithPending(t, issueID, 33)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	status := mergedMissingSHAStatus()
@@ -753,7 +756,7 @@ func TestReconcileMergeCompletion_ObservationCleanupFailureDoesNotBlockTransitio
 	t.Parallel()
 
 	issueID := "MGC-CLEANUP-BEST-EFFORT"
-	state := mgcStateWithPending(issueID, 44)
+	state := mgcStateWithPending(t, issueID, 44)
 	store := newMGCStore()
 	store.fingerprints[issueID+":"+mergeCompletionMissingSHAObservationKind] = mgcFingerprintRecord{
 		fingerprint: "owner/repo#44",
@@ -788,7 +791,7 @@ func TestReconcileMergeCompletion_TransitionFailurePreservesObservationUntilLatc
 	t.Parallel()
 
 	issueID := "MGC-CLEANUP-AFTER-LATCH"
-	state := mgcStateWithPending(issueID, 45)
+	state := mgcStateWithPending(t, issueID, 45)
 	store := newMGCStore()
 	store.fingerprints[issueID+":"+mergeCompletionMissingSHAObservationKind] = mgcFingerprintRecord{
 		fingerprint: "owner/repo#45",
@@ -820,7 +823,7 @@ func TestReconcileMergeCompletion_MissingSHAExpiryEscalatesOnceAndStops(t *testi
 	t.Parallel()
 
 	issueID := "MGC-MISSING-EXPIRED"
-	state := mgcStateWithPending(issueID, 34)
+	state := mgcStateWithPending(t, issueID, 34)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) {
@@ -836,7 +839,7 @@ func TestReconcileMergeCompletion_MissingSHAExpiryEscalatesOnceAndStops(t *testi
 	now = now.Add(31 * time.Minute)
 	log, buf := logCapture()
 	reconcileMergeCompletion(state, params, log, context.Background(), &domain.NoopMetrics{})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	rkey := ReactionKey(issueID, ReactionKindMergeCompletion)
 	if _, ok := state.PendingReactions[rkey]; ok {
@@ -873,7 +876,7 @@ func TestReconcileMergeCompletion_MissingSHAExpiryEscalatesOnceAndStops(t *testi
 	state.PendingReactions[rkey] = newMGCPending(issueID, 34)
 	now = now.Add(time.Minute)
 	reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if len(tracker.commentCalls) != 1 {
 		t.Errorf("CommentIssue calls after fresh pending = %d, want 1 total", len(tracker.commentCalls))
 	}
@@ -886,11 +889,16 @@ func TestReconcileMergeCompletion_MissingSHAEscalationFailureStopsAndFreshPendin
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		escalation string
+		name             string
+		escalation       string
+		wantCallsFailure int
+		wantCallsRetried int
 	}{
-		{name: "label failure", escalation: "label"},
-		{name: "comment failure", escalation: "comment"},
+		{name: "label failure", escalation: "label", wantCallsFailure: 1, wantCallsRetried: 2},
+		// A comment-class transport failure now spends the durable
+		// outbox's three-attempt budget in-process, and a later fresh
+		// entry adds one confirmed delivery.
+		{name: "comment failure", escalation: "comment", wantCallsFailure: 3, wantCallsRetried: 4},
 	}
 
 	for _, tt := range tests {
@@ -898,7 +906,7 @@ func TestReconcileMergeCompletion_MissingSHAEscalationFailureStopsAndFreshPendin
 			t.Parallel()
 
 			issueID := "MGC-MISSING-ESCALATION-" + tt.escalation
-			state := mgcStateWithPending(issueID, 35)
+			state := mgcStateWithPending(t, issueID, 35)
 			store := newMGCStore()
 			tracker := &mgcTrackerFake{
 				states:      map[string]string{issueID: "In Review"},
@@ -917,7 +925,7 @@ func TestReconcileMergeCompletion_MissingSHAEscalationFailureStopsAndFreshPendin
 			reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
 			now = now.Add(31 * time.Minute)
 			reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			rkey := ReactionKey(issueID, ReactionKindMergeCompletion)
 			if _, ok := state.PendingReactions[rkey]; ok {
@@ -934,20 +942,20 @@ func TestReconcileMergeCompletion_MissingSHAEscalationFailureStopsAndFreshPendin
 				}
 				return len(tracker.commentCalls)
 			}
-			if got := calls(); got != 1 {
-				t.Fatalf("external escalation calls after failure = %d, want 1", got)
+			if got := calls(); got != tt.wantCallsFailure {
+				t.Fatalf("external escalation calls after failure = %d, want %d", got, tt.wantCallsFailure)
 			}
 
 			// A later fresh entry in a new State simulates restart recovery and
 			// retries only the undelivered operator signal.
 			tracker.addLabelErr = nil
 			tracker.commentErr = nil
-			restartedState := mgcStateWithPending(issueID, 35)
+			restartedState := mgcStateWithPending(t, issueID, 35)
 			now = now.Add(time.Minute)
 			reconcileMergeCompletion(restartedState, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-			restartedState.TrackerOpsWg.Wait()
-			if got := calls(); got != 2 {
-				t.Fatalf("external escalation calls after fresh pending = %d, want 2", got)
+			waitNotifications(t, restartedState)
+			if got := calls(); got != tt.wantCallsRetried {
+				t.Fatalf("external escalation calls after fresh pending = %d, want %d", got, tt.wantCallsRetried)
 			}
 			observation, ok = store.missingSHAObservation(issueID)
 			if !ok || !observation.dispatched {
@@ -962,9 +970,9 @@ func TestReconcileMergeCompletion_MissingSHAEscalationFailureStopsAndFreshPendin
 			restartedState.PendingReactions[rkey] = newMGCPending(issueID, 35)
 			now = now.Add(time.Minute)
 			reconcileMergeCompletion(restartedState, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-			restartedState.TrackerOpsWg.Wait()
-			if got := calls(); got != 2 {
-				t.Errorf("external escalation calls after delivered marker = %d, want 2 total", got)
+			waitNotifications(t, restartedState)
+			if got := calls(); got != tt.wantCallsRetried {
+				t.Errorf("external escalation calls after delivered marker = %d, want %d total", got, tt.wantCallsRetried)
 			}
 		})
 	}
@@ -974,7 +982,7 @@ func TestReconcileMergeCompletion_MissingSHADeliveryMarkerFailureStillStops(t *t
 	t.Parallel()
 
 	issueID := "MGC-MISSING-MARK-FAIL"
-	state := mgcStateWithPending(issueID, 43)
+	state := mgcStateWithPending(t, issueID, 43)
 	store := newMGCStore()
 	store.markObservationErr = mgcTransportError()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
@@ -988,7 +996,7 @@ func TestReconcileMergeCompletion_MissingSHADeliveryMarkerFailureStillStops(t *t
 	reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
 	now = now.Add(31 * time.Minute)
 	reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	rkey := ReactionKey(issueID, ReactionKindMergeCompletion)
 	if _, ok := state.PendingReactions[rkey]; ok {
@@ -1005,7 +1013,7 @@ func TestReconcileMergeCompletion_MissingSHADeliveryMarkerFailureStillStops(t *t
 	state.PendingReactions[rkey] = newMGCPending(issueID, 43)
 	now = now.Add(time.Minute)
 	reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if len(tracker.addLabelCalls) != 2 {
 		t.Errorf("AddLabel calls after fresh pending = %d, want 2 because delivery was not durably marked", len(tracker.addLabelCalls))
 	}
@@ -1027,11 +1035,11 @@ func TestReconcileMergeCompletion_MissingSHAObservationSurvivesRestart(t *testin
 	params := mgcParams(store, scm, tracker)
 	params.NowFunc = func() time.Time { return now }
 
-	firstState := mgcStateWithPending(issueID, 36)
+	firstState := mgcStateWithPending(t, issueID, 36)
 	reconcileMergeCompletion(firstState, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
 
 	// A new State simulates an orchestrator restart and recovery re-seed.
-	restartedState := mgcStateWithPending(issueID, 36)
+	restartedState := mgcStateWithPending(t, issueID, 36)
 	now = now.Add(20 * time.Minute)
 	reconcileMergeCompletion(restartedState, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
 	observation, ok := store.missingSHAObservation(issueID)
@@ -1051,7 +1059,7 @@ func TestReconcileMergeCompletion_RealSHAAfterEscalationTransitionsNormally(t *t
 	t.Parallel()
 
 	issueID := "MGC-SHA-AFTER-ESCALATION"
-	state := mgcStateWithPending(issueID, 37)
+	state := mgcStateWithPending(t, issueID, 37)
 	store := newMGCStore()
 	store.fingerprints[issueID+":"+mergeCompletionMissingSHAObservationKind] = mgcFingerprintRecord{
 		fingerprint: "owner/repo#37",
@@ -1082,7 +1090,7 @@ func TestReconcileMergeCompletion_NewPRIdentityStartsNewMissingSHAObservation(t 
 	t.Parallel()
 
 	issueID := "MGC-NEW-PR"
-	state := mgcStateWithPending(issueID, 39)
+	state := mgcStateWithPending(t, issueID, 39)
 	store := newMGCStore()
 	store.fingerprints[issueID+":"+mergeCompletionMissingSHAObservationKind] = mgcFingerprintRecord{
 		fingerprint: "owner/repo#38",
@@ -1113,7 +1121,7 @@ func TestReconcileMergeCompletion_NewUnmergedPRClearsOldObservationWithoutStarti
 	t.Parallel()
 
 	issueID := "MGC-NEW-UNMERGED-PR"
-	state := mgcStateWithPending(issueID, 42)
+	state := mgcStateWithPending(t, issueID, 42)
 	store := newMGCStore()
 	store.fingerprints[issueID+":"+mergeCompletionMissingSHAObservationKind] = mgcFingerprintRecord{
 		fingerprint: "owner/repo#41",
@@ -1146,7 +1154,7 @@ func TestReconcileMergeCompletion_StateReadFailureBacksOffWithoutForgeCall(t *te
 	t.Parallel()
 
 	issueID := "MGC-7"
-	state := mgcStateWithPending(issueID, 16)
+	state := mgcStateWithPending(t, issueID, 16)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{statesErr: mgcTransportError()}
 	scm := &mgcSCMFake{}
@@ -1178,7 +1186,7 @@ func TestReconcileMergeCompletion_TransportErrorRetriesThenEscalates(t *testing.
 	t.Parallel()
 
 	issueID := "MGC-8"
-	state := mgcStateWithPending(issueID, 17)
+	state := mgcStateWithPending(t, issueID, 17)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{
 		states:        map[string]string{issueID: "In Review"},
@@ -1210,7 +1218,7 @@ func TestReconcileMergeCompletion_TransportErrorRetriesThenEscalates(t *testing.
 
 	now = now.Add(10 * time.Minute)
 	reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if len(tracker.transitionCalls) != 3 {
 		t.Fatalf("after tick 3: TransitionIssue calls = %d, want 3", len(tracker.transitionCalls))
 	}
@@ -1238,7 +1246,7 @@ func TestReconcileMergeCompletion_AuthAndPayloadEscalateImmediately(t *testing.T
 			t.Parallel()
 
 			issueID := "MGC-9-" + string(tt.kind)
-			state := mgcStateWithPending(issueID, 18)
+			state := mgcStateWithPending(t, issueID, 18)
 			store := newMGCStore()
 			tracker := &mgcTrackerFake{
 				states:        map[string]string{issueID: "In Review"},
@@ -1248,7 +1256,7 @@ func TestReconcileMergeCompletion_AuthAndPayloadEscalateImmediately(t *testing.T
 			params := mgcParams(store, scm, tracker)
 
 			reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			if len(tracker.transitionCalls) != 1 {
 				t.Errorf("TransitionIssue calls = %d, want 1", len(tracker.transitionCalls))
@@ -1274,7 +1282,7 @@ func TestReconcileMergeCompletion_NotFoundStopsWithoutEscalating(t *testing.T) {
 	t.Parallel()
 
 	issueID := "MGC-11"
-	state := mgcStateWithPending(issueID, 19)
+	state := mgcStateWithPending(t, issueID, 19)
 	store := newMGCStore()
 	tracker := &mgcTrackerFake{
 		states:        map[string]string{issueID: "In Review"},
@@ -1312,7 +1320,7 @@ func TestReconcileMergeCompletion_EscalationDispatchesConfiguredAction(t *testin
 		t.Parallel()
 
 		issueID := "MGC-12-LABEL"
-		state := mgcStateWithPending(issueID, 20)
+		state := mgcStateWithPending(t, issueID, 20)
 		ciKey := ReactionKey(issueID, ReactionKindCI)
 		state.PendingReactions[ciKey] = &PendingReaction{
 			IssueID: issueID, Identifier: issueID + "-ident", Kind: ReactionKindCI,
@@ -1330,7 +1338,7 @@ func TestReconcileMergeCompletion_EscalationDispatchesConfiguredAction(t *testin
 		params.MergeCompletionConfig.EscalationLabel = "needs-human"
 
 		reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if len(tracker.addLabelCalls) != 1 || tracker.addLabelCalls[0].label != "needs-human" {
 			t.Fatalf("AddLabel calls = %+v, want one call with label %q", tracker.addLabelCalls, "needs-human")
@@ -1350,7 +1358,7 @@ func TestReconcileMergeCompletion_EscalationDispatchesConfiguredAction(t *testin
 		t.Parallel()
 
 		issueID := "MGC-12-COMMENT"
-		state := mgcStateWithPending(issueID, 21)
+		state := mgcStateWithPending(t, issueID, 21)
 		store := newMGCStore()
 		tracker := &mgcTrackerFake{
 			states:        map[string]string{issueID: "In Review"},
@@ -1362,7 +1370,7 @@ func TestReconcileMergeCompletion_EscalationDispatchesConfiguredAction(t *testin
 		params.Router = escalationRouter(t, tracker, domain.EventEscalationMergeCompletion, params.MergeCompletionConfig.Escalation)
 
 		reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if len(tracker.commentCalls) != 1 {
 			t.Fatalf("CommentIssue calls = %d, want 1", len(tracker.commentCalls))
@@ -1391,7 +1399,7 @@ func TestReconcileMergeCompletion_DropConditions(t *testing.T) {
 		t.Parallel()
 
 		issueID := "MGC-13-STALE"
-		state := mgcStateWithPending(issueID, 22)
+		state := mgcStateWithPending(t, issueID, 22)
 		store := newMGCStore()
 		store.fingerprints[issueID+":"+mergeCompletionMissingSHAObservationKind] = mgcFingerprintRecord{
 			fingerprint: "owner/repo#22", updatedAt: mgcBaseTime,
@@ -1418,7 +1426,7 @@ func TestReconcileMergeCompletion_DropConditions(t *testing.T) {
 		t.Parallel()
 
 		issueID := "MGC-13-TERMINAL"
-		state := mgcStateWithPending(issueID, 23)
+		state := mgcStateWithPending(t, issueID, 23)
 		store := newMGCStore()
 		store.fingerprints[issueID+":"+mergeCompletionMissingSHAObservationKind] = mgcFingerprintRecord{
 			fingerprint: "owner/repo#23", updatedAt: mgcBaseTime,
@@ -1452,7 +1460,7 @@ func TestReconcileMergeCompletion_DropConditions(t *testing.T) {
 		t.Parallel()
 
 		issueID := "MGC-13-CLAIMED"
-		state := mgcStateWithPending(issueID, 24)
+		state := mgcStateWithPending(t, issueID, 24)
 		state.Claimed[issueID] = struct{}{}
 		store := newMGCStore()
 		tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
@@ -1498,7 +1506,7 @@ func TestReconcileMergeCompletion_DefinitiveStopCleansMissingSHAObservation(t *t
 			t.Parallel()
 
 			const issueID = "MGC-CLEANUP"
-			state := mgcStateWithPending(issueID, 40)
+			state := mgcStateWithPending(t, issueID, 40)
 			store := newMGCStore()
 			store.fingerprints[issueID+":"+mergeCompletionMissingSHAObservationKind] = mgcFingerprintRecord{
 				fingerprint: "owner/repo#40", updatedAt: mgcBaseTime,
@@ -1529,7 +1537,7 @@ func TestReconcileMergeCompletion_MarkDispatchedFailureIsAcceptedResidue(t *test
 	t.Parallel()
 
 	issueID := "MGC-22"
-	state := mgcStateWithPending(issueID, 25)
+	state := mgcStateWithPending(t, issueID, 25)
 	store := newMGCStore()
 	store.markErr = mgcTransportError()
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
@@ -1578,7 +1586,7 @@ func TestReconcileMergeCompletion_SweepCollectsOnlyTheWrittenTerminalList(t *tes
 		mustMkdirSweep(t, filepath.Join(tmpDir, "PROJ-MGC-SWEEP-1"))
 		tracker := &sweepTracker{statesByKey: map[string]string{"PROJ-MGC-SWEEP-1": "done"}}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		SweepWorkspaces(state, SweepWorkspacesParams{
 			WorkspaceRoot:  tmpDir,
 			TrackerAdapter: tracker,
@@ -1598,7 +1606,7 @@ func TestReconcileMergeCompletion_SweepCollectsOnlyTheWrittenTerminalList(t *tes
 		mustMkdirSweep(t, filepath.Join(tmpDir, "PROJ-MGC-SWEEP-2"))
 		tracker := &sweepTracker{statesByKey: map[string]string{"PROJ-MGC-SWEEP-2": "done"}}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		SweepWorkspaces(state, SweepWorkspacesParams{
 			WorkspaceRoot:  tmpDir,
 			TrackerAdapter: tracker,
@@ -1627,7 +1635,7 @@ func TestReconcileMergeCompletion_TerminalDriftWarningFiresOncePerOnset(t *testi
 		return domain.PRMergeStatus{Merged: false}, nil
 	}}
 
-	state := mgcStateWithPending(issueID, 27)
+	state := mgcStateWithPending(t, issueID, 27)
 	now := mgcBaseTime
 
 	const driftMessage = "merge_completion target state is not in the configured terminal states"
@@ -1678,7 +1686,7 @@ func TestReconcileTrackerState_TerminalReleasePreservesFingerprints(t *testing.T
 	t.Parallel()
 
 	issueID := "MGC-TERM"
-	state := mgcStateWithPending(issueID, 10)
+	state := mgcStateWithPending(t, issueID, 10)
 	state.Claimed[issueID] = struct{}{}
 
 	store := newMGCStore()
@@ -1733,10 +1741,12 @@ func TestReconcileTrackerState_TerminalReleasePreservesFingerprints(t *testing.T
 	}
 }
 
-// The tracker write (AddLabel or CommentIssue) and the follow-up durable
-// marker write must share the exact same deadline context, not two
-// independent 30-second timeouts, or the goroutine as a whole can run
-// past trackerOpsDrainTimeout.
+// The marker write must stay inside the drain budget. A label and its
+// marker share the exact same deadline context. A comment is delivered
+// by the outbox on its own per-attempt deadline; the goroutine awaits
+// its terminal result on the 30-second deadline and then marks, so the
+// comment send deadline and the marker deadline must land within a
+// second of each other rather than stacking into two full waits.
 
 func TestReconcileMergeCompletion_MissingSHAEscalationSharesDeadlineWithMarkerWrite(t *testing.T) {
 	t.Parallel()
@@ -1754,7 +1764,7 @@ func TestReconcileMergeCompletion_MissingSHAEscalationSharesDeadlineWithMarkerWr
 			t.Parallel()
 
 			issueID := "MGC-MISSING-DEADLINE-" + tt.escalation
-			state := mgcStateWithPending(issueID, 55)
+			state := mgcStateWithPending(t, issueID, 55)
 			store := newMGCStore()
 			tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 			scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) {
@@ -1769,7 +1779,7 @@ func TestReconcileMergeCompletion_MissingSHAEscalationSharesDeadlineWithMarkerWr
 			reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
 			now = now.Add(31 * time.Minute)
 			reconcileMergeCompletion(state, params, discardLogger(), context.Background(), &domain.NoopMetrics{})
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			observation, ok := store.missingSHAObservation(issueID)
 			if !ok || !observation.dispatched {
@@ -1783,18 +1793,30 @@ func TestReconcileMergeCompletion_MissingSHAEscalationSharesDeadlineWithMarkerWr
 					t.Fatalf("AddLabel calls = %d, want 1", len(tracker.addLabelCalls))
 				}
 				trackerCtx = tracker.addLabelCtx
+				// The label and its marker run in the same goroutine under
+				// one shared deadline.
+				if trackerCtx != store.markObservationCtx {
+					t.Errorf("MarkReactionObservationDispatched context = %v, want the identical context passed to the label write", store.markObservationCtx)
+				}
 			case "comment":
 				if len(tracker.commentCalls) != 1 {
 					t.Fatalf("CommentIssue calls = %d, want 1", len(tracker.commentCalls))
 				}
 				trackerCtx = tracker.commentCtx
+				tc, ok1 := trackerCtx.Deadline()
+				mc, ok2 := store.markObservationCtx.Deadline()
+				if !ok1 || !ok2 {
+					t.Fatalf("captured deadlines = comment:%v marker:%v, want both bounded", ok1, ok2)
+				}
+				// The outbox send and the marker deadline must not stack:
+				// both start at the escalation and bound one attempt.
+				if delta := tc.Sub(mc); delta > time.Second || delta < -time.Second {
+					t.Errorf("comment deadline %v and marker deadline %v differ by %v, want within %v", tc, mc, delta, time.Second)
+				}
 			}
 
 			if trackerCtx == nil || store.markObservationCtx == nil {
 				t.Fatalf("captured contexts = tracker:%v marker:%v, want both non-nil", trackerCtx, store.markObservationCtx)
-			}
-			if trackerCtx != store.markObservationCtx {
-				t.Errorf("MarkReactionObservationDispatched context = %v, want the identical context passed to the %s tracker write (one shared deadline, not two)", store.markObservationCtx, tt.escalation)
 			}
 		})
 	}
@@ -1818,7 +1840,7 @@ func TestReconcileMergeCompletion_MissingSHAMarkerDoesNotWaitForOtherDestination
 	t.Parallel()
 
 	issueID := "MGC-MISSING-SLOW-SLACK"
-	state := mgcStateWithPending(issueID, 56)
+	state := mgcStateWithPending(t, issueID, 56)
 	store := &markSignalStore{mgcStoreFake: newMGCStore(), marked: make(chan struct{})}
 	tracker := &mgcTrackerFake{states: map[string]string{issueID: "In Review"}}
 	scm := &mgcSCMFake{fn: func(int, string, string) (domain.PRMergeStatus, error) {
@@ -1848,7 +1870,7 @@ func TestReconcileMergeCompletion_MissingSHAMarkerDoesNotWaitForOtherDestination
 		t.Fatal("observation marker not written while the Slack send is in flight, want it decided by the tracker comment alone")
 	}
 	release()
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(tracker.commentCalls) != 1 {
 		t.Errorf("CommentIssue calls = %d, want 1", len(tracker.commentCalls))

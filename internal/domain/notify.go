@@ -2,6 +2,7 @@ package domain
 
 import (
 	"context"
+	"errors"
 	"slices"
 )
 
@@ -13,6 +14,32 @@ type Notifier interface {
 	// per-call timeout and must not log the endpoint URL, the request
 	// body, or the response body.
 	Send(ctx context.Context, n Notification) error
+}
+
+// PermanentNotifierError marks a notifier failure no retry can fix,
+// such as a rejected request or a payload the backend can never accept.
+// Notifier implementations return it, directly or wrapped, for a
+// deterministic rejection so the durable outbox records a permanent
+// target failure rather than scheduling retries. [errors.As] recognizes
+// wrapped instances.
+type PermanentNotifierError struct {
+	Err error
+}
+
+// Error returns the wrapped error's text.
+func (e *PermanentNotifierError) Error() string { return e.Err.Error() }
+
+// PermanentFailure reports a rejection no retry can fix.
+func (e *PermanentNotifierError) PermanentFailure() bool { return true }
+
+// Unwrap exposes the wrapped error.
+func (e *PermanentNotifierError) Unwrap() error { return e.Err }
+
+// IsPermanentNotifierError reports whether err is, or wraps, a
+// [PermanentNotifierError].
+func IsPermanentNotifierError(err error) bool {
+	var permanent *PermanentNotifierError
+	return errors.As(err, &permanent)
 }
 
 // Notification is the normalized payload every notifier backend consumes.

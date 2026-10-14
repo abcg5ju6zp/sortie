@@ -134,7 +134,7 @@ func (n *notifier) Send(ctx context.Context, notification domain.Notification) e
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("webhook notifier: encode payload: %w", err)
+		return &domain.PermanentNotifierError{Err: fmt.Errorf("webhook notifier: encode payload: %w", err)}
 	}
 
 	if _, err := n.client.Send(ctx, http.MethodPost, "", bytes.NewReader(encoded)); err != nil {

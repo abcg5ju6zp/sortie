@@ -14,6 +14,7 @@ import (
 
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/notify/outbox"
 	"github.com/sortie-ai/sortie/internal/persistence"
 	"github.com/sortie-ai/sortie/internal/prompt"
 	"github.com/sortie-ai/sortie/internal/redact"
@@ -1063,13 +1064,19 @@ type State struct {
 	// Wait() before cleanup.
 	WorkerWg sync.WaitGroup
 
-	// TrackerOpsWg tracks fire-and-forget tracker API goroutines, drained
-	// after worker shutdown so they are not orphaned on exit. A worker adds
-	// to it for the detached part of the session.started delivery before
-	// it reports its exit and only while its context is live, and the
+	// TrackerOpsWg tracks fire-and-forget tracker API goroutines and
+	// notification outbox attempt goroutines, drained after worker
+	// shutdown so they are not orphaned on exit. A worker adds to it for
+	// the detached part of the session.started delivery before it
+	// reports its exit and only while its context is live, and the
 	// drain cancels every worker before it waits, so an add cannot race
 	// the wait.
 	TrackerOpsWg sync.WaitGroup
+
+	// Outbox durably delivers every orchestrator event and records each
+	// target's result. Nil in callers that route nowhere, in which case
+	// producers persist and send nothing.
+	Outbox *outbox.Dispatcher
 
 	// TriageWg tracks in-flight reaction triage goroutines so shutdown can
 	// drain them.

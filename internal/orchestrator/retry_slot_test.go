@@ -274,6 +274,7 @@ func TestRetrySlot_LabelReviewDefersToCI(t *testing.T) {
 	const issueID = "RS-AC1"
 	now := retrySlotBaseTime()
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[issueID] = struct{}{}
 	state.PendingReactions[ReactionKey(issueID, ReactionKindCI)] = retrySlotCIPending(issueID, now)
 	lrKey := ReactionKey(issueID, ReactionKindLabelReview)
@@ -319,6 +320,7 @@ func TestRetrySlot_ReviewDefersToLabelReview(t *testing.T) {
 	const issueID = "RS-AC2"
 	now := retrySlotBaseTime()
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[issueID] = struct{}{}
 	state.RetryAttempts[issueID] = &RetryEntry{IssueID: issueID, Attempt: 1, ReactionKind: ReactionKindLabelReview}
 	rKey := ReactionKey(issueID, ReactionKindReview)
@@ -359,6 +361,7 @@ func TestRetrySlot_CIAndLabelFixDeferrals(t *testing.T) {
 		const issueID = "RS-AC3-A"
 		now := retrySlotBaseTime()
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[issueID] = struct{}{}
 		state.RetryAttempts[issueID] = &RetryEntry{IssueID: issueID, Attempt: 1, ReactionKind: ReactionKindLabelFix}
 		ciKey := ReactionKey(issueID, ReactionKindCI)
@@ -391,6 +394,7 @@ func TestRetrySlot_CIAndLabelFixDeferrals(t *testing.T) {
 		const issueID = "RS-AC3-B"
 		now := retrySlotBaseTime()
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[issueID] = struct{}{}
 		state.RetryAttempts[issueID] = &RetryEntry{IssueID: issueID, Attempt: 1, ReactionKind: ReactionKindCI}
 		lfKey := ReactionKey(issueID, ReactionKindLabelFix)
@@ -437,6 +441,7 @@ func TestRetrySlot_MergeConflictDefersToCI(t *testing.T) {
 	const issueID = "RS-AC4"
 	now := retrySlotBaseTime()
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[issueID] = struct{}{}
 	state.RetryAttempts[issueID] = &RetryEntry{IssueID: issueID, Attempt: 1, ReactionKind: ReactionKindCI}
 	mcKey := ReactionKey(issueID, ReactionKindMergeConflict)
@@ -468,6 +473,7 @@ func TestRetrySlot_LivenessWithHandoffConfigured(t *testing.T) {
 	const issueID = "RS-AC6"
 	now := retrySlotBaseTime()
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[issueID] = struct{}{}
 	state.PendingReactions[ReactionKey(issueID, ReactionKindCI)] = retrySlotCIPending(issueID, now)
 	state.PendingReactions[ReactionKey(issueID, ReactionKindLabelReview)] = retrySlotLabelReviewPending(issueID, now)
@@ -551,6 +557,7 @@ func TestRetrySlot_LivenessNoHandoffConfigured(t *testing.T) {
 	const issueID = "RS-AC6B"
 	now := retrySlotBaseTime()
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[issueID] = struct{}{}
 	state.Running[issueID] = &RunningEntry{
 		Identifier: issueID + "-ident",
@@ -636,6 +643,7 @@ func TestRetrySlot_DeferralRecordReportsContinuationForEmptyKindIncumbent(t *tes
 	const issueID = "RS-AC13"
 	now := retrySlotBaseTime()
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[issueID] = struct{}{}
 	state.RetryAttempts[issueID] = &RetryEntry{IssueID: issueID, Attempt: 5} // continuation: empty ReactionKind
 	state.PendingReactions[ReactionKey(issueID, ReactionKindCI)] = retrySlotCIPending(issueID, now)
@@ -667,6 +675,7 @@ func TestRetrySlot_TTLRefreshOnArbitrationDeferral(t *testing.T) {
 		const issueID = "RS-AC24-CI"
 		tick1 := retrySlotBaseTime()
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[issueID] = struct{}{}
 		state.RetryAttempts[issueID] = &RetryEntry{IssueID: issueID, Attempt: 1, ReactionKind: ReactionKindLabelFix}
 		ciKey := ReactionKey(issueID, ReactionKindCI)
@@ -733,6 +742,7 @@ func TestRetrySlot_TTLRefreshOnArbitrationDeferral(t *testing.T) {
 		const issueID = "RS-AC24-LR"
 		tick1 := retrySlotBaseTime()
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[issueID] = struct{}{}
 		state.RetryAttempts[issueID] = &RetryEntry{IssueID: issueID, Attempt: 1, ReactionKind: ReactionKindCI}
 		lrKey := ReactionKey(issueID, ReactionKindLabelReview)

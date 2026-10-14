@@ -563,6 +563,8 @@ func TestShouldDispatchWithSets(t *testing.T) {
 			t.Parallel()
 
 			s := NewState(1000, 10, 0, nil, AgentTotals{})
+
+			wireTestOutbox(t, s, nil, nil)
 			if tt.setupState != nil {
 				tt.setupState(s)
 			}
@@ -593,6 +595,7 @@ func TestShouldDispatchWithSets_parity(t *testing.T) {
 
 	for _, issue := range issues {
 		s := NewState(1000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, s, nil, nil)
 		want := ShouldDispatch(issue, s, active, terminal)
 		got := ShouldDispatchWithSets(issue, s, aSet, tSet)
 		if got != want {
@@ -609,6 +612,8 @@ func TestNewOrchestrator(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 5, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -634,6 +639,8 @@ func TestNewOrchestrator(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 100, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -659,6 +666,8 @@ func TestNewOrchestrator(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			TrackerAdapter:  &mockTrackerAdapter{},
@@ -676,6 +685,8 @@ func TestNewOrchestrator(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -714,6 +725,8 @@ func TestNewOrchestrator_SSHPassEnvNoHostsWarnings(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&logs, nil))
 
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          logger,
@@ -742,6 +755,8 @@ func TestNewOrchestrator_SSHPassEnvNoHostsWarnings(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&logs, nil))
 
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          logger,
@@ -775,6 +790,8 @@ func TestNewOrchestrator_SSHPassEnvNoHostsWarnings(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&logs, nil))
 
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          logger,
@@ -811,6 +828,8 @@ func TestOrchestratorTick_SSHPassEnvFieldsUpdateOnReload(t *testing.T) {
 	regs := passingPreflightRegistries()
 
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -862,6 +881,8 @@ func TestMakeWorkerFn_SSHEnvNamesJoinsRegistryAndOperatorLists(t *testing.T) {
 	const kind = "ssh-join-test-kind"
 
 	state := NewState(1000, 5, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	tmpDir := t.TempDir()
 	cfg := defaultWorkerConfig(tmpDir)
 	cfg.Agent.Kind = kind
@@ -929,6 +950,8 @@ func TestPreflightOK_InitialValue(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -966,6 +989,8 @@ func TestPreflightOK_ReflectsTickResult(t *testing.T) {
 	regs := passingPreflightRegistries()
 
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -1004,6 +1029,8 @@ func TestOrchestratorShutdown(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -1149,6 +1176,7 @@ func TestOrchestrator_QueuedMessagesApplyAheadOfExit(t *testing.T) {
 		for trial := range trials {
 			issueID := fmt.Sprintf("ISSUE-P9-RUN-%d", trial)
 			state := NewState(60000, 4, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			state.Running[issueID] = queuedOrderingIssueEntry(issueID)
 
 			store := &stubStore{}
@@ -1215,6 +1243,7 @@ func TestOrchestrator_QueuedMessagesApplyAheadOfExit(t *testing.T) {
 		for trial := range trials {
 			issueID := fmt.Sprintf("ISSUE-P9-DRAIN-%d", trial)
 			state := NewState(60000, 4, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			state.Running[issueID] = queuedOrderingIssueEntry(issueID)
 
 			store := &stubStore{}
@@ -1607,6 +1636,8 @@ func TestApplyTurnStarted(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["A"] = &RunningEntry{Identifier: "A-ident", TurnCount: 2}
 		o := &Orchestrator{state: state}
 
@@ -1621,6 +1652,8 @@ func TestApplyTurnStarted(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := &Orchestrator{state: state}
 
 		o.applyTurnStarted(turnStartedMsg{IssueID: "missing", TurnsStarted: 3})
@@ -1639,6 +1672,7 @@ func TestOrchestrator_TurnStartedAppliesAheadOfExit(t *testing.T) {
 
 		issueID := "ISSUE-TURN-ORDER-RUN"
 		state := NewState(60000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Running[issueID] = queuedOrderingIssueEntry(issueID)
 		entry := state.Running[issueID]
 
@@ -1686,6 +1720,7 @@ func TestOrchestrator_TurnStartedAppliesAheadOfExit(t *testing.T) {
 		for trial := range trials {
 			issueID := fmt.Sprintf("ISSUE-TURN-ORDER-DRAIN-%d", trial)
 			state := NewState(60000, 4, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			state.Running[issueID] = queuedOrderingIssueEntry(issueID)
 			entry := state.Running[issueID]
 
@@ -1859,6 +1894,7 @@ func TestMakeWorkerFn(t *testing.T) {
 
 		state := NewState(1000, 5, 0, nil, AgentTotals{})
 
+		wireTestOutbox(t, state, nil, nil)
 		tmpDir := t.TempDir()
 		cfg := defaultWorkerConfig(tmpDir)
 		tmpl := mustParseTemplate(t, "do {{ .issue.identifier }}")
@@ -1934,6 +1970,8 @@ func TestMakeWorkerFn(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 5, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		tmpDir := t.TempDir()
 		cfg := defaultWorkerConfig(tmpDir)
 		tmpl := mustParseTemplate(t, "do {{ .issue.identifier }}")
@@ -1979,6 +2017,8 @@ func TestMakeWorkerFn(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 5, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		tmpDir := t.TempDir()
 		cfg := defaultWorkerConfig(tmpDir)
 		tmpl := mustParseTemplate(t, "do {{ .issue.identifier }}")
@@ -2032,6 +2072,8 @@ func TestMakeWorkerFn(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 5, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		tmpDir := t.TempDir()
 		cfg := defaultWorkerConfig(tmpDir)
 		tmpl := mustParseTemplate(t, "do {{ .issue.identifier }}")
@@ -2086,6 +2128,8 @@ func TestMakeWorkerFn(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 5, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		tmpDir := t.TempDir()
 		cfg := defaultWorkerConfig(tmpDir)
 		tmpl := mustParseTemplate(t, "do {{ .issue.identifier }}")
@@ -2176,6 +2220,7 @@ func TestMakeWorkerFn_DerivesPostureFromReactionKind(t *testing.T) {
 
 			tracker := &mockTrackerAdapter{}
 			state := NewState(1000, 5, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			o := NewOrchestrator(OrchestratorParams{
 				State:           state,
 				Logger:          discardLogger(),
@@ -2235,6 +2280,7 @@ func TestMakeWorkerFn_PostureMappingSharedWithHandleWorkerExit(t *testing.T) {
 
 			const issueID = "issue-1"
 			state := NewState(1000, 5, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			state.Claimed[issueID] = struct{}{}
 			state.Running[issueID] = &RunningEntry{
 				Identifier:   "TEST-1",
@@ -2269,6 +2315,8 @@ func TestOnRetryFire(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(1000, 5, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -2295,6 +2343,7 @@ func TestOnRetryFire(t *testing.T) {
 
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
 
+		wireTestOutbox(t, state, nil, nil)
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
@@ -2332,6 +2381,8 @@ func TestNotifyObservers(t *testing.T) {
 	obs2 := &stubObserver{}
 
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -2394,6 +2445,8 @@ func TestOrchestratorDynamicConfig(t *testing.T) {
 	wm := &stubWorkflowManager{config: cfg}
 
 	state := NewState(1000, 2, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	obs := &stubObserver{}
 	regs := passingPreflightRegistries()
 
@@ -2482,6 +2535,8 @@ func TestOrchestratorPreflightFailure(t *testing.T) {
 	obs := &stubObserver{}
 
 	state := NewState(1000, 5, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:          state,
 		Logger:         discardLogger(),
@@ -3852,6 +3907,7 @@ func TestOrchestratorDynamicConfigReload(t *testing.T) {
 
 		wm := &stubWorkflowManager{config: cfg}
 		state := NewState(1000, 1, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		obs := &stubObserver{}
 
 		var cancelCalled atomic.Bool
@@ -4295,7 +4351,7 @@ do {{ .issue.identifier }}
 
 	regs := passingPreflightRegistries()
 	state := NewState(100, 2, 0, nil, AgentTotals{})
-
+	wireTestOutbox(t, state, nil, nil)
 	// Observer captures MaxConcurrentAgents atomically from the
 	// event loop goroutine so the test goroutine can poll safely.
 	var observedMax atomic.Int32
@@ -4429,6 +4485,8 @@ func TestReconciliationGuardOnInvalidReload(t *testing.T) {
 	cancelFn := func() { cancelCalled.Store(true) }
 
 	state := NewState(60000, 5, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["issue-1"] = &RunningEntry{
 		Identifier: "TEST-1",
 		Issue: domain.Issue{
@@ -4549,6 +4607,8 @@ func TestReconciliationGuardEndToEnd(t *testing.T) {
 	cancelFn := func() { cancelCalled.Store(true) }
 
 	state := NewState(60000, 5, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["issue-1"] = &RunningEntry{
 		Identifier: "TEST-1",
 		Issue: domain.Issue{
@@ -4747,6 +4807,8 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -4900,6 +4962,7 @@ func TestGracefulShutdown(t *testing.T) {
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
 
+		wireTestOutbox(t, state, nil, nil)
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
@@ -4957,6 +5020,8 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -5016,6 +5081,8 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -5126,6 +5193,8 @@ func TestRefreshFunc(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -5146,6 +5215,8 @@ func TestRefreshFunc(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -5171,6 +5242,8 @@ func TestRefreshFunc(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		o := NewOrchestrator(OrchestratorParams{
 			State:           state,
 			Logger:          discardLogger(),
@@ -5212,6 +5285,8 @@ func TestAddObserver(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(1000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -5235,6 +5310,8 @@ func TestSnapshotDuringDrain(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["id-1"] = &RunningEntry{
 		Identifier: "MT-1",
 		Issue:      domain.Issue{ID: "id-1", State: "In Progress"},
@@ -5295,6 +5372,8 @@ func TestRefreshDrainedDuringShutdown(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["id-1"] = &RunningEntry{
 		Identifier: "MT-1",
 		Issue:      domain.Issue{ID: "id-1", State: "In Progress"},
@@ -5428,6 +5507,7 @@ func TestHandleTick_FillsRetryHoldingNoRead(t *testing.T) {
 	partial := IssueIdentity{Title: "held title", URL: "https://example.test/held"}
 	complete := IssueIdentity{Title: "read title", URL: "https://example.test/read", IssueType: "Epic", Labels: []string{}, State: "Blocked"}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	for id, entry := range map[string]*RetryEntry{
 		"iss-1": {IssueID: "iss-1", Identifier: "TEST-1"},
 		"iss-2": {IssueID: "iss-2", Identifier: "TEST-2", DisplayID: "acme/web#held", IssueIdentity: partial},
@@ -5471,6 +5551,7 @@ func TestHandleTick_BudgetExhaustionRebuildsState(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 1}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -5489,6 +5570,7 @@ func TestHandleTick_BudgetExhaustionRebuildsState(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 1}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -5507,6 +5589,7 @@ func TestHandleTick_BudgetExhaustionRebuildsState(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedErr: fmt.Errorf("db error")}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issue.ID] = &BudgetExhaustedEntry{Reason: budgetReasonSession}
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
@@ -5526,6 +5609,7 @@ func TestHandleTick_BudgetExhaustionRebuildsState(t *testing.T) {
 		wm := budgetTickConfig(0)
 		store := &stubStore{}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issue.ID] = &BudgetExhaustedEntry{}
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
@@ -5545,6 +5629,7 @@ func TestHandleTick_BudgetExhaustionRebuildsState(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issue.ID] = &BudgetExhaustedEntry{}
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
@@ -5623,6 +5708,7 @@ func TestHandleTick_BudgetExhaustionRebuildsState(t *testing.T) {
 
 				store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 1}, latestRuns: latest, latestRunsErr: tt.runsErr}
 				state := NewState(60000, 10, 0, nil, AgentTotals{})
+				wireTestOutbox(t, state, nil, nil)
 				if tt.prior != nil {
 					state.BudgetExhausted[issue.ID] = tt.prior
 				}
@@ -5680,7 +5766,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{tokenExhaustedIDs: []string{issueA.ID}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
 
 		entry, ok := state.BudgetExhausted[issueA.ID]
@@ -5704,7 +5790,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 			tokenExhaustedIDs:  []string{issueA.ID},
 		}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
 
 		entry, ok := state.BudgetExhausted[issueA.ID]
@@ -5725,6 +5811,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 			tokenExhaustedIDs:  []string{issueB.ID},
 		}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted["iss-stale"] = &BudgetExhaustedEntry{Reason: budgetReasonSession}
 
 		budgetOrchestrator(state, wm, store, candidates(issueA, issueB)).handleTick(context.Background())
@@ -5757,6 +5844,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 			tokenExhaustedErr:  fmt.Errorf("db error"),
 		}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issueA.ID] = &BudgetExhaustedEntry{Reason: budgetReasonToken}
 
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
@@ -5779,6 +5867,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(3, 0)
 		store := &stubStore{budgetExhaustedErr: fmt.Errorf("db error")}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issueA.ID] = &BudgetExhaustedEntry{Reason: budgetReasonSession}
 
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
@@ -5801,6 +5890,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		// resurrect an entry attributed to the token budget.
 		store := &stubStore{budgetExhaustedErr: fmt.Errorf("db error")}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issueA.ID] = &BudgetExhaustedEntry{Reason: budgetReasonToken}
 
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
@@ -5819,6 +5909,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		// carry it forward.
 		store := &stubStore{tokenExhaustedErr: fmt.Errorf("db error")}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issueA.ID] = &BudgetExhaustedEntry{Reason: budgetReasonSession}
 
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
@@ -5841,6 +5932,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 			tokenExhaustedErr:  fmt.Errorf("db error"),
 		}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issueA.ID] = &BudgetExhaustedEntry{Reason: budgetReasonToken}
 
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
@@ -5860,6 +5952,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 0)
 		store := &stubStore{}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issueA.ID] = &BudgetExhaustedEntry{Reason: budgetReasonToken}
 
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
@@ -5875,6 +5968,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(3, 1000)
 		store := &stubStore{}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issueA.ID] = &BudgetExhaustedEntry{Reason: budgetReasonToken}
 
 		budgetOrchestrator(state, wm, store, candidates()).handleTick(context.Background())
@@ -5893,6 +5987,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{tokenIncompleteIDs: []string{issueA.ID}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
@@ -5935,6 +6030,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{tokenUnaccountedIDs: []string{issueA.ID}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
@@ -5976,11 +6072,12 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{tokenExhaustedIDs: []string{issueA.ID}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 		budgetOrchestratorWithLogger(state, wm, store, candidates(issueA), logger).handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		entry, ok := state.BudgetExhausted[issueA.ID]
 		if !ok {
@@ -6003,7 +6100,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(3, 0)
 		store := &stubStore{tokenIncompleteIDs: []string{issueA.ID}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		budgetOrchestrator(state, wm, store, candidates(issueA)).handleTick(context.Background())
 
 		if len(state.TokenBudgetIncomplete) != 0 {
@@ -6017,7 +6114,7 @@ func TestHandleTick_TokenBudgetRebuild(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{tokenIncompleteIDs: []string{issueA.ID}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
-
+		wireTestOutbox(t, state, nil, nil)
 		orch := budgetOrchestrator(state, wm, store, candidates(issueA))
 		orch.handleTick(context.Background())
 		if len(state.TokenBudgetIncomplete) == 0 {
@@ -6044,6 +6141,7 @@ func TestHandleTick_TokenWarningThreshold(t *testing.T) {
 		wm.config.CIFeedback.MaxRetries = 4
 		store := &stubStore{}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{mockTrackerAdapter: &mockTrackerAdapter{}}
 
 		budgetOrchestrator(state, wm, store, tracker).handleTick(context.Background())
@@ -6068,6 +6166,7 @@ func TestHandleTick_TokenWarningThreshold(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{mockTrackerAdapter: &mockTrackerAdapter{}}
 
 		budgetOrchestrator(state, wm, store, tracker).handleTick(context.Background())
@@ -6085,6 +6184,7 @@ func TestHandleTick_BudgetLogRecord(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6093,7 +6193,7 @@ func TestHandleTick_BudgetLogRecord(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	budgetOrchestratorWithLogger(state, wm, store, tracker, logger).handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	output := buf.String()
 	if !strings.Contains(output, "candidate held by budget ceiling") {
@@ -6119,6 +6219,7 @@ func TestHandleTick_BudgetLogRecordOnce(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6130,7 +6231,7 @@ func TestHandleTick_BudgetLogRecordOnce(t *testing.T) {
 	orch := budgetOrchestratorWithMetrics(state, wm, store, tracker, logger, spy)
 	orch.handleTick(context.Background())
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if got := strings.Count(buf.String(), "candidate held by budget ceiling"); got != 1 {
 		t.Errorf("record count across two ticks = %d, want 1 (edge-triggered)", got)
@@ -6150,6 +6251,7 @@ func TestHandleTick_BudgetLogRecordCeilingSetting(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6158,7 +6260,7 @@ func TestHandleTick_BudgetLogRecordCeilingSetting(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 		budgetOrchestratorWithLogger(state, wm, store, tracker, logger).handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if !strings.Contains(buf.String(), "ceiling_setting=agent.max_sessions") {
 			t.Errorf("log output missing ceiling_setting=agent.max_sessions; log:\n%s", buf.String())
@@ -6172,6 +6274,7 @@ func TestHandleTick_BudgetLogRecordCeilingSetting(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{tokenExhaustedIDs: []string{issue.ID}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6180,7 +6283,7 @@ func TestHandleTick_BudgetLogRecordCeilingSetting(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 		budgetOrchestratorWithLogger(state, wm, store, tracker, logger).handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if !strings.Contains(buf.String(), "ceiling_setting=agent.max_tokens") {
 			t.Errorf("log output missing ceiling_setting=agent.max_tokens; log:\n%s", buf.String())
@@ -6206,6 +6309,7 @@ func TestHandleTick_BudgetLogRecordTokenAxis(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{tokenExhaustedIDs: []string{issue.ID}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6214,7 +6318,7 @@ func TestHandleTick_BudgetLogRecordTokenAxis(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 		budgetOrchestratorWithLogger(state, wm, store, tracker, logger).handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		output := buf.String()
 		if !strings.Contains(output, "candidate held by budget ceiling") {
@@ -6237,6 +6341,7 @@ func TestHandleTick_BudgetLogRecordTokenAxis(t *testing.T) {
 			tokenExhaustedIDs:  []string{issue.ID},
 		}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6245,7 +6350,7 @@ func TestHandleTick_BudgetLogRecordTokenAxis(t *testing.T) {
 		logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 		budgetOrchestratorWithLogger(state, wm, store, tracker, logger).handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		output := buf.String()
 		if !strings.Contains(output, "reason=token_budget") {
@@ -6271,6 +6376,7 @@ func TestHandleTick_BudgetLogRecordQueryError(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedErr: fmt.Errorf("db error")}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetExhausted[issue.ID] = &BudgetExhaustedEntry{Reason: budgetReasonSession, ExhaustedAt: priorAt}
 		state.BudgetAnnounced[issue.ID] = BudgetAnnouncement{Reason: budgetReasonSession, At: priorAt}
 		tracker := &candidateTrackerAdapter{
@@ -6303,6 +6409,7 @@ func TestHandleTick_BudgetLogRecordQueryError(t *testing.T) {
 		wm := budgetTickConfigTokens(0, 1000)
 		store := &stubStore{tokenExhaustedErr: fmt.Errorf("db error")}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		usedTokens := int64(1500)
 		state.BudgetExhausted[issue.ID] = &BudgetExhaustedEntry{Reason: budgetReasonToken, UsedTokens: &usedTokens, ExhaustedAt: priorAt}
 		state.BudgetAnnounced[issue.ID] = BudgetAnnouncement{Reason: budgetReasonToken, At: priorAt}
@@ -6339,6 +6446,7 @@ func TestHandleTick_BudgetAnnouncementLifecycle(t *testing.T) {
 		wm := budgetTickConfigTokens(3, 1000)
 		store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6353,7 +6461,7 @@ func TestHandleTick_BudgetAnnouncementLifecycle(t *testing.T) {
 		store.budgetExhaustedIDs = map[string]int{}
 		store.tokenExhaustedIDs = []string{issue.ID}
 		orch.handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if got := strings.Count(buf.String(), "candidate held by budget ceiling"); got != 2 {
 			t.Errorf("record count across the reason change = %d, want 2 (re-announced)", got)
@@ -6373,6 +6481,7 @@ func TestHandleTick_BudgetAnnouncementLifecycle(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		present := true
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
@@ -6413,7 +6522,7 @@ func TestHandleTick_BudgetAnnouncementLifecycle(t *testing.T) {
 		if !entry3.ExhaustedAt.Equal(firstExhaustedAt) {
 			t.Errorf("ExhaustedAt = %v, want %v (unchanged across the candidacy gap)", entry3.ExhaustedAt, firstExhaustedAt)
 		}
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		if got := strings.Count(buf.String(), "candidate held by budget ceiling"); got != 1 {
 			t.Errorf("record count across three ticks = %d, want 1", got)
 		}
@@ -6429,6 +6538,7 @@ func TestHandleTick_BudgetAnnouncementLifecycle(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6452,7 +6562,7 @@ func TestHandleTick_BudgetAnnouncementLifecycle(t *testing.T) {
 		if _, ok := state.BudgetExhausted[issue.ID]; !ok {
 			t.Fatal("BudgetExhausted missing after re-exhaustion, want present")
 		}
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		if got := strings.Count(buf.String(), "candidate held by budget ceiling"); got != 2 {
 			t.Errorf("record count across the clearance = %d, want 2 (announced again after a genuine clearance)", got)
 		}
@@ -6521,6 +6631,7 @@ func TestHandleTick_BudgetTickSummary(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -6529,7 +6640,7 @@ func TestHandleTick_BudgetTickSummary(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	budgetOrchestratorWithLogger(state, wm, store, tracker, logger).handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	var tickLine string
 	for line := range strings.SplitSeq(buf.String(), "\n") {
@@ -6564,6 +6675,7 @@ func tokenUsageEvent(input, output, total, cacheRead int64) domain.AgentEvent {
 func incrementalWriteOrchestrator(t *testing.T, store *stubStore) (*Orchestrator, *RunningEntry) {
 	t.Helper()
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	entry := &RunningEntry{
 		Identifier:        "MT-1",
 		Issue:             domain.Issue{ID: "id-1", Identifier: "MT-1", State: "In Progress"},
@@ -6973,6 +7085,8 @@ func TestDrainRunningWorkers_SelfReviewProgressUpdatesRunningEntry(t *testing.T)
 	t.Parallel()
 
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["id-1"] = queuedOrderingIssueEntry("id-1")
 	store := &stubStore{}
 	tracker := &candidateTrackerAdapter{mockTrackerAdapter: &mockTrackerAdapter{}}
@@ -7016,6 +7130,8 @@ func TestDrainRunningWorkers_TokenUsageEventTriggersIncrementalWrite(t *testing.
 	t.Parallel()
 
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Running["id-1"] = &RunningEntry{
 		Identifier: "MT-1",
 		Issue:      domain.Issue{ID: "id-1", Identifier: "MT-1", State: "In Progress"},
@@ -7076,6 +7192,7 @@ func TestDrainRunningWorkers_AbsenceCeiling(t *testing.T) {
 		const issueID = "DRAIN-ABS-BELOW"
 		dir, baseline := handoffEvidenceGitWorkspace(t)
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Running[issueID] = &RunningEntry{
 			Identifier: "PROJ-DRAIN-BELOW",
 			Issue:      domain.Issue{ID: issueID, Identifier: "PROJ-DRAIN-BELOW", State: "In Progress"},
@@ -7113,7 +7230,7 @@ func TestDrainRunningWorkers_AbsenceCeiling(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("drainRunningWorkers did not return within 10 seconds")
 		}
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if _, ok := state.Parked[issueID]; !ok {
 			t.Error("issue not parked at the two-absence ceiling on the shutdown-drain lane")
@@ -7126,6 +7243,7 @@ func TestDrainRunningWorkers_AbsenceCeiling(t *testing.T) {
 		const issueID = "DRAIN-ABS-ABOVE"
 		dir, baseline := handoffEvidenceGitWorkspace(t)
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Running[issueID] = &RunningEntry{
 			Identifier: "PROJ-DRAIN-ABOVE",
 			Issue:      domain.Issue{ID: issueID, Identifier: "PROJ-DRAIN-ABOVE", State: "In Progress"},
@@ -7165,7 +7283,7 @@ func TestDrainRunningWorkers_AbsenceCeiling(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("drainRunningWorkers did not return within 10 seconds")
 		}
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if _, ok := state.Parked[issueID]; !ok {
 			t.Fatal("issue not parked at the five-absence ceiling on the shutdown-drain lane")
@@ -7215,6 +7333,8 @@ func TestDrainRunningWorkers_AbandonChannel(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["id-1"] = &RunningEntry{
 			Identifier: "PROJ-1",
 			Issue:      domain.Issue{ID: "id-1", Identifier: "PROJ-1", State: "In Progress"},
@@ -7254,6 +7374,8 @@ func TestDrainRunningWorkers_AbandonChannel(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["id-1"] = &RunningEntry{
 			Identifier: "PROJ-1",
 			Issue:      domain.Issue{ID: "id-1", Identifier: "PROJ-1", State: "In Progress"},
@@ -7296,6 +7418,8 @@ func TestDrainTrackerOps_AbandonChannel(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.TrackerOpsWg.Add(1)
 		t.Cleanup(state.TrackerOpsWg.Done)
 		store := &stubStore{}
@@ -7330,6 +7454,8 @@ func TestDrainTrackerOps_AbandonChannel(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.TrackerOpsWg.Add(1)
 		t.Cleanup(state.TrackerOpsWg.Done)
 		store := &stubStore{}
@@ -7360,6 +7486,8 @@ func TestDrainTriageRuns_AbandonChannel(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.TriageWg.Add(1)
 		t.Cleanup(state.TriageWg.Done)
 		store := &stubStore{}
@@ -7394,6 +7522,8 @@ func TestDrainTriageRuns_AbandonChannel(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.TriageWg.Add(1)
 		t.Cleanup(state.TriageWg.Done)
 		store := &stubStore{}
@@ -7441,6 +7571,7 @@ func TestBudgetExhaustionPreventsRedispatch(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 1}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -7463,6 +7594,7 @@ func TestBudgetExhaustionClearsWhenMaxSessionsZero(t *testing.T) {
 	wm := budgetTickConfig(0)
 	store := &stubStore{}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.BudgetExhausted[issue.ID] = &BudgetExhaustedEntry{}
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
@@ -8199,6 +8331,8 @@ func TestHandleTickSweepThrottle(t *testing.T) {
 	regs := passingPreflightRegistries()
 
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          discardLogger(),
@@ -8265,6 +8399,7 @@ func TestHandleTick_WorkerWarningChangeDetection(t *testing.T) {
 
 	wm := &stubWorkflowManager{config: cfg}
 	state := NewState(60000, 1, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	o := NewOrchestrator(OrchestratorParams{
 		State:           state,
 		Logger:          logger,
@@ -9283,6 +9418,7 @@ func TestHandleTick_BudgetHoldNoticeOnce(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -9291,7 +9427,7 @@ func TestHandleTick_BudgetHoldNoticeOnce(t *testing.T) {
 	orch := budgetOrchestrator(state, wm, store, tracker)
 	orch.handleTick(context.Background())
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	calls := tracker.commentCalls
 	if len(calls) != 1 {
@@ -9359,18 +9495,20 @@ func TestBudgetHoldNoticeSurvivesRestart(t *testing.T) {
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
 	}
 	state1 := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state1, tracker1, nil)
 	orch1 := NewOrchestrator(OrchestratorParams{
 		State:           state1,
 		Logger:          discardLogger(),
 		TrackerAdapter:  tracker1,
 		Router:          route.NewRouter(tracker1, nil),
+		Outbox:          state1.Outbox,
 		AgentAdapter:    &mockAgentAdapter{},
 		WorkflowManager: wm,
 		Store:           store1,
 		PreflightParams: regs,
 	})
 	orch1.handleTick(ctx)
-	state1.TrackerOpsWg.Wait()
+	waitNotifications(t, state1)
 
 	if len(tracker1.commentCalls) != 1 {
 		t.Fatalf("commentCalls before the restart = %+v, want exactly one", tracker1.commentCalls)
@@ -9412,18 +9550,20 @@ func TestBudgetHoldNoticeSurvivesRestart(t *testing.T) {
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
 	}
+	wireTestOutbox(t, state2, tracker2, nil)
 	orch2 := NewOrchestrator(OrchestratorParams{
 		State:           state2,
 		Logger:          logger,
 		TrackerAdapter:  tracker2,
 		Router:          route.NewRouter(tracker2, nil),
+		Outbox:          state2.Outbox,
 		AgentAdapter:    &mockAgentAdapter{},
 		WorkflowManager: wm,
 		Store:           store2,
 		PreflightParams: regs,
 	})
 	orch2.handleTick(ctx)
-	state2.TrackerOpsWg.Wait()
+	waitNotifications(t, state2)
 
 	if len(tracker2.commentCalls) != 0 {
 		t.Errorf("commentCalls after the simulated restart = %+v, want none (the durable row deduplicates)", tracker2.commentCalls)
@@ -9440,10 +9580,13 @@ func TestHandleTick_BudgetHoldNoticeTrackerFailureIsolated(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{
 			commentIssueFn: func(_ context.Context, _, _ string) error {
-				return fmt.Errorf("tracker unavailable")
+				// A permanent rejection: the durable dispatcher records
+				// the failure once instead of spending the retry budget.
+				return permanentTrackerErr("tracker unavailable")
 			},
 		},
 		fetchCandidatesFn: func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -9454,7 +9597,7 @@ func TestHandleTick_BudgetHoldNoticeTrackerFailureIsolated(t *testing.T) {
 
 	orch := budgetOrchestratorWithMetrics(state, wm, store, tracker, logger, spy)
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.BudgetExhausted[issue.ID]; !ok {
 		t.Error("BudgetExhausted missing after a failing tracker write, want present (unaffected by tracker failure)")
@@ -9476,7 +9619,7 @@ func TestHandleTick_BudgetHoldNoticeTrackerFailureIsolated(t *testing.T) {
 	}
 
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if got := len(tracker.commentCalls); got != 1 {
 		t.Errorf("commentCalls across two ticks = %d, want 1 (no retry of a failed write)", got)
@@ -9490,6 +9633,7 @@ func TestHandleTick_BudgetHoldNoticeReasonChange(t *testing.T) {
 	wm := budgetTickConfigTokens(3, 1000)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -9497,12 +9641,12 @@ func TestHandleTick_BudgetHoldNoticeReasonChange(t *testing.T) {
 	orch := budgetOrchestrator(state, wm, store, tracker)
 
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait() // ordering-load-bearing: the detached CommentIssue goroutines are not otherwise ordered across ticks
+	waitNotifications(t, state) // ordering-load-bearing: the detached CommentIssue goroutines are not otherwise ordered across ticks
 
 	store.budgetExhaustedIDs = map[string]int{}
 	store.tokenExhaustedIDs = []string{issue.ID}
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	calls := tracker.commentCalls
 	if len(calls) != 2 {
@@ -9529,6 +9673,7 @@ func TestHandleTick_BudgetHoldNoticeReleaseOnClear(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -9536,7 +9681,7 @@ func TestHandleTick_BudgetHoldNoticeReleaseOnClear(t *testing.T) {
 	orch := budgetOrchestrator(state, wm, store, tracker)
 
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if len(tracker.commentCalls) != 1 {
 		t.Fatalf("commentCalls after the first tick = %+v, want 1", tracker.commentCalls)
 	}
@@ -9546,7 +9691,7 @@ func TestHandleTick_BudgetHoldNoticeReleaseOnClear(t *testing.T) {
 
 	store.budgetExhaustedIDs = map[string]int{}
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, noticed := state.BudgetHoldNoticed[issue.ID]; noticed {
 		t.Error("BudgetHoldNoticed still present after a genuine clearance, want released")
@@ -9557,7 +9702,7 @@ func TestHandleTick_BudgetHoldNoticeReleaseOnClear(t *testing.T) {
 
 	store.budgetExhaustedIDs = map[string]int{issue.ID: 5}
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if got := len(tracker.commentCalls); got != 2 {
 		t.Errorf("commentCalls after the third tick = %d, want 2 (released, then re-noticed)", got)
@@ -9571,6 +9716,7 @@ func TestHandleTick_BudgetHoldNoticeAbsenceThenReturn(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	present := true
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
@@ -9584,7 +9730,7 @@ func TestHandleTick_BudgetHoldNoticeAbsenceThenReturn(t *testing.T) {
 	orch := budgetOrchestrator(state, wm, store, tracker)
 
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if len(tracker.commentCalls) != 1 {
 		t.Fatalf("commentCalls after the first tick = %+v, want 1", tracker.commentCalls)
 	}
@@ -9593,7 +9739,7 @@ func TestHandleTick_BudgetHoldNoticeAbsenceThenReturn(t *testing.T) {
 	store.budgetExhaustedIDs = map[string]int{}
 	orch.handleTick(context.Background())
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(store.deletedBudgetHoldIDs) != 0 {
 		t.Errorf("store.deletedBudgetHoldIDs = %v, want none (absence from the candidate set is not evidence the hold cleared)", store.deletedBudgetHoldIDs)
@@ -9605,7 +9751,7 @@ func TestHandleTick_BudgetHoldNoticeAbsenceThenReturn(t *testing.T) {
 	present = true
 	store.budgetExhaustedIDs = map[string]int{issue.ID: 5}
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if got := len(tracker.commentCalls); got != 1 {
 		t.Errorf("commentCalls after the return = %d, want still 1 (same reason already noticed)", got)
@@ -9619,6 +9765,7 @@ func TestHandleTick_BudgetHoldNoticeFoldedForward(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -9626,21 +9773,21 @@ func TestHandleTick_BudgetHoldNoticeFoldedForward(t *testing.T) {
 	orch := budgetOrchestrator(state, wm, store, tracker)
 
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if len(tracker.commentCalls) != 1 {
 		t.Fatalf("commentCalls after the first tick = %+v, want 1", tracker.commentCalls)
 	}
 
 	store.budgetExhaustedErr = fmt.Errorf("db error")
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if got := len(tracker.commentCalls); got != 1 {
 		t.Errorf("commentCalls after the query-error tick = %d, want still 1 (a folded-forward entry is not this tick's evidence)", got)
 	}
 
 	store.budgetExhaustedErr = nil
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if got := len(tracker.commentCalls); got != 1 {
 		t.Errorf("commentCalls after the recovered tick = %d, want still 1 (same reason already noticed)", got)
 	}
@@ -9653,6 +9800,7 @@ func TestHandleTick_BudgetHoldNoticeDisableReenable(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedIDs: map[string]int{issue.ID: 5}}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
@@ -9660,7 +9808,7 @@ func TestHandleTick_BudgetHoldNoticeDisableReenable(t *testing.T) {
 	orch := budgetOrchestrator(state, wm, store, tracker)
 
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	if _, noticed := state.BudgetHoldNoticed[issue.ID]; !noticed {
 		t.Fatal("BudgetHoldNoticed missing after the first tick, want present")
 	}
@@ -9684,7 +9832,7 @@ func TestHandleTick_BudgetHoldNoticeDisableReenable(t *testing.T) {
 	wm.config.Agent.MaxSessions = 3
 	store.budgetExhaustedIDs = map[string]int{issue.ID: 5}
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if got := len(tracker.commentCalls); got != 2 {
 		t.Errorf("commentCalls after re-enabling = %d, want 2 (the re-formed hold is announced again)", got)
@@ -9715,6 +9863,7 @@ func TestHandleTick_BudgetHoldNoticePacingWindow(t *testing.T) {
 		wm := budgetTickConfig(3)
 		store := &stubStore{budgetExhaustedIDs: exhausted}
 		state := NewState(60000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return issues, nil },
@@ -9722,21 +9871,21 @@ func TestHandleTick_BudgetHoldNoticePacingWindow(t *testing.T) {
 		orch := budgetOrchestrator(state, wm, store, tracker)
 
 		orch.handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		if got := len(tracker.commentCalls); got != maxBudgetHoldNoticesPerWindow {
 			t.Fatalf("commentCalls after the first tick = %d, want %d", got, maxBudgetHoldNoticesPerWindow)
 		}
 
 		state.BudgetHoldNoticeWindowStart = state.BudgetHoldNoticeWindowStart.Add(-budgetHoldNoticeWindow)
 		orch.handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		if got := len(tracker.commentCalls); got != 2*maxBudgetHoldNoticesPerWindow {
 			t.Fatalf("commentCalls after the second tick = %d, want %d", got, 2*maxBudgetHoldNoticesPerWindow)
 		}
 
 		state.BudgetHoldNoticeWindowStart = state.BudgetHoldNoticeWindowStart.Add(-budgetHoldNoticeWindow)
 		orch.handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		if got := len(tracker.commentCalls); got != 25 {
 			t.Fatalf("commentCalls after the third tick = %d, want 25", got)
 		}
@@ -9774,6 +9923,7 @@ func TestHandleTick_BudgetHoldNoticePacingWindow(t *testing.T) {
 		wm.config.Polling.IntervalMS = 1000
 		store := &stubStore{budgetExhaustedIDs: exhausted}
 		state := NewState(1000, 10, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		tracker := &candidateTrackerAdapter{
 			mockTrackerAdapter: &mockTrackerAdapter{},
 			fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return issues, nil },
@@ -9781,7 +9931,7 @@ func TestHandleTick_BudgetHoldNoticePacingWindow(t *testing.T) {
 		orch := budgetOrchestrator(state, wm, store, tracker)
 
 		orch.handleTick(context.Background())
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if got := len(tracker.commentCalls); got != maxBudgetHoldNoticesPerWindow {
 			t.Errorf("commentCalls with a 1000ms poll interval = %d, want %d (the bound is wall-clock, not per-tick)", got, maxBudgetHoldNoticesPerWindow)
@@ -9799,13 +9949,14 @@ func TestHandleTick_BudgetHoldNoticeParkedIssue(t *testing.T) {
 		absenceCounts:      map[string]int{issue.ID: 3},
 	}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	tracker := &candidateTrackerAdapter{
 		mockTrackerAdapter: &mockTrackerAdapter{},
 		fetchCandidatesFn:  func(_ context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },
 	}
 
 	budgetOrchestrator(state, wm, store, tracker).handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(tracker.commentCalls) != 1 {
 		t.Errorf("commentCalls = %+v, want exactly 1 (a parked issue still receives the budget-hold notice)", tracker.commentCalls)
@@ -9827,6 +9978,7 @@ func TestPostBudgetHoldNotice_UpsertFails(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	store := &stubStore{upsertBudgetHoldNoticeErr: fmt.Errorf("disk full")}
 	tracker := &mockTrackerAdapter{}
 	entry := &BudgetExhaustedEntry{
@@ -9841,7 +9993,7 @@ func TestPostBudgetHoldNotice_UpsertFails(t *testing.T) {
 		Logger:  logger,
 		Ctx:     context.Background(),
 	})
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(tracker.commentCalls) != 0 {
 		t.Errorf("commentCalls = %+v, want none (a failed upsert must not post a comment)", tracker.commentCalls)
@@ -9865,6 +10017,7 @@ func TestHandleTick_BudgetHoldNoticeQueryErrorWithholdsRelease(t *testing.T) {
 	wm := budgetTickConfig(3)
 	store := &stubStore{budgetExhaustedErr: fmt.Errorf("db error")}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	// The state a restart leaves behind: the notice memory is reloaded
 	// from the durable rows, while the exhausted set starts empty.
 	PopulateBudgetHoldNotices(state, []persistence.BudgetHoldNotice{
@@ -9877,7 +10030,7 @@ func TestHandleTick_BudgetHoldNoticeQueryErrorWithholdsRelease(t *testing.T) {
 	orch := budgetOrchestrator(state, wm, store, tracker)
 
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(store.deletedBudgetHoldIDs) != 0 {
 		t.Fatalf("deletedBudgetHoldIDs after the query-error tick = %+v, want none (absence from the fresh set is not evidence the hold cleared)", store.deletedBudgetHoldIDs)
@@ -9889,7 +10042,7 @@ func TestHandleTick_BudgetHoldNoticeQueryErrorWithholdsRelease(t *testing.T) {
 	store.budgetExhaustedErr = nil
 	store.budgetExhaustedIDs = map[string]int{issue.ID: 5}
 	orch.handleTick(context.Background())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if got := len(tracker.commentCalls); got != 0 {
 		t.Errorf("commentCalls = %d, want 0 (the surviving notice record suppresses a duplicate comment)", got)
@@ -10992,6 +11145,7 @@ func TestHandleTick_FreshDispatchIsGivenPullRequestComments(t *testing.T) {
 			wm.config.Workspace.Root = root
 			wm.template = mustParseTemplate(t, commentsPromptTemplate)
 			state := NewState(60000, 10, 0, nil, AgentTotals{})
+			wireTestOutbox(t, state, nil, nil)
 			tracker := &candidateTrackerAdapter{
 				mockTrackerAdapter: &mockTrackerAdapter{},
 				fetchCandidatesFn:  func(context.Context) ([]domain.Issue, error) { return []domain.Issue{issue}, nil },

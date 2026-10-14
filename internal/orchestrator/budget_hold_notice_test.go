@@ -188,6 +188,8 @@ func TestBudgetHoldNoticeAllowed(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
 
 		for i := range maxBudgetHoldNoticesPerWindow {
@@ -207,6 +209,8 @@ func TestBudgetHoldNoticeAllowed(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.BudgetHoldNoticeWindowStart = time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
 		state.BudgetHoldNoticesInWindow = maxBudgetHoldNoticesPerWindow
 
@@ -226,6 +230,8 @@ func TestBudgetHoldNoticeAllowed(t *testing.T) {
 		t.Parallel()
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		windowStart := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
 		state.BudgetHoldNoticeWindowStart = windowStart
 		state.BudgetHoldNoticesInWindow = maxBudgetHoldNoticesPerWindow
@@ -251,6 +257,7 @@ func TestReleaseBudgetHoldNotice_RetainsLatchWhenDeleteFails(t *testing.T) {
 	const issueID = "iss-release-retry"
 	store := &stubStore{deleteBudgetHoldNoticeErr: fmt.Errorf("db error")}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.BudgetHoldNoticed[issueID] = budgetReasonSession
 
 	releaseBudgetHoldNotice(context.Background(), state, store, issueID, discardLogger())
@@ -278,6 +285,7 @@ func TestReleaseAllBudgetHoldNotices_RetainsMemoryWhenDeleteFails(t *testing.T) 
 
 	store := &stubStore{deleteAllBudgetHoldErr: fmt.Errorf("db error")}
 	state := NewState(60000, 10, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.BudgetHoldNoticed["iss-a"] = budgetReasonSession
 	state.BudgetHoldNoticed["iss-b"] = budgetReasonToken
 

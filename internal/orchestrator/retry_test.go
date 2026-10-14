@@ -214,6 +214,7 @@ func (m *mockRetryTracker) RemoveLabel(_ context.Context, _ string, _ string) er
 func retryState(t *testing.T, id, identifier string, attempt int) *State {
 	t.Helper()
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:    id,
 		Identifier: identifier,
@@ -296,6 +297,7 @@ func TestHandleRetryTimer(t *testing.T) {
 			state: func(t *testing.T, id string) *State {
 				t.Helper()
 				state := NewState(5000, 4, 0, nil, AgentTotals{})
+				wireTestOutbox(t, state, nil, nil)
 				state.RetryAttempts[id] = &RetryEntry{
 					IssueID:          id,
 					Identifier:       id,
@@ -334,6 +336,7 @@ func TestHandleRetryTimer(t *testing.T) {
 			state: func(t *testing.T, id string) *State {
 				t.Helper()
 				state := NewState(5000, 4, 0, nil, AgentTotals{})
+				wireTestOutbox(t, state, nil, nil)
 				// Startup recovery: zero scheduledAt with a future DueAtMS.
 				// The old wall-clock code treated this as stale and
 				// returned early; the current code proceeds.
@@ -1454,7 +1457,7 @@ func TestHandleRetryTimer_TokenBudgetLogLine(t *testing.T) {
 	params.Logger = logger
 
 	HandleRetryTimer(state, "ISS-TOK-LOG", params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	output := buf.String()
 	if !strings.Contains(output, "token budget exhausted, blocking re-dispatch") {
@@ -1772,47 +1775,57 @@ func TestIsStaleRetryTimer(t *testing.T) {
 
 	tests := []struct {
 		name  string
-		entry *RetryEntry
+		entry func() *RetryEntry
 		want  bool
 	}{
 		{
 			name: "monotonic: freshly scheduled with long delay is stale",
-			entry: &RetryEntry{
-				scheduledAt:      time.Now(),
-				scheduledDelayMS: 60_000,
+			entry: func() *RetryEntry {
+				return &RetryEntry{
+					scheduledAt:      time.Now(),
+					scheduledDelayMS: 60_000,
+				}
 			},
 			want: true,
 		},
 		{
 			name: "monotonic: delay already elapsed is not stale",
-			entry: &RetryEntry{
-				scheduledAt:      time.Now().Add(-2 * time.Second),
-				scheduledDelayMS: 1000,
+			entry: func() *RetryEntry {
+				return &RetryEntry{
+					scheduledAt:      time.Now().Add(-2 * time.Second),
+					scheduledDelayMS: 1000,
+				}
 			},
 			want: false,
 		},
 		{
 			name: "monotonic: zero delay just scheduled is not stale",
-			entry: &RetryEntry{
-				scheduledAt:      time.Now().Add(-time.Millisecond),
-				scheduledDelayMS: 0,
+			entry: func() *RetryEntry {
+				return &RetryEntry{
+					scheduledAt:      time.Now().Add(-time.Millisecond),
+					scheduledDelayMS: 0,
+				}
 			},
 			want: false,
 		},
 		{
 			name: "startup-reconstructed: always non-stale regardless of DueAtMS",
-			entry: &RetryEntry{
-				// scheduledAt left zero, as startup reconstruction leaves it.
-				DueAtMS: time.Now().UnixMilli() + 3_600_000,
+			entry: func() *RetryEntry {
+				return &RetryEntry{
+					// scheduledAt left zero, as startup reconstruction leaves it.
+					DueAtMS: time.Now().UnixMilli() + 3_600_000,
+				}
 			},
 			want: false,
 		},
 		{
 			name: "startup-reconstructed: past DueAtMS also non-stale",
-			entry: &RetryEntry{
-				// Zero scheduledAt with a past DueAtMS: DueAtMS is
-				// irrelevant to the decision, still non-stale.
-				DueAtMS: time.Now().UnixMilli() - 10_000,
+			entry: func() *RetryEntry {
+				return &RetryEntry{
+					// Zero scheduledAt with a past DueAtMS: DueAtMS is
+					// irrelevant to the decision, still non-stale.
+					DueAtMS: time.Now().UnixMilli() - 10_000,
+				}
 			},
 			want: false,
 		},
@@ -1822,9 +1835,10 @@ func TestIsStaleRetryTimer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := isStaleRetryTimer(tt.entry)
+			entry := tt.entry()
+			got := isStaleRetryTimer(entry)
 			if got != tt.want {
-				t.Errorf("isStaleRetryTimer(%+v) = %v, want %v", tt.entry, got, tt.want)
+				t.Errorf("isStaleRetryTimer(%+v) = %v, want %v", entry, got, tt.want)
 			}
 		})
 	}
@@ -2048,7 +2062,7 @@ func TestHandleRetryTimer_AbsenceCeilingIndependentOfMaxSessions(t *testing.T) {
 		params.MaxConsecutiveAbsences = 5
 
 		HandleRetryTimer(state, issueID, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		entry := state.Parked[issueID]
 		if entry == nil || entry.Reason != parkReasonHandoffAbsence {
@@ -2071,7 +2085,7 @@ func TestHandleRetryTimer_AbsenceCeilingIndependentOfMaxSessions(t *testing.T) {
 		params.MaxConsecutiveAbsences = 2
 
 		HandleRetryTimer(state, issueID, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		entry := state.Parked[issueID]
 		if entry == nil || entry.Reason != parkReasonHandoffAbsence {
@@ -2098,7 +2112,7 @@ func TestHandleRetryTimer_SessionBudgetLogLine(t *testing.T) {
 	params.Logger = logger
 
 	HandleRetryTimer(state, "ISS-SESS-LOG", params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	output := buf.String()
 	if !strings.Contains(output, "effort budget exhausted, blocking re-dispatch") {
@@ -2180,6 +2194,8 @@ func TestHandleRetryTimer_ContinuationContextPropagated(t *testing.T) {
 	}
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:             id,
@@ -2223,6 +2239,8 @@ func TestHandleRetryTimer_NilContinuationContext_NotPropagated(t *testing.T) {
 	const id = "ISS-NO-CI"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:             id,
@@ -2256,6 +2274,8 @@ func TestHandleRetryTimer_ContinuationDispatch_MarksReactionDispatched(t *testin
 	const id = "ISS-CI-1"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:             id,
@@ -2294,6 +2314,8 @@ func TestHandleRetryTimer_NonReactionRetry_DoesNotMarkDispatched(t *testing.T) {
 	const id = "ISS-ERR-1"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:    id,
@@ -2324,6 +2346,8 @@ func TestHandleRetryTimer_ReschedulePreservesReactionKind(t *testing.T) {
 	const id = "ISS-CI-2"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:      id,
@@ -2365,6 +2389,8 @@ func TestHandleRetryTimer_ContinuationMarkDispatchedError(t *testing.T) {
 	const id = "ISS-CI-3"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:             id,
@@ -2509,6 +2535,8 @@ func TestHandleRetryTimer_ReactionReviewInHandoffStateDispatches(t *testing.T) {
 	}
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:             id,
 		Identifier:          id,
@@ -2570,6 +2598,8 @@ func TestHandleRetryTimer_ReactionCIInHandoffStateDispatches(t *testing.T) {
 	}
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:             id,
 		Identifier:          id,
@@ -2615,6 +2645,8 @@ func TestHandleRetryTimer_NonReactionInHandoffStateReleasesClaim(t *testing.T) {
 	const id = "HANDOFF-NONREACTION"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:    id,
@@ -2657,6 +2689,8 @@ func TestHandleRetryTimer_ReactionInUnrelatedStateReschedules(t *testing.T) {
 	}
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:             id,
@@ -2724,6 +2758,8 @@ func TestHandleRetryTimer_NonReactionInUnrelatedStateReleasesClaim(t *testing.T)
 	const id = "UNRELATED-NONREACTION"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:    id,
@@ -2763,6 +2799,8 @@ func TestHandleRetryTimer_ReactionInTerminalStateReleasesClaim(t *testing.T) {
 	const id = "TERMINAL-REACTION"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:      id,
@@ -2807,6 +2845,8 @@ func TestHandleRetryTimer_ReactionHandoffNoSlotsPreservesContext(t *testing.T) {
 	}
 
 	state := NewState(5000, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.Running["OTHER-1"] = &RunningEntry{
 		Identifier: "OTHER-1",
@@ -2937,6 +2977,8 @@ func TestHandleRetryTimer_ReactionActiveStateBlockerReschedules(t *testing.T) {
 	}
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:             id,
@@ -3002,6 +3044,8 @@ func TestHandleRetryTimer_NonReactionActiveStateBlockerReleasesClaim(t *testing.
 	const id = "ACTIVE-BLOCKER-NONREACTION"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:    id,
@@ -3043,6 +3087,8 @@ func TestHandleRetryTimer_UnknownReactionKindInHandoffStateReleasesClaim(t *test
 	const id = "HANDOFF-UNKNOWN"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.Claimed[id] = struct{}{}
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:      id,
@@ -3088,6 +3134,7 @@ func TestHandleRetryTimer_HandoffReactionStartsWithoutExistingClaim(t *testing.T
 	// No pre-existing claim: guards against a guard that wrongly requires
 	// a prior claim before dispatching a handoff-state reaction retry.
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:      id,
 		Identifier:   id,
@@ -3122,6 +3169,8 @@ func TestHandleRetryTimer_FrozenFieldsPropagatedToRunningEntry(t *testing.T) {
 	const wantTemplateID = "/abs/prompts/bug.md"
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:    id,
 		Identifier: id,
@@ -3185,6 +3234,8 @@ func TestHandleRetryTimer_ReschedulePreservesFrozenFields(t *testing.T) {
 	const wantTemplateID = "/abs/prompts/feature.md"
 
 	state := NewState(1, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:    id,
 		Identifier: id,
@@ -3231,6 +3282,8 @@ func TestHandleRetryTimer_FrozenFieldsPersistedOnReschedule(t *testing.T) {
 	const wantTemplateID = "/abs/prompts/docs.md"
 
 	state := NewState(1, 1, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.RetryAttempts[id] = &RetryEntry{
 		IssueID:    id,
 		Identifier: id,
@@ -3691,6 +3744,7 @@ func TestHandleRetryTimer_PausedDwellBound(t *testing.T) {
 
 		const id = "DWELL-UNRELATED-1"
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[id] = struct{}{}
 		state.RetryAttempts[id] = &RetryEntry{
 			IssueID:      id,
@@ -3731,6 +3785,7 @@ func TestHandleRetryTimer_PausedDwellBound(t *testing.T) {
 
 		const id = "DWELL-UNRELATED-2"
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[id] = struct{}{}
 		staleSince := time.Now().Add(-(pausedRetryMaxDwell + time.Minute)).UnixMilli()
 		state.RetryAttempts[id] = &RetryEntry{
@@ -3789,6 +3844,7 @@ func TestHandleRetryTimer_PausedDwellBound(t *testing.T) {
 
 		const id = "DWELL-BLOCKED-1"
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[id] = struct{}{}
 		state.RetryAttempts[id] = &RetryEntry{
 			IssueID:      id,
@@ -3829,6 +3885,7 @@ func TestHandleRetryTimer_PausedDwellBound(t *testing.T) {
 
 		const id = "DWELL-BLOCKED-2"
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[id] = struct{}{}
 		staleSince := time.Now().Add(-(pausedRetryMaxDwell + time.Minute)).UnixMilli()
 		state.RetryAttempts[id] = &RetryEntry{
@@ -3879,6 +3936,7 @@ func TestHandleRetryTimer_PausedDwellBound(t *testing.T) {
 
 		const id = "DWELL-RESET"
 		state := NewState(5000, 1, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Claimed[id] = struct{}{}
 		state.RetryAttempts[id] = &RetryEntry{
 			IssueID:      id,
@@ -3989,7 +4047,7 @@ func TestHandleRetryTimerParkGate(t *testing.T) {
 		params.MaxSessions = 0
 
 		HandleRetryTimer(state, issueID, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if tracker.fetchCount != 0 {
 			t.Errorf("FetchIssueByID calls = %d, want 0: parking short-circuits before the fetch", tracker.fetchCount)
@@ -4018,7 +4076,7 @@ func TestHandleRetryTimerParkGate(t *testing.T) {
 				params.HandoffEvidencePolicy = policy
 
 				HandleRetryTimer(state, issueID, params)
-				state.TrackerOpsWg.Wait()
+				waitNotifications(t, state)
 
 				if tracker.fetchCount != 1 {
 					t.Errorf("FetchIssueByID calls = %d, want 1: a known reaction kind is exempt from the park gate", tracker.fetchCount)
@@ -4043,7 +4101,7 @@ func TestHandleRetryTimer_BudgetHoldNotice(t *testing.T) {
 		params.MaxSessions = 3
 
 		HandleRetryTimer(state, id, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		entry, ok := state.BudgetExhausted[id]
 		if !ok {
@@ -4079,7 +4137,7 @@ func TestHandleRetryTimer_BudgetHoldNotice(t *testing.T) {
 		params.MaxSessions = 3
 
 		HandleRetryTimer(state, id, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if len(tracker.commentCalls) != 1 {
 			t.Fatalf("commentCalls = %+v, want exactly one comment (the window's last slot)", tracker.commentCalls)
@@ -4104,7 +4162,7 @@ func TestHandleRetryTimer_BudgetHoldNotice(t *testing.T) {
 		params.MaxSessions = 3
 
 		HandleRetryTimer(state, id, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if len(tracker.commentCalls) != 0 {
 			t.Errorf("commentCalls = %+v, want none (the shared window is already spent)", tracker.commentCalls)
@@ -4126,7 +4184,7 @@ func TestHandleRetryTimer_BudgetHoldNotice(t *testing.T) {
 		params.MaxSessions = 3
 
 		HandleRetryTimer(state, id, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if len(tracker.commentCalls) != 1 {
 			t.Fatalf("commentCalls after the first fire = %+v, want exactly one", tracker.commentCalls)
@@ -4136,7 +4194,7 @@ func TestHandleRetryTimer_BudgetHoldNotice(t *testing.T) {
 		state.Claimed[id] = struct{}{}
 
 		HandleRetryTimer(state, id, params)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 
 		if len(tracker.commentCalls) != 1 {
 			t.Errorf("commentCalls after the second fire = %+v, want still exactly one (same reason already noticed)", tracker.commentCalls)

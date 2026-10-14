@@ -132,6 +132,7 @@ func TestFreezeIssueTokenBaseline(t *testing.T) {
 
 				lb, logger := textLogger()
 				state := NewState(5000, 4, 0, nil, AgentTotals{})
+				wireTestOutbox(t, state, nil, nil)
 				state.Running["ISS-3"] = &RunningEntry{
 					Identifier:   "ISS-3-ident",
 					AgentKind:    "mock",
@@ -339,6 +340,7 @@ func TestEnforceInFlightTokenCeiling(t *testing.T) {
 
 		_, logger := textLogger()
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		wireTestOutbox(t, state, nil, nil)
 		state.Running["ISS-NOCEIL"] = &RunningEntry{Identifier: "ISS-NOCEIL-ident", AgentTotalTokens: 1_000_000}
 		store := &failingIssueTokenStore{t: t}
 

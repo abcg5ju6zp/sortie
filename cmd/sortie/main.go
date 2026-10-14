@@ -30,6 +30,7 @@ import (
 	"github.com/sortie-ai/sortie/internal/config"
 	"github.com/sortie-ai/sortie/internal/domain"
 	"github.com/sortie-ai/sortie/internal/logging"
+	"github.com/sortie-ai/sortie/internal/notify/outbox"
 	"github.com/sortie-ai/sortie/internal/notify/route"
 	"github.com/sortie-ai/sortie/internal/orchestrator"
 	"github.com/sortie-ai/sortie/internal/persistence"
@@ -831,11 +832,20 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return sessionTools.Registry, nil
 	}
 
+	notificationOutbox := outbox.New(outbox.Params{
+		Store:     store,
+		Tracker:   br.trackerAdapter,
+		Lookup:    registry.Notifiers.Get,
+		Logger:    br.logger,
+		WaitGroup: &state.TrackerOpsWg,
+	})
+
 	o := orchestrator.NewOrchestrator(orchestrator.OrchestratorParams{
 		State:                             state,
 		Logger:                            br.logger,
 		TrackerAdapter:                    br.trackerAdapter,
 		Router:                            route.NewRouter(br.trackerAdapter, registry.Notifiers.Get),
+		Outbox:                            notificationOutbox,
 		AgentAdapter:                      agentAdapter,
 		AgentAdapterByKind:                agentAdapterByKind,
 		WorkflowManager:                   br.mgr,

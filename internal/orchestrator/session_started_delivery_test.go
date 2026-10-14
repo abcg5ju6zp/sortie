@@ -84,17 +84,20 @@ func startSessionStartedRun(t *testing.T, cancelAtTransition bool) *sessionStart
 		Comments: config.TrackerCommentsConfig{OnDispatch: true},
 	})
 
+	boxState := NewState(5000, 1, 0, nil, AgentTotals{})
 	logs := &lockedBuf{}
 	run := &sessionStartedRun{
-		root: root, slack: slack, wg: &sync.WaitGroup{}, tracker: tracker, metrics: metrics,
+		root: root, slack: slack, wg: &boxState.TrackerOpsWg, tracker: tracker, metrics: metrics,
 		logs: logs, done: make(chan struct{}), release: release,
 	}
 	t.Cleanup(run.wg.Wait)
 	t.Cleanup(release)
+	box := wireTestOutbox(t, boxState, tracker, spyLookup(slack))
 	ec := newExitCapture()
 	deps := WorkerDeps{
 		TrackerAdapter:         tracker,
 		Router:                 router,
+		Outbox:                 box,
 		TrackerOpsWg:           run.wg,
 		AgentAdapter:           &mockAgentAdapter{},
 		ConfigFunc:             func() config.ServiceConfig { return cfg },
@@ -190,11 +193,22 @@ func TestSessionStartedDelivery_TrackerCommentLoggedAndCountedBeforeWorkspacePre
 	}
 }
 
-func TestSessionStartedDelivery_CancelledWorkerStartsNoDetachedSend(t *testing.T) {
+func TestSessionStartedDelivery_CancelledWorkerStillDeliversPersistedEvent(t *testing.T) {
 	t.Parallel()
 
+	// The event is persisted before any target is contacted, so a
+	// worker whose context is cancelled while it publishes still leaves
+	// the durable event to deliver: the subscriber send is counted by
+	// the wait group and completes once released, rather than being
+	// dropped with the worker.
 	run := startSessionStartedRun(t, true)
 	run.waitForWorker(t)
+
+	select {
+	case <-run.slack.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the subscriber's Send never started for the persisted session.started event")
+	}
 
 	waited := make(chan struct{})
 	go func() {
@@ -203,12 +217,17 @@ func TestSessionStartedDelivery_CancelledWorkerStartsNoDetachedSend(t *testing.T
 	}()
 	select {
 	case <-waited:
-	case <-time.After(5 * time.Second):
-		t.Fatal("TrackerOpsWg.Wait blocked, want no detached delivery counted for a cancelled worker")
+		t.Fatal("TrackerOpsWg.Wait returned while the persisted event's Send was blocked")
+	default:
 	}
 	run.release()
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("TrackerOpsWg.Wait did not return after the Send was released")
+	}
 
-	if sent := run.slack.notifications(); len(sent) != 0 {
-		t.Errorf("subscriber notifications = %+v, want none from a cancelled worker", sent)
+	if sent := run.slack.notifications(); len(sent) != 1 || sent[0].Envelope.EventType != domain.EventTypeSessionStarted {
+		t.Errorf("subscriber notifications = %+v, want the persisted session.started delivered once", sent)
 	}
 }

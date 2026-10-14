@@ -41,6 +41,14 @@ type NotificationBackend struct {
 	// resolved. It is passed through to the backend constructor untyped.
 	// It excludes kind, max_per_session, and events.
 	Config map[string]any
+
+	// RawConfig holds the same per-backend fields exactly as written,
+	// before $VAR expansion. A frozen routing snapshot carries it so the
+	// durable notification outbox can reconstruct the backend after a
+	// restart without persisting a resolved secret value; callers
+	// constructing a backend run it through [ResolveEnvReferences]
+	// first.
+	RawConfig map[string]any
 }
 
 // buildNotificationsConfig parses the top-level notifications sequence
@@ -149,6 +157,10 @@ func parseNotificationBackend(index int, elem any) (NotificationBackend, error) 
 		passthrough[key] = val
 	}
 
+	// Keep the fields as written before resolving them in place, so a
+	// frozen route can persist a secret-free backend specification.
+	rawConfig := cloneConfigValue(passthrough).(map[string]any)
+
 	// A typed knownTopLevelKeys section is excluded from extensions, and
 	// the only existing $VAR walker runs over extensions, so resolve the
 	// entry leaves here. An unset reference resolves to the empty string,
@@ -164,7 +176,43 @@ func parseNotificationBackend(index int, elem any) (NotificationBackend, error) 
 		Events:         events,
 		EventsDeclared: eventsDeclared,
 		Config:         passthrough,
+		RawConfig:      rawConfig,
 	}, nil
+}
+
+// ResolveEnvReferences expands $VAR and ${VAR} references on every
+// string leaf under v, mirroring the resolution a notifications entry
+// receives when WORKFLOW.md loads. It mutates and returns v in place;
+// non-string leaves round-trip unchanged. The durable notification
+// outbox reconstructs a frozen backend after a restart with it, so the
+// stored specification keeps the reference rather than the resolved
+// secret value.
+func ResolveEnvReferences(v any) any {
+	var snapshot map[string]string
+	return resolveExtensionEnvValue("", v, &snapshot)
+}
+
+// cloneConfigValue deep-copies the yaml-decoded value types a
+// notifications pass-through config can hold (maps, slices, strings,
+// and other scalars), so resolving one copy leaves the raw copy
+// untouched.
+func cloneConfigValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		clone := make(map[string]any, len(typed))
+		for k, child := range typed {
+			clone[k] = cloneConfigValue(child)
+		}
+		return clone
+	case []any:
+		clone := make([]any, len(typed))
+		for i, child := range typed {
+			clone[i] = cloneConfigValue(child)
+		}
+		return clone
+	default:
+		return v
+	}
 }
 
 // parseNotificationEvents reads the events key of one entry. A missing

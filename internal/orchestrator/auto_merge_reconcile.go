@@ -359,8 +359,8 @@ func postAutoMergeSuccess(state *State, params ReconcileParams, pending *Pending
 	commentText := buildAutoMergeComment(autoMergeData, mergeResult, params.AutoMergeConfig.Strategy)
 	delivery := params.Router.Route(reactionNotification(domain.EventAutoMergeMerged, pending, commentText))
 	commentLog := log
-	deliverDetached(ctx, &state.TrackerOpsWg, delivery, log, func(received bool, err error) {
-		if received && err != nil {
+	deliverDetached(state.Outbox, delivery, log, func(received bool, err error) {
+		if err != nil {
 			commentLog.Warn("auto_merge tracker comment failed",
 				slog.Any("error", err),
 			)
@@ -507,7 +507,7 @@ func escalateAutoMergeFailure(state *State, params ReconcileParams, pending *Pen
 			})
 		}
 	}
-	publishEscalation(ctx, &state.TrackerOpsWg, delivery, log, nil, func(err error) {
+	publishEscalation(state.Outbox, delivery, log, nil, func(err error) {
 		log.Warn("auto_merge escalation comment failed", slog.Any("error", err))
 	})
 

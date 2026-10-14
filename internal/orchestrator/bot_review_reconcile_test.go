@@ -60,6 +60,7 @@ func makeBotReviewPendingEntry(t *testing.T, issueID string, prNumber int) *Pend
 func stateWithBotReviewReaction(t *testing.T, issueID string, prNumber int) *State {
 	t.Helper()
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, s, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindBotReview)
 	s.PendingReactions[rkey] = makeBotReviewPendingEntry(t, issueID, prNumber)
 	s.Claimed[issueID] = struct{}{}
@@ -700,6 +701,8 @@ func TestReconcileBotReviewComments_KindDataTypeMismatch(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	rkey := ReactionKey("BOT-MISMATCH", ReactionKindBotReview)
 	state.PendingReactions[rkey] = &PendingReaction{
 		IssueID:    "BOT-MISMATCH",
@@ -732,6 +735,8 @@ func TestReconcileBotReviewComments_SkipsNonBotReviewEntries(t *testing.T) {
 	t.Parallel()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	// Add a review-kind entry that must remain untouched.
 	reviewKey := ReactionKey("BOT-CROSS", ReactionKindReview)
 	state.PendingReactions[reviewKey] = &PendingReaction{
@@ -767,7 +772,7 @@ func TestEscalateBotReviewFailure_CrossKindIsolation(t *testing.T) {
 
 	issueID := "ISO-1"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+	wireTestOutbox(t, state, nil, nil)
 	reviewKey := ReactionKey(issueID, ReactionKindReview)
 	state.PendingReactions[reviewKey] = &PendingReaction{
 		IssueID:    issueID,
@@ -818,7 +823,7 @@ func TestEscalateBotReviewFailure_CrossKindIsolation(t *testing.T) {
 
 	botData := botPending.KindData.(*BotReviewReactionData)
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.PendingReactions[botKey]; ok {
 		t.Error("bot-review PendingReactions entry still present after escalation; want deleted")
@@ -846,6 +851,7 @@ func TestEscalateBotReviewFailure_LabelAction(t *testing.T) {
 
 	issueID := "ESC-LABEL-1"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	botPending := &PendingReaction{
 		IssueID:   issueID,
@@ -869,7 +875,7 @@ func TestEscalateBotReviewFailure_LabelAction(t *testing.T) {
 
 	botData := botPending.KindData.(*BotReviewReactionData)
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Errorf("AddLabel calls = %d, want 1 for label escalation", tracker.addLabelCalled)
@@ -888,6 +894,7 @@ func TestEscalateBotReviewFailure_CommentAction(t *testing.T) {
 
 	issueID := "ESC-COMMENT-1"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	botPending := &PendingReaction{
 		IssueID:   issueID,
@@ -911,7 +918,7 @@ func TestEscalateBotReviewFailure_CommentAction(t *testing.T) {
 
 	botData := botPending.KindData.(*BotReviewReactionData)
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.commentIssueCalls != 1 {
 		t.Errorf("CommentIssue calls = %d, want 1 for comment escalation", tracker.commentIssueCalls)
@@ -929,6 +936,7 @@ func TestEscalateBotReviewFailure_NoneEscalationPostsNothing(t *testing.T) {
 
 	issueID := "ESC-EMPTY-1"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	botPending := &PendingReaction{
 		IssueID:   issueID,
@@ -951,7 +959,7 @@ func TestEscalateBotReviewFailure_NoneEscalationPostsNothing(t *testing.T) {
 
 	botData := botPending.KindData.(*BotReviewReactionData)
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.commentIssueCalls != 0 {
 		t.Errorf("CommentIssue calls = %d, want 0 for none escalation", tracker.commentIssueCalls)
@@ -971,6 +979,7 @@ func TestEscalateBotReviewFailure_NilTrackerAdapter(t *testing.T) {
 
 	issueID := "ESC-NOTRACKER"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	botPending := &PendingReaction{
 		IssueID:   issueID,
@@ -994,7 +1003,7 @@ func TestEscalateBotReviewFailure_NilTrackerAdapter(t *testing.T) {
 
 	// Must not panic with nil TrackerAdapter.
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.PendingReactions[botKey]; ok {
 		t.Error("bot-review PendingReactions entry still present after nil-tracker escalation; want deleted")
@@ -1027,7 +1036,7 @@ func TestReconcileBotReviewComments_TurnCapEscalates(t *testing.T) {
 	log, buf := logCapture()
 
 	reconcileBotReviewComments(state, params, log, context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.PendingReactions[botKey]; ok {
 		t.Error("bot-review PendingReactions entry still present after turn cap; want deleted")
@@ -1375,6 +1384,7 @@ func TestEscalateBotReviewFailure_LabelDefaultsWhenEmpty(t *testing.T) {
 
 	issueID := "ESC-LABEL-DEFAULT"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	botPending := &PendingReaction{
 		IssueID:   issueID,
@@ -1397,7 +1407,7 @@ func TestEscalateBotReviewFailure_LabelDefaultsWhenEmpty(t *testing.T) {
 
 	botData := botPending.KindData.(*BotReviewReactionData)
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalls != 1 {
 		t.Fatalf("AddLabel calls = %d, want 1", tracker.addLabelCalls)
@@ -1417,6 +1427,7 @@ func TestEscalateBotReviewFailure_LabelActionError(t *testing.T) {
 
 	issueID := "ESC-LABEL-ERR"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	botPending := &PendingReaction{
 		IssueID:   issueID,
@@ -1439,7 +1450,7 @@ func TestEscalateBotReviewFailure_LabelActionError(t *testing.T) {
 
 	botData := botPending.KindData.(*BotReviewReactionData)
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalls != 1 {
 		t.Fatalf("AddLabel calls = %d, want 1", tracker.addLabelCalls)
@@ -1462,6 +1473,7 @@ func TestEscalateBotReviewFailure_CommentActionError(t *testing.T) {
 
 	issueID := "ESC-COMMENT-ERR"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	botPending := &PendingReaction{
 		IssueID:   issueID,
@@ -1473,7 +1485,7 @@ func TestEscalateBotReviewFailure_CommentActionError(t *testing.T) {
 
 	store := &reviewReconcileStore{}
 	metrics := newBotReviewMetricsSpy()
-	tracker := &botReviewErrTrackerStub{commentErr: errors.New("comment api failed")}
+	tracker := &botReviewErrTrackerStub{commentErr: permanentTrackerErr("comment api failed")}
 	params := botReviewParams(store, &mockSCMAdapter{}, tracker)
 	params.BotReviewConfig = BotReviewReactionConfig{
 		Escalation:           "comment",
@@ -1484,7 +1496,7 @@ func TestEscalateBotReviewFailure_CommentActionError(t *testing.T) {
 
 	botData := botPending.KindData.(*BotReviewReactionData)
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.commentCalls != 1 {
 		t.Fatalf("CommentIssue calls = %d, want 1", tracker.commentCalls)
@@ -1505,6 +1517,7 @@ func TestEscalateBotReviewFailure_DeleteFingerprintError(t *testing.T) {
 
 	issueID := "ESC-DELFP-ERR"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
 	botPending := &PendingReaction{
 		IssueID:   issueID,
@@ -1529,7 +1542,7 @@ func TestEscalateBotReviewFailure_DeleteFingerprintError(t *testing.T) {
 
 	// Must not panic despite the delete error.
 	escalateBotReviewFailure(state, params, botPending, 5, EscalationTriggerBudget, botData, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if store.deleteFingerprintCalls != 1 {
 		t.Errorf("DeleteReactionFingerprint calls = %d, want 1", store.deleteFingerprintCalls)
@@ -1555,6 +1568,7 @@ func TestReconcileBotReviewComments_CoexistsWithReview(t *testing.T) {
 
 	issueID := "BOT-COEXIST"
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, state, nil, nil)
 	reviewKey := ReactionKey(issueID, ReactionKindReview)
 	state.PendingReactions[reviewKey] = newReviewPendingEntry(issueID, 55)
 	botKey := ReactionKey(issueID, ReactionKindBotReview)
@@ -1815,7 +1829,7 @@ func TestReconcileBotReviewComments_Triage_Escalate(t *testing.T) {
 	runBotReviewTriageToCompletion(t, state, params, rkey, metrics)
 
 	reconcileBotReviewComments(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Errorf("AddLabel calls = %d, want 1 (triage escalation uses the kind's own escalation action)", tracker.addLabelCalled)
@@ -1990,7 +2004,7 @@ func TestReconcileBotReviewComments_Triage_EpisodeCloseClearsHandledForNextEpiso
 
 	runBotReviewTriageToCompletion(t, state, params, rkey, metrics)
 	reconcileBotReviewComments(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Errorf("AddLabel calls = %d, want 1 (the replayed handled verdict from episode 1 must not suppress the fresh escalate)", tracker.addLabelCalled)
@@ -2066,7 +2080,7 @@ func TestReconcileBotReviewComments_SpentBudget_NoNewInlineComment(t *testing.T)
 			log, buf := logCapture()
 
 			reconcileBotReviewComments(state, params, log, context.Background(), metrics)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			entry, ok := state.PendingReactions[rkey]
 			if !ok {
@@ -2192,7 +2206,7 @@ func TestReconcileBotReviewComments_SpentBudget_NoDecisionBeforeObservation(t *t
 			params := botReviewEscalationParams(t, store, scm, tracker)
 
 			reconcileBotReviewComments(state, params, discardLogger(), context.Background(), metrics)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			entry, ok := state.PendingReactions[rkey]
 			if !ok {
@@ -2246,7 +2260,7 @@ func TestReconcileBotReviewComments_SpentBudget_NewInlineCommentEscalatesOnce(t 
 			log, buf := logCapture()
 
 			reconcileBotReviewComments(state, params, log, context.Background(), metrics)
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			if scm.botCalls != 1 {
 				t.Errorf("FetchBotReviewComments calls = %d, want 1", scm.botCalls)
@@ -2303,7 +2317,7 @@ func TestReconcileBotReviewComments_SpentBudget_TriageGateNotReached(t *testing.
 			params.Router = commentRouter(t, tracker, domain.EventEscalationBotReview)
 
 			reconcileBotReviewComments(state, params, discardLogger(), context.Background(), newBotReviewMetricsSpy())
-			state.TrackerOpsWg.Wait()
+			waitNotifications(t, state)
 
 			assertEscalations(t, tracker, tt.wantEscalation)
 			if entry, ok := state.PendingReactions[rkey]; ok && entry.Triage != nil {
@@ -2335,7 +2349,7 @@ func TestReconcileBotReviewComments_BelowBudget_SummaryItemStillDispatches(t *te
 
 	runBotReviewTriageToCompletion(t, state, params, rkey, metrics)
 	reconcileBotReviewComments(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.RetryAttempts[issueID]; !ok {
 		t.Fatal("retry not scheduled for a set whose only new ID is a summary item; want a dispatch")
@@ -2415,7 +2429,7 @@ func TestReconcileBotReviewComments_HandedOff_TriageEscalationRecordsReportedIDs
 
 	runBotReviewTriageToCompletion(t, state, params, rkey, metrics)
 	reconcileBotReviewComments(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Fatalf("AddLabel calls = %d, want 1", tracker.addLabelCalled)
@@ -2503,7 +2517,7 @@ func TestReconcileBotReviewComments_HandedOff_ReseededEntryAfterEscalation(t *te
 	metrics := newBotReviewMetricsSpy()
 	pass := func() {
 		reconcileBotReviewComments(state, params, discardLogger(), context.Background(), metrics)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 	}
 
 	pass()
@@ -2547,7 +2561,7 @@ func TestReconcileBotReviewComments_NoEscalationAfterSuccessfulLastTurn(t *testi
 	const escalatingMsg = "bot review continuation turns exhausted, escalating"
 	pass := func() {
 		reconcileBotReviewComments(state, params, log, context.Background(), metrics)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 	}
 	assertWaiting := func(t *testing.T, wantReported ...string) {
 		t.Helper()

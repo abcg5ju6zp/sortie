@@ -14,6 +14,14 @@ type trackerComment struct {
 	adapter domain.TrackerAdapter
 }
 
+// NewTrackerComment wraps a tracker adapter as the built-in
+// tracker_comment notifier. Durable senders use it to reconstruct the
+// target after a restart; a nil adapter yields a notifier whose sends
+// fail.
+func NewTrackerComment(adapter domain.TrackerAdapter) domain.Notifier {
+	return trackerComment{adapter: adapter}
+}
+
 func (c trackerComment) Send(ctx context.Context, n domain.Notification) error {
 	if n.Message.AgentText != "" {
 		return c.adapter.CommentIssueWithLiteral(ctx, n.Envelope.IssueID, n.Message.Body, n.Message.AgentText)

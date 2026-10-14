@@ -313,6 +313,7 @@ func defaultCIFeedback() config.CIFeedbackConfig {
 func stateWithPendingReaction(t *testing.T, issueID, branch string, attempt int) *State {
 	t.Helper()
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, s, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindCI)
 	s.PendingReactions[rkey] = newPendingEntry(issueID, issueID+"-ident", branch, attempt)
 	s.Claimed[issueID] = struct{}{}
@@ -930,7 +931,7 @@ func TestReconcileCIStatus_Failing_ExceedsMaxRetries_Escalates(t *testing.T) {
 		t.Errorf("row LastCheck = %+v, want %+v", row.LastCheck, wantCheck)
 	}
 
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if metrics.ciEscalations["label"] != 1 {
 		t.Errorf(`IncCIEscalations("label") = %d, want 1`, metrics.ciEscalations["label"])
@@ -961,7 +962,7 @@ func TestReconcileCIStatus_Failing_CommentEscalation(t *testing.T) {
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
 
 	// Wait for the async escalation goroutine before reading metrics.
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if metrics.ciEscalations["comment"] != 1 {
 		t.Errorf(`IncCIEscalations("comment") = %d, want 1`, metrics.ciEscalations["comment"])
@@ -988,7 +989,7 @@ func TestReconcileCIStatus_EscalationSoftStop_SameHeadDoesNotReescalate(t *testi
 	params := ciParams(t, store, ci, tracker, defaultCISCM())
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if metrics.ciEscalations["label"] != 1 {
 		t.Fatalf(`IncCIEscalations("label") after first pass = %d, want 1`, metrics.ciEscalations["label"])
@@ -1007,7 +1008,7 @@ func TestReconcileCIStatus_EscalationSoftStop_SameHeadDoesNotReescalate(t *testi
 	state.Claimed[issueID] = struct{}{}
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.Claimed[issueID]; !ok {
 		t.Error("claim released by a repeat CI escalation while a review worker runs; want held so the worker's exit can seed its watch")
@@ -1061,7 +1062,7 @@ func TestReconcileCIStatus_CommentEscalation_RecursOncePerHead_ThenAgainAfterNot
 			entry.PendingRetryAt = time.Time{}
 		}
 		reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 	}
 	if metrics.ciEscalations["comment"] != 1 {
 		t.Fatalf(`IncCIEscalations("comment") across 3 passes on one head = %d, want 1`, metrics.ciEscalations["comment"])
@@ -1094,7 +1095,7 @@ func TestReconcileCIStatus_CommentEscalation_RecursOncePerHead_ThenAgainAfterNot
 		e := state.PendingReactions[ReactionKey(issueID, ReactionKindCI)]
 		e.PendingRetryAt = time.Time{}
 		reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 	}
 
 	if metrics.ciEscalations["comment"] != 2 {
@@ -1234,7 +1235,7 @@ func TestReconcileCIStatus_NoPersonAttributingLanguage(t *testing.T) {
 	params.Logger = slog.New(handler)
 
 	reconcileCIStatus(state, params, slog.New(handler), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	emitted := make([]string, 0, len(handler.records)+1)
 	for _, rec := range handler.records {
@@ -1340,7 +1341,7 @@ func TestEscalateCIFailure_LabelTracksTrackerOps(t *testing.T) {
 
 	waitDone := make(chan struct{})
 	go func() {
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		close(waitDone)
 	}()
 
@@ -1383,7 +1384,7 @@ func TestEscalateCIFailure_CommentTracksTrackerOps(t *testing.T) {
 
 	waitDone := make(chan struct{})
 	go func() {
-		state.TrackerOpsWg.Wait()
+		waitNotifications(t, state)
 		close(waitDone)
 	}()
 
@@ -1508,6 +1509,8 @@ func TestReconcileCIStatus_BackoffUsesStatePollInterval(t *testing.T) {
 	entry.PendingAttempts = 1
 
 	state := NewState(30000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.PendingReactions[ReactionKey("ISS-PPI-1", ReactionKindCI)] = entry
 	state.Claimed["ISS-PPI-1"] = struct{}{}
 
@@ -1554,6 +1557,8 @@ func TestReconcileCIStatus_BackoffSkip(t *testing.T) {
 	entry.PendingRetryAt = futureRetry
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.PendingReactions[ReactionKey("ISS-SKIP-1", ReactionKindCI)] = entry
 	state.Claimed["ISS-SKIP-1"] = struct{}{}
 
@@ -1598,6 +1603,8 @@ func TestReconcileCIStatus_BackoffIncrements_OnPending(t *testing.T) {
 	entry.PendingAttempts = 2
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.PendingReactions[ReactionKey("ISS-BIP-1", ReactionKindCI)] = entry
 	state.Claimed["ISS-BIP-1"] = struct{}{}
 
@@ -1638,6 +1645,8 @@ func TestReconcileCIStatus_BackoffIncrements_OnError(t *testing.T) {
 	entry.PendingAttempts = 1
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.PendingReactions[ReactionKey("ISS-BIE-1", ReactionKindCI)] = entry
 	state.Claimed["ISS-BIE-1"] = struct{}{}
 
@@ -1685,6 +1694,8 @@ func TestReconcileCIStatus_WatchWindow_MeasuredFromHeadRecordedAt(t *testing.T) 
 		entry.CreatedAt = ciBaseTime.Add(-10 * 24 * time.Hour) // far older than HeadRecordedAt
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.PendingReactions[ReactionKey(issueID, ReactionKindCI)] = entry
 		state.ReactionAttempts[ReactionKey(issueID, ReactionKindCI)] = 1
 		state.Claimed[issueID] = struct{}{}
@@ -1719,6 +1730,8 @@ func TestReconcileCIStatus_WatchWindow_MeasuredFromHeadRecordedAt(t *testing.T) 
 		entry.CreatedAt = ciBaseTime.Add(-10 * 24 * time.Hour)
 
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+		wireTestOutbox(t, state, nil, nil)
 		state.PendingReactions[ReactionKey(issueID, ReactionKindCI)] = entry
 		state.Claimed[issueID] = struct{}{}
 
@@ -1751,6 +1764,8 @@ func TestReconcileCIStatus_WatchWindow_ZeroNeverDrops(t *testing.T) {
 	entry.CreatedAt = ciBaseTime.Add(-365 * 24 * time.Hour)
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	state.PendingReactions[ReactionKey(issueID, ReactionKindCI)] = entry
 	state.Claimed[issueID] = struct{}{}
 
@@ -2172,7 +2187,7 @@ func TestEscalateCIFailure_LabelFailure_IncrementsErrorMetric(t *testing.T) {
 	// defaultCIFeedback sets escalation: "label".
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if metrics.ciEscalations["error"] != 1 {
 		t.Errorf(`IncCIEscalations("error") = %d, want 1 on label tracker failure`, metrics.ciEscalations["error"])
@@ -2197,7 +2212,7 @@ func TestEscalateCIFailure_CommentFailure_IncrementsErrorMetric(t *testing.T) {
 	params.Router = commentRouter(t, params.TrackerAdapter, domain.EventEscalationCIFailure)
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if metrics.ciEscalations["error"] != 1 {
 		t.Errorf(`IncCIEscalations("error") = %d, want 1 on comment tracker failure`, metrics.ciEscalations["error"])
@@ -2222,7 +2237,7 @@ func TestEscalateCIFailure_NilTracker_ZeroIncrements(t *testing.T) {
 	// defaultCIFeedback sets escalation: "label".
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if len(metrics.ciEscalations) != 0 {
 		t.Errorf("IncCIEscalations called with nil TrackerAdapter; want zero increments, got %v", metrics.ciEscalations)
@@ -2242,7 +2257,7 @@ func TestEscalateCIFailure_NilTracker_RecordsNone_Comment(t *testing.T) {
 	params.Router = commentRouter(t, nil, domain.EventEscalationCIFailure)
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if got := metrics.ciEscalations["none"]; got != 1 {
 		t.Errorf(`IncCIEscalations("none") with no tracker = %d, want 1`, got)
@@ -2270,7 +2285,7 @@ func TestEscalateCIFailure_FingerprintSurvivesEscalation(t *testing.T) {
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
 
 	// Wait for any escalation goroutine to finish.
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if store.deleteFingerprintCalls != 0 {
 		t.Errorf("DeleteReactionFingerprint calls = %d, want 0 during CI escalation (fingerprint is the epoch record)", store.deleteFingerprintCalls)
@@ -2309,7 +2324,7 @@ func TestReconcileCIStatus_Failing_ExceedsMaxRetries_CrossKindIsolation(t *testi
 	params := ciParams(t, store, ci, tracker, defaultCISCM())
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.PendingReactions[mcKey]; !ok {
 		t.Error("sibling merge-completion PendingReactions entry removed by CI escalation; want untouched")
@@ -2476,7 +2491,7 @@ func TestReconcileCIStatus_CIFailedRunHistoryExcludedFromAttribution(t *testing.
 	}
 
 	reconcileCIStatus(state, params, discardLogger(), ctx, metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if metrics.ciEscalations["label"] != 1 {
 		t.Fatalf(`IncCIEscalations("label") = %d, want 1 (escalation soft stop wrote the ci_failed row)`, metrics.ciEscalations["label"])
@@ -2536,7 +2551,7 @@ func TestReconcileCIStatus_ThreeSelfPushedFixCommits_EscalateAfterTotalBudget(t 
 		reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
 	}
 
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if state.ReactionAttempts[ReactionKey(issueID, ReactionKindCI)] != 2 {
 		t.Errorf("ReactionAttempts after three self-pushed fix commits = %d, want 2 (accumulated to max_retries, not reset per commit)",
@@ -2839,7 +2854,7 @@ func TestReconcileCIStatus_Triage_Escalate(t *testing.T) {
 	runCITriageToCompletion(t, state, params, rkey, metrics)
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Errorf("AddLabel calls = %d, want 1 (triage escalation uses the kind's own escalation action)", tracker.addLabelCalled)
@@ -2880,7 +2895,7 @@ func TestReconcileCIStatus_Triage_Escalate_CommentTextNamesTriage(t *testing.T) 
 	runCITriageToCompletion(t, state, params, rkey, metrics)
 
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.commentIssueCalls != 1 {
 		t.Fatalf("CommentIssue calls = %d, want 1", tracker.commentIssueCalls)
@@ -3097,7 +3112,7 @@ func TestReconcileCIStatus_Triage_EpisodeCloseClearsHandledForNextEpisode(t *tes
 
 	runCITriageToCompletion(t, state, params, rkey, metrics)
 	reconcileCIStatus(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if tracker.addLabelCalled != 1 {
 		t.Errorf("AddLabel calls = %d, want 1 (the replayed handled verdict from episode 1 must not suppress the fresh escalate)", tracker.addLabelCalled)

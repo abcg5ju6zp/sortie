@@ -194,7 +194,7 @@ func exitWithStatement(t *testing.T, result WorkerResult, withheld bool) stopExi
 	}
 
 	HandleWorkerExit(state, result, params)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 	t.Cleanup(func() { CancelRetry(state, issueID) })
 
 	return stopExit{tracker: tracker, slack: slack}

@@ -1406,10 +1406,7 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 	exitEvent.AgentText = agentText
 	delivery := params.Router.Route(exitEvent.notification(eventType, severity, body))
 
-	deliverDetached(ctx, &state.TrackerOpsWg, delivery, log, func(received bool, err error) {
-		if !received {
-			return
-		}
+	deliverDetached(state.Outbox, delivery, log, func(received bool, err error) {
 		if err != nil {
 			log.Warn("tracker comment failed",
 				slog.String("lifecycle", lifecycle),

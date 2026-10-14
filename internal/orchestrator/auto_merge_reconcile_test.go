@@ -123,6 +123,7 @@ func newAutoMergePending(issueID string, prNumber int) *PendingReaction {
 func stateWithAutoMergePending(t *testing.T, issueID string, prNumber int) *State {
 	t.Helper()
 	s := NewState(5000, 4, 0, nil, AgentTotals{})
+	wireTestOutbox(t, s, nil, nil)
 	rkey := ReactionKey(issueID, ReactionKindAutoMerge)
 	s.PendingReactions[rkey] = newAutoMergePending(issueID, prNumber)
 	return s
@@ -232,7 +233,7 @@ func TestReconcileAutoMerge_HappyPath(t *testing.T) {
 
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), metrics)
 
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if !mergeCalled {
 		t.Error("MergePR not called on happy path")
@@ -431,7 +432,7 @@ func TestReconcileAutoMerge_MaxRetriesEscalation(t *testing.T) {
 
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), metrics)
 
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if _, ok := state.PendingReactions[rkey]; ok {
 		t.Error("PendingReactions[AM-MAX:merge] still present after max-retries escalation; want removed")
@@ -516,7 +517,7 @@ func TestReconcileAutoMerge_AuthEscalatesImmediately(t *testing.T) {
 
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), metrics)
 
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	rkey := ReactionKey("AM-AU", ReactionKindAutoMerge)
 	if _, ok := state.PendingReactions[rkey]; ok {
@@ -560,7 +561,7 @@ func TestReconcileAutoMerge_AuthDedupe(t *testing.T) {
 	// Tick 1: entry is escalated and removed; auth error logged once.
 	state := stateWithAutoMergePending(t, "AM-DD", 50)
 	reconcileAutoMerge(state, params, log, context.Background(), newAutoMergeMetricsSpy())
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	buf.reset()
 
@@ -570,7 +571,7 @@ func TestReconcileAutoMerge_AuthDedupe(t *testing.T) {
 	state.PendingReactions[rkey] = newAutoMergePending("AM-DD", 50)
 	metrics2 := newAutoMergeMetricsSpy()
 	reconcileAutoMerge(state, params, log, context.Background(), metrics2)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	// The second tick escalates again because the entry is re-seeded, but
 	// must not emit another ERROR for auth.
@@ -672,7 +673,7 @@ func TestReconcileAutoMerge_DoesNotMarkDispatchedOnTransientFailure(t *testing.T
 	// was just upserted but with dispatched=false, modeling the persisted
 	// state at the start of tick two.
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if mergeCallCount != 1 {
 		t.Fatalf("MergePR call count after tick one = %d, want 1", mergeCallCount)
@@ -696,7 +697,7 @@ func TestReconcileAutoMerge_DoesNotMarkDispatchedOnTransientFailure(t *testing.T
 	store.getFingerprintDispatched = false
 
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if mergeCallCount != 2 {
 		t.Errorf("MergePR call count after tick two = %d, want 2 (dedup should not block retry)", mergeCallCount)
@@ -749,7 +750,7 @@ func TestReconcileAutoMerge_CrossKindIsolationOnSuccess(t *testing.T) {
 	params := autoMergeParams(store, scm, tracker)
 
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	// Merge-kind entry must be gone.
 	rkey := ReactionKey("AM-XK", ReactionKindAutoMerge)
@@ -796,7 +797,7 @@ func TestReconcileAutoMerge_CrossKindIsolationOnEscalation(t *testing.T) {
 	params := autoMergeParams(store, scm, tracker)
 
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	// Merge-kind entry must be escalated and removed.
 	if _, ok := state.PendingReactions[rkey]; ok {
@@ -887,7 +888,7 @@ func TestReconcileAutoMerge_PreflightRetrySucceeds(t *testing.T) {
 	params := autoMergeParams(store, verifier, tracker)
 
 	reconcileAutoMerge(state, params, discardLogger(), context.Background(), metrics)
-	state.TrackerOpsWg.Wait()
+	waitNotifications(t, state)
 
 	if state.AutoMergePreflightFailed {
 		t.Error("AutoMergePreflightFailed = true after successful retry; want false")

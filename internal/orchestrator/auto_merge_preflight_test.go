@@ -654,6 +654,8 @@ func TestAutoMergePreflight_TransportFailureSchedulesRetryInState(t *testing.T) 
 	t.Parallel()
 
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
+
+	wireTestOutbox(t, state, nil, nil)
 	startTime := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
 
 	transportErr := &domain.SCMError{Kind: domain.ErrSCMTransport}
@@ -682,7 +684,7 @@ func TestAutoMergePreflight_AuthFailureDoesNotScheduleRetry(t *testing.T) {
 	// Auth failures return (false, missing, nil); err is nil, missing is non-empty.
 	missing := []string{"pull_requests:write"}
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
-
+	wireTestOutbox(t, state, nil, nil)
 	// Simulate the orchestrator startup path for auth-class failures:
 	// err is nil so IsAutoMergePreflightTransportClass is false.
 	var transportErr error

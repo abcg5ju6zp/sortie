@@ -221,6 +221,34 @@ One row per issue whose current budget hold has been announced to at least one d
 
 One row per issue, holding current state since the last reset rather than history: the row is deleted when the count resets (a handoff write succeeds, the issue turns terminal or non-active, or the issue is parked or released from a park). A reading of no configured state deletes the row only when it repeats on the next reading of that issue, because a healthy label edit can show an issue with no state label for a moment; the flag that tracks the first reading is runtime-only and the table gains no column for it, so after a restart the next no-state reading counts as the first. The row serves the per-issue ceiling on consecutive hops, the hold that keeps a lagging candidate listing from sending the issue back to the stage it left, the `stage.previous` pair of the target's dispatch, and the issue's listing between stages, which lasts until a dispatch of the issue sets `run_dispatched`. Setting the flag updates that column alone and does nothing for an issue without a row. Recording a hop upserts the row and deletes the issue's `retry_entries` row in one transaction, so a restart cannot restore the retry of the stage the hop left. Recording a second hop with the `source_dispatch_id` already stored keeps the stored `hop_count`, so one source run is counted once. Startup loads every row before the event loop starts, after `parked_issues`.
 
+**`notification_outbox`**: durable orchestration events, one row per event frozen before any target is contacted (migration 28). It holds the stamped notification identity and the rendered payload; identity and body are never rewritten by a retry, a reload, or a restart. The row is pending while any target is open and completed the moment all targets are terminal; completed rows are pruned past a fixed startup retention.
+
+| Column          | Type    | Notes                                                  |
+| --------------- | ------- | ------------------------------------------------------ |
+| notification_id | TEXT PK | envelope NotificationID stamped at routing             |
+| event_type      | TEXT    | catalog event type                                     |
+| payload         | TEXT    | JSON of the frozen Notification (envelope and message) |
+| status          | TEXT    | `pending` or `completed`                               |
+| created_at      | TEXT    | RFC3339Nano                                            |
+| completed_at    | TEXT    | set when the last target goes terminal                 |
+
+**`notification_targets`**: one row per frozen target of an outbox event (migration 28). This is where delivery is deduplicated across restarts: a process resumes pending/retryable rows and never re-sends succeeded rows.
+
+| Column             | Type    | Notes                                                                                                                                                                |
+| ------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| notification_id    | TEXT    | FK to notification_outbox, part of PK                                                                                                                                |
+| destination        | TEXT    | `tracker_comment` or `notifications[<i>]`                                                                                                                            |
+| kind               | TEXT    | built-in `tracker_comment` or the notifications entry kind                                                                                                          |
+| backend_config     | TEXT    | JSON of the backend configuration as written in WORKFLOW.md, nullable for tracker_comment. A `$VAR` leaf is stored unresolved and expanded on reconstruction, so a secret value is never at rest and a restart rebuilds the backend rather than rehydrating it (migration 28, Section 15.3). |
+| status             | TEXT    | `pending`, `succeeded`, `retryable`, or `failed`                                                                                                                     |
+| attempts           | INTEGER | send attempts recorded                                                                                                                                               |
+| last_error         | TEXT    | redaction-safe failure category, empty on success                                                                                                                    |
+| next_attempt_at_ms | INTEGER | unix epoch millisecond the target's delivery chain waits until before its next attempt, null once terminal                                                           |
+| created_at         | TEXT    | RFC3339Nano                                                                                                                                                          |
+| updated_at         | TEXT    | RFC3339Nano                                                                                                                                                          |
+| PRIMARY KEY        |         | (notification_id, destination)                                                                                                                                       |
+| INDEX              |         | status, next_attempt_at_ms (recovery listing of open targets)                                                                                                        |
+
 ### 19.3 Migration Strategy
 
 - Migrations are numbered sequentially and applied in order at startup.
