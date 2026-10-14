@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sortie-ai/sortie/internal/domain"
+	"github.com/sortie-ai/sortie/internal/workspace"
 )
 
 // maxBlockerReadsPerPass bounds how many per-issue blocker reads one
@@ -131,6 +132,11 @@ func ShouldDispatch(issue domain.Issue, state *State, activeStates, terminalStat
 		return false
 	}
 
+	// An active terminal-cleanup round durably bars new dispatch.
+	if cleanupRoundBlocksIssue(state, issue.ID, issue.Identifier) {
+		return false
+	}
+
 	// Any non-terminal blocker blocks dispatch.
 	if isBlockedByNonTerminalSet(issue, terminalSet) {
 		return false
@@ -181,6 +187,11 @@ func ShouldDispatchWithSets(issue domain.Issue, state *State, activeSet, termina
 	// Parked issues are held out of dispatch until the release rule lifts
 	// the park, whatever the parking reason.
 	if _, parked := state.Parked[issue.ID]; parked {
+		return false
+	}
+
+	// An active terminal-cleanup round durably bars new dispatch.
+	if cleanupRoundBlocksIssue(state, issue.ID, issue.Identifier) {
 		return false
 	}
 
@@ -332,6 +343,11 @@ func passesEligibilityGates(issue domain.Issue, state *State, activeSet, termina
 		return false
 	}
 	if _, parked := state.Parked[issue.ID]; parked {
+		return false
+	}
+	// An active terminal-cleanup round durably bars new dispatch for the
+	// issue and for anything carrying its workspace key, across restarts.
+	if cleanupRoundBlocksIssue(state, issue.ID, issue.Identifier) {
 		return false
 	}
 
@@ -766,4 +782,25 @@ func DispatchIssue(ctx context.Context, state *State, issue domain.Issue, attemp
 	state.WorkerWg.Go(func() {
 		workerFn(workerCtx, issue, attemptCopy)
 	})
+}
+
+// PinDispatchWorkspacePath records on the running entry the workspace
+// path the just-created dispatch will use, computed once from the
+// configuration snapshot at dispatch time. A later workspace-root
+// reload cannot redirect a terminal cleanup round away from this pinned
+// directory. A failure to resolve the path is left for the worker's
+// own preparation and the worker-exit result to report.
+func PinDispatchWorkspacePath(state *State, issueID, root, identifier string) {
+	if root == "" || issueID == "" || identifier == "" {
+		return
+	}
+	entry, ok := state.Running[issueID]
+	if !ok || entry.WorkspacePath != "" {
+		return
+	}
+	pr, err := workspace.ComputePath(root, identifier)
+	if err != nil {
+		return
+	}
+	entry.WorkspacePath = pr.Path
 }

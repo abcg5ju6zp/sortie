@@ -2344,17 +2344,23 @@ func TestHandleWorkerExit_PendingCleanupRemovesWorkspace(t *testing.T) {
 	t.Parallel()
 
 	store := &mockExitStore{}
+	rounds := newFakeRoundStore()
 	state := exitState(t, "CLEAN-1", nil)
 	state.Running["CLEAN-1"].PendingCleanup = true
+	state.Running["CLEAN-1"].ObservedTerminalState = "Done"
 	state.Running["CLEAN-1"].Identifier = "CLEAN-1-ident"
 
-	wsRoot := t.TempDir()
+	wsRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	wsDir := filepath.Join(wsRoot, "CLEAN-1-ident")
 	if err := os.MkdirAll(wsDir, 0o755); err != nil {
 		t.Fatalf("failed to create workspace dir: %v", err)
 	}
 
 	params := defaultExitParams(t, store)
+	params.CleanupRounds = rounds
 
 	HandleWorkerExit(state, WorkerResult{
 		IssueID:       "CLEAN-1",
@@ -2364,6 +2370,15 @@ func TestHandleWorkerExit_PendingCleanupRemovesWorkspace(t *testing.T) {
 		WorkspacePath: wsDir,
 	}, params)
 
+	// The exit handler quiesces the round; the engine (same event-loop
+	// wake in production) removes the tree.
+	res := ProcessCleanupRounds(context.Background(), state, ProcessCleanupRoundsParams{
+		Store: rounds, Ctx: context.Background(), Logger: discardLogger(),
+		PollIntervalMS: 100, MaxBackoffMS: 5000,
+	})
+	if res.CompletedRemoved != 1 {
+		t.Fatalf("engine result = %+v, want one removed", res)
+	}
 	if _, err := os.Stat(wsDir); !os.IsNotExist(err) {
 		t.Errorf("workspace directory still exists after PendingCleanup exit")
 	}
@@ -2438,20 +2453,30 @@ func TestHandleWorkerExit_PendingCleanupUsesActualPath(t *testing.T) {
 	t.Parallel()
 
 	store := &mockExitStore{}
+	rounds := newFakeRoundStore()
 	state := exitState(t, "PROJ-99", nil)
 	state.Running["PROJ-99"].PendingCleanup = true
+	state.Running["PROJ-99"].ObservedTerminalState = "Done"
 	state.Running["PROJ-99"].Identifier = "PROJ-99"
 
 	// Two separate roots: oldRoot has the actual workspace; newRoot
-	// simulates config changing workspace.root at runtime.
-	oldRoot := t.TempDir()
-	newRoot := t.TempDir()
+	// simulates config changing workspace.root at runtime. The pinned
+	// round must remove only the worker's actual path.
+	oldRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	newRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	actualWS := filepath.Join(oldRoot, "PROJ-99")
 	if err := os.MkdirAll(actualWS, 0o755); err != nil {
 		t.Fatalf("failed to create workspace dir: %v", err)
 	}
 
 	params := defaultExitParams(t, store)
+	params.CleanupRounds = rounds
 
 	HandleWorkerExit(state, WorkerResult{
 		IssueID:       "PROJ-99",
@@ -2460,6 +2485,14 @@ func TestHandleWorkerExit_PendingCleanupUsesActualPath(t *testing.T) {
 		AgentAdapter:  "mock",
 		WorkspacePath: actualWS,
 	}, params)
+
+	res := ProcessCleanupRounds(context.Background(), state, ProcessCleanupRoundsParams{
+		Store: rounds, Ctx: context.Background(), Logger: discardLogger(),
+		PollIntervalMS: 100, MaxBackoffMS: 5000,
+	})
+	if res.CompletedRemoved != 1 {
+		t.Fatalf("engine result = %+v, want one removed", res)
+	}
 
 	if _, err := os.Stat(actualWS); !os.IsNotExist(err) {
 		t.Error("workspace at old root still exists, cleanup used wrong path")

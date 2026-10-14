@@ -78,10 +78,15 @@ type HandleWorkerExitParams struct {
 
 	Logger *slog.Logger
 
-	// BeforeRemoveHook is the before_remove hook script. Empty means none.
+	// BeforeRemoveHook is the before_remove hook script pinned onto a
+	// cleanup round created at a terminal exit. Empty means none.
 	BeforeRemoveHook string
 
 	HookTimeoutMS int
+
+	// CleanupRounds, when non-nil, is the durable store a terminal exit
+	// ensures a pinned cleanup round against and then marks quiesced.
+	CleanupRounds CleanupRoundStore
 
 	// TrackerAdapter performs handoff transitions. Required when
 	// HandoffState is non-empty; nil is safe when it is empty.
@@ -243,24 +248,6 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 	// real directory, not one reconstructed from possibly-changed config.
 	if entry.WorkspacePath == "" && workerResult.WorkspacePath != "" {
 		entry.WorkspacePath = workerResult.WorkspacePath
-	}
-
-	// Deferred workspace cleanup for terminal issues, run only after the
-	// worker has fully exited. Guarded on WorkspacePath being non-empty.
-	if entry.PendingCleanup && entry.WorkspacePath != "" {
-		if err := workspace.CleanupByPath(ctx, workspace.CleanupByPathParams{
-			Path:          entry.WorkspacePath,
-			Identifier:    entry.Identifier,
-			IssueID:       workerResult.IssueID,
-			Attempt:       normalizeAttempt(entry.RetryAttempt),
-			BeforeRemove:  params.BeforeRemoveHook,
-			HookTimeoutMS: params.HookTimeoutMS,
-			Logger:        log,
-		}); err != nil {
-			log.Warn("workspace cleanup failed",
-				slog.Any("error", err),
-			)
-		}
 	}
 
 	now := time.Now().UTC()
@@ -1354,6 +1341,52 @@ func HandleWorkerExit(state *State, workerResult WorkerResult, params HandleWork
 				slog.Any("error", workerResult.Error),
 			)
 			delete(state.Claimed, workerResult.IssueID)
+		}
+	}
+
+	// Terminal workspace cleanup is driven by the durable round. A
+	// reconcile terminal observation pinned one before cancelling the
+	// worker: the running entry is now gone, so confirm quiescence on it.
+	// A terminal state seen only by the exit's own observation (worker
+	// report or verification read) gets its round created here, pinned to
+	// the worker's actual workspace path. The processing engine performs
+	// the hook and tree removal on the same event-loop wake.
+	if params.CleanupRounds != nil && (entry.PendingCleanup || terminal) {
+		terminalState := entry.ObservedTerminalState
+		source := persistence.CleanupSourceReconcile
+		if terminalState == "" {
+			terminalState = observation
+			source = persistence.CleanupSourceWorkerExit
+		}
+
+		round := activeCleanupRoundForIssue(state, workerResult.IssueID)
+		if round == nil {
+			roundParams, pinOK := BuildExitRoundParams(entry, workerResult, terminalState, source,
+				params.BeforeRemoveHook, params.HookTimeoutMS, runID, now)
+			if !pinOK {
+				log.Warn("terminal cleanup: no pinnable workspace path; periodic sweep will adopt the workspace")
+			} else {
+				created, _, ensureErr := EnsureCleanupRound(ctx, params.CleanupRounds, state, roundParams)
+				if ensureErr != nil {
+					log.Error("terminal cleanup: failed to create cleanup round",
+						slog.Any("error", ensureErr),
+					)
+				} else {
+					round = created
+				}
+			}
+		}
+		if round != nil {
+			if quiesced, qErr := MarkRoundQuiesced(ctx, params.CleanupRounds, state, round.ID, now.Format(time.RFC3339)); qErr != nil {
+				log.Error("terminal cleanup: failed to confirm quiescence",
+					slog.Int64("round_id", round.ID),
+					slog.Any("error", qErr),
+				)
+			} else if quiesced {
+				log.Info("terminal cleanup round quiesced, ready for processing",
+					slog.Int64("round_id", round.ID),
+				)
+			}
 		}
 	}
 

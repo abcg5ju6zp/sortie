@@ -210,6 +210,14 @@ type ReconcileParams struct {
 	// reads this field and never CIFeedback.Triage, which the poll
 	// tick refreshes from the reloaded configuration.
 	CITriage config.ReactionTriageConfig
+
+	// CleanupRounds, when non-nil, receives the durable round created on
+	// every terminal observation. BeforeRemoveHook and HookTimeoutMS are
+	// the configuration snapshot pinned onto rounds created this tick; a
+	// later reload changes neither the path nor the hook of those rounds.
+	CleanupRounds    CleanupRoundStore
+	BeforeRemoveHook string
+	HookTimeoutMS    int
 }
 
 // ReconcileRunningIssues detects stalled workers and refreshes tracker
@@ -634,6 +642,26 @@ func reconcileTrackerState(state *State, params ReconcileParams, log *slog.Logge
 				continue
 			}
 
+			// Pin the durable cleanup round before releasing any runtime
+			// state, so the dispatch gate is in force first and a crash
+			// before the worker exits still knows the pinned path and facts.
+			if params.CleanupRounds != nil {
+				if _, _, roundErr := EnsureReconcileTerminalRound(ctx, params.CleanupRounds, state, ReconcileTerminalRoundParams{
+					IssueID:       issueID,
+					Identifier:    identifier,
+					TerminalState: stateName,
+					Running:       entry,
+					WorkspaceRoot: params.WorkspaceRoot,
+					HookScript:    params.BeforeRemoveHook,
+					HookTimeoutMS: params.HookTimeoutMS,
+					Logger:        entryLog,
+				}); roundErr != nil {
+					entryLog.Warn("failed to pin terminal cleanup round; terminal cleanup retried on worker exit or sweep",
+						slog.Any("error", roundErr),
+					)
+				}
+			}
+
 			var counts issueReleaseCounts
 			if entry != nil {
 				if entry.CancelFunc != nil {
@@ -759,6 +787,7 @@ type sweepSummary struct {
 	excludedRunning      int
 	excludedRetry        int
 	excludedReaction     int
+	excludedCleanupRound int
 	removedTerminal      int
 	removedAge           int
 	retainedInWindow     int
@@ -779,6 +808,7 @@ func emitSweepSummary(log *slog.Logger, summary sweepSummary) {
 		slog.Int("excluded_running", summary.excludedRunning),
 		slog.Int("excluded_retry", summary.excludedRetry),
 		slog.Int("excluded_reaction", summary.excludedReaction),
+		slog.Int("excluded_cleanup_round", summary.excludedCleanupRound),
 		slog.Int("removed_terminal", summary.removedTerminal),
 		slog.Int("removed_age", summary.removedAge),
 		slog.Int("retained_in_window", summary.retainedInWindow),
@@ -818,11 +848,12 @@ func activityAnchor(completedAt, pushedAt string) (time.Time, bool) {
 }
 
 // buildSweepExclusions returns the map of workspace key to the reason it
-// is excluded from sweep candidacy: "running", "retry", or "reaction".
+// is excluded from sweep candidacy: "running", "retry", "reaction", or
+// "cleanup_round".
 //
-// Precedence is running, then retry, then reaction, so a key present in
-// more than one source is reported exactly once and the sweep's outcome
-// counters partition the candidate set.
+// Precedence is running, then retry, then reaction, then cleanup_round,
+// so a key present in more than one source is reported exactly once and
+// the sweep's outcome counters partition the candidate set.
 func buildSweepExclusions(state *State, log *slog.Logger) map[string]string {
 	out := make(map[string]string)
 
@@ -866,6 +897,18 @@ func buildSweepExclusions(state *State, log *slog.Logger) map[string]string {
 		}
 		if _, exists := out[key]; !exists {
 			out[key] = "reaction"
+		}
+	}
+
+	// An active cleanup round owns its pinned workspace until the engine
+	// verifies the tree gone; neither the terminal gate nor the age bound
+	// may evaluate the key (Invariant 4 extension).
+	for _, round := range state.CleanupRounds {
+		if round.Status != persistence.CleanupRoundActive {
+			continue
+		}
+		if _, exists := out[round.WorkspaceKey]; !exists {
+			out[round.WorkspaceKey] = "cleanup_round"
 		}
 	}
 
@@ -971,6 +1014,11 @@ type SweepWorkspacesParams struct {
 	// "unavailable".
 	Store SweepStore
 
+	// CleanupRounds receives the pinned round created for every terminal
+	// key. When nil, terminal keys are counted as failed rather than
+	// bypassing the durable cleanup machinery.
+	CleanupRounds CleanupRoundStore
+
 	// NowFunc returns the current time. If nil, time.Now is used.
 	NowFunc func() time.Time
 
@@ -1030,6 +1078,8 @@ func SweepWorkspaces(state *State, params SweepWorkspacesParams) {
 			summary.excludedRetry++
 		case "reaction":
 			summary.excludedReaction++
+		case "cleanup_round":
+			summary.excludedCleanupRound++
 		default:
 			remaining = append(remaining, key)
 		}
@@ -1065,21 +1115,51 @@ func SweepWorkspaces(state *State, params SweepWorkspacesParams) {
 	}
 
 	if len(terminalKeys) > 0 {
-		log.Info("sweep: cleaning terminal workspaces",
+		log.Info("sweep: adopting terminal workspaces into cleanup rounds",
 			slog.Int("count", len(terminalKeys)),
 		)
 
-		result := workspace.CleanupTerminal(params.Ctx, workspace.CleanupTerminalParams{
-			Root:          params.WorkspaceRoot,
-			Identifiers:   terminalKeys,
-			BeforeRemove:  params.BeforeRemoveHook,
-			HookTimeoutMS: params.HookTimeoutMS,
-			Logger:        log,
-		})
-		summary.removedTerminal += len(result.Removed)
-		summary.failed += len(result.Errors)
-		for range result.Removed {
-			metrics.IncReconciliationActions(actionSweepCleanup)
+		for _, key := range terminalKeys {
+			pr, pathErr := workspace.ComputePath(params.WorkspaceRoot, key)
+			if pathErr != nil {
+				log.Warn("sweep: failed to pin terminal workspace path",
+					slog.String("workspace_key", key),
+					slog.Any("error", pathErr),
+				)
+				summary.failed++
+				continue
+			}
+			if params.CleanupRounds == nil {
+				log.Warn("sweep: cleanup round store unavailable, leaving terminal workspace for a later pass",
+					slog.String("workspace_key", key),
+				)
+				summary.failed++
+				continue
+			}
+			_, created, ensureErr := EnsureCleanupRoundFromDisk(params.Ctx, params.CleanupRounds, state, DiskObservationParams{
+				Path:           pr.Path,
+				Identifier:     key,
+				TerminalState:  statesByKey[key],
+				TerminalSource: persistence.CleanupSourceSweep,
+				HookScript:     params.BeforeRemoveHook,
+				HookTimeoutMS:  params.HookTimeoutMS,
+				NowFunc:        func() time.Time { return now },
+				Logger:         log,
+			})
+			if ensureErr != nil {
+				log.Warn("sweep: failed to adopt terminal workspace into cleanup round",
+					slog.String("workspace_key", key),
+					slog.Any("error", ensureErr),
+				)
+				summary.failed++
+				continue
+			}
+			if created {
+				summary.removedTerminal++
+				metrics.IncReconciliationActions(actionSweepCleanup)
+			}
+			// An already-active round for the pinned path stays counted
+			// as excluded work: it is progressing on its own schedule.
 		}
 	}
 

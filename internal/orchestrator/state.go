@@ -43,6 +43,12 @@ const (
 	actionSweepCleanup = "sweep_cleanup"
 	actionSweepExpired = "sweep_expired"
 
+	// Terminal-workspace cleanup round outcomes.
+	actionCleanupRoundRemoved = "cleanup_round_removed"
+	actionCleanupRoundGone    = "cleanup_round_already_gone"
+	actionCleanupRoundRetry   = "cleanup_round_retry"
+	actionCleanupRoundBlocked = "cleanup_round_blocked"
+
 	handoffSuccess  = "success"
 	handoffError    = "error"
 	handoffSkipped  = "skipped"
@@ -1204,6 +1210,19 @@ type State struct {
 	// per-kind reconcile functions. Runtime-only.
 	PendingReactions map[string]*PendingReaction
 
+	// CleanupRounds holds terminal-workspace cleanup rounds by row ID.
+	// Loaded from persistence before the first dispatch decision and
+	// mirrored by the active-only gate indexes below; completed rows are
+	// retained so startup reconciliation recognizes an already-cleaned
+	// path. Only the event loop mutates the map.
+	CleanupRounds map[int64]*persistence.CleanupRound
+
+	// cleanupRoundIssueIdx and cleanupRoundKeyIdx are the active-round
+	// gate indexes: issue ID and sanitized workspace key. They make the
+	// dispatch gate an O(1) membership test instead of a row scan.
+	cleanupRoundIssueIdx map[string]struct{}
+	cleanupRoundKeyIdx   map[string]struct{}
+
 	// AutoMergePreflightFailed disables the auto-merge subsystem for the
 	// process lifetime when startup preflight detects a missing token scope
 	// or an unrecoverable transport failure.
@@ -1300,6 +1319,9 @@ func NewState(pollIntervalMS, maxConcurrentAgents, maxTokens int, maxConcurrentB
 		PendingReactions:          make(map[string]*PendingReaction),
 		AutoMergeAuthLogged:       make(map[string]struct{}),
 		TokenBudgetIncomplete:     make(map[string]struct{}),
+		CleanupRounds:             make(map[int64]*persistence.CleanupRound),
+		cleanupRoundIssueIdx:      make(map[string]struct{}),
+		cleanupRoundKeyIdx:        make(map[string]struct{}),
 	}
 }
 

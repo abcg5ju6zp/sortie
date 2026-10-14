@@ -36,7 +36,6 @@ import (
 	"github.com/sortie-ai/sortie/internal/registry"
 	"github.com/sortie-ai/sortie/internal/server"
 	"github.com/sortie-ai/sortie/internal/tool/trackerapi"
-	"github.com/sortie-ai/sortie/internal/workspace"
 
 	// Import adapter packages for their init-time registrations.
 	_ "github.com/sortie-ai/sortie/internal/agent/claude"
@@ -388,6 +387,15 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		orchestrator.PopulateBudgetHoldNotices(state, budgetHoldNoticeRows, br.logger)
 	}
 
+	// Load terminal cleanup rounds before any dispatch decision: active
+	// rounds durably gate new dispatch across the restart.
+	cleanupRoundRows, err := store.ListCleanupRounds(ctx, false)
+	if err != nil {
+		br.logger.Warn("failed to load cleanup rounds, starting with none", slog.Any("error", err))
+	} else {
+		orchestrator.PopulateCleanupRounds(state, cleanupRoundRows)
+	}
+
 	agentCtor, err := registry.Agents.Get(br.cfg.Agent.Kind)
 	if err != nil {
 		br.logger.Error("unknown agent kind", slog.String("kind", br.cfg.Agent.Kind), slog.Any("error", err))
@@ -420,38 +428,6 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		}
 	}()
 	agentAdapterByKind := makeAgentAdapterByKind(agentAdapterCache)
-
-	keys, err := workspace.ListWorkspaceKeys(br.cfg.Workspace.Root)
-	if err != nil {
-		br.logger.Warn("failed to list workspace keys, skipping cleanup", slog.Any("error", err))
-	} else if len(keys) > 0 {
-		states, fetchErr := br.trackerAdapter.FetchIssueStatesByIdentifiers(ctx, keys)
-		if fetchErr != nil {
-			br.logger.Warn("failed to fetch issue states for workspace cleanup", slog.Any("error", fetchErr))
-		} else {
-			terminalSet := make(map[string]struct{}, len(br.cfg.Tracker.TerminalStates))
-			for _, s := range br.cfg.Tracker.TerminalStates {
-				terminalSet[strings.ToLower(s)] = struct{}{}
-			}
-			var toClean []string
-			for _, key := range keys {
-				if st, ok := states[key]; ok {
-					if _, terminal := terminalSet[strings.ToLower(st)]; terminal {
-						toClean = append(toClean, key)
-					}
-				}
-			}
-			if len(toClean) > 0 {
-				workspace.CleanupTerminal(ctx, workspace.CleanupTerminalParams{
-					Root:          br.cfg.Workspace.Root,
-					Identifiers:   toClean,
-					BeforeRemove:  br.cfg.Hooks.BeforeRemove,
-					HookTimeoutMS: br.cfg.Hooks.TimeoutMS,
-					Logger:        br.logger,
-				})
-			}
-		}
-	}
 
 	br.logger.Info("sortie started")
 
@@ -796,6 +772,27 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 	if ms, ok := br.trackerAdapter.(domain.MetricsSetter); ok && orchMetrics != nil {
 		ms.SetMetrics(orchMetrics)
 	}
+
+	// Terminal workspace startup cleanup runs after metrics construction
+	// so startup adoptions and the immediate engine pass report their
+	// outcomes: reconcile persisted rounds against disk, adopt terminal
+	// directories with no record as new rounds, and process due rounds
+	// once. A tracker read failure suppresses only adoption; the periodic
+	// sweep covers the gap.
+	orchestrator.RecoverCleanupRounds(orchestrator.RecoverCleanupRoundsParams{
+		Store:            store,
+		State:            state,
+		WorkspaceRoot:    br.cfg.Workspace.Root,
+		TrackerAdapter:   br.trackerAdapter,
+		TerminalStates:   br.cfg.Tracker.TerminalStates,
+		BeforeRemoveHook: br.cfg.Hooks.BeforeRemove,
+		HookTimeoutMS:    br.cfg.Hooks.TimeoutMS,
+		PollIntervalMS:   br.cfg.Polling.IntervalMS,
+		MaxBackoffMS:     br.cfg.Agent.MaxRetryBackoffMS,
+		Ctx:              ctx,
+		Logger:           br.logger,
+		Metrics:          orchMetrics,
+	})
 
 	// sessionToolFunc builds the per-session tool registry the worker
 	// renders into the first-turn advertisement, so the advertised set

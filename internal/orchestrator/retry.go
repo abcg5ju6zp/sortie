@@ -88,6 +88,10 @@ type HandleRetryTimerParams struct {
 	// before dispatch rule routing).
 	DefaultAgentKind string
 
+	// WorkspaceRoot is the workspace root in force at timer fire, used
+	// only to pin the dispatched workspace path on the running entry.
+	WorkspaceRoot string
+
 	OnRetryFire func(issueID string)
 
 	Ctx context.Context
@@ -226,6 +230,24 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 		)
 		reschedule(popped.Attempt, delayMS, "worker still running")
 		setNoStateObserved(popped.noStateObserved)
+		return
+	}
+
+	// A terminal-cleanup round owns the issue now: no continuation,
+	// including a reaction continuation, may dispatch into the pinned
+	// workspace. Release the claim and drop the persisted row, mirroring
+	// the parked arm. The round itself is what finishes the workspace.
+	if cleanupRoundBlocksIssue(state, issueID, popped.Identifier) {
+		log.Info("cleanup round active, releasing retry claim",
+			slog.String("kind", popped.ReactionKind),
+		)
+		CancelRetry(state, issueID)
+		delete(state.Claimed, issueID)
+		if err := params.Store.DeleteRetryEntry(ctx, issueID); err != nil {
+			log.Error("failed to delete retry entry for cleanup-gated issue",
+				slog.Any("error", err),
+			)
+		}
 		return
 	}
 
@@ -740,6 +762,7 @@ func HandleRetryTimer(state *State, issueID string, params HandleRetryTimerParam
 	})
 	DispatchIssue(dispatchCtx, state, issue, &attempt, host, params.MakeWorkerFn(resumeSessionID, host, agentKind, templateID, popped.ReactionKind, adapter, attemptSettings))
 	if entry := state.Running[issue.ID]; entry != nil {
+		PinDispatchWorkspacePath(state, issue.ID, params.WorkspaceRoot, issue.Identifier)
 		entry.WorkflowFile = params.WorkflowFile
 		entry.AgentKind = agentKind
 		entry.RuleName = ruleName

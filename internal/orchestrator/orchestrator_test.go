@@ -106,6 +106,12 @@ type stubStore struct {
 	sessions        []persistence.SessionMetadata
 	savedRetries    []persistence.RetryEntry
 	deletedRetryIDs []string
+
+	// cleanupRounds backs the CleanupRoundStore methods with a small
+	// in-memory table, lazily initialized so &stubStore{} literals work.
+	cleanupRounds    map[int64]persistence.CleanupRound
+	cleanupRoundNext int64
+	latestDispatch   map[string]persistence.LatestDispatch
 	// budgetExhaustedIDs maps an issue to its run-history session count.
 	budgetExhaustedIDs map[string]int
 	budgetExhaustedErr error
@@ -8473,7 +8479,7 @@ func TestDispatch_RuleResolvedKindPersistsToRunHistory(t *testing.T) {
 			fetchStatesFn: func(_ context.Context, ids []string) (map[string]string, error) {
 				result := make(map[string]string, len(ids))
 				for _, id := range ids {
-					result[id] = "Done"
+					result[id] = "To Do"
 				}
 				return result, nil
 			},
@@ -11040,6 +11046,72 @@ func (s *stubStore) DeleteStageHop(context.Context, string) error { return nil }
 func (s *stubStore) RecordStageHop(context.Context, persistence.StageHop) error { return nil }
 
 func (s *stubStore) RecordRunStageResult(context.Context, int64, string, string) error { return nil }
+
+// CleanupRoundStore implementation (in-memory; used by sweep/exit
+// integration tests through the full Orchestrator).
+func (s *stubStore) CreateCleanupRound(_ context.Context, r persistence.CleanupRound) (persistence.CleanupRound, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cleanupRounds == nil {
+		s.cleanupRounds = make(map[int64]persistence.CleanupRound)
+		s.cleanupRoundNext = 1
+	}
+	r.ID = s.cleanupRoundNext
+	s.cleanupRoundNext++
+	s.cleanupRounds[r.ID] = r
+	return r, nil
+}
+
+func (s *stubStore) SaveCleanupRound(_ context.Context, r persistence.CleanupRound) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupRounds[r.ID] = r
+	return nil
+}
+
+func (s *stubStore) GetActiveCleanupRoundByPath(_ context.Context, path string) (*persistence.CleanupRound, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.cleanupRounds {
+		if r.WorkspacePath == path && r.Status == persistence.CleanupRoundActive {
+			cp := r
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *stubStore) ListCleanupRounds(_ context.Context, activeOnly bool) ([]persistence.CleanupRound, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]persistence.CleanupRound, 0, len(s.cleanupRounds))
+	for _, r := range s.cleanupRounds {
+		if activeOnly && r.Status != persistence.CleanupRoundActive {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func (s *stubStore) CompleteCleanupRound(_ context.Context, id int64, reason, at string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.cleanupRounds[id]; ok {
+		r.Status = persistence.CleanupRoundCompleted
+		r.CompletedReason = reason
+		r.CompletedAt = at
+		s.cleanupRounds[id] = r
+	}
+	return nil
+}
+
+func (s *stubStore) LatestAgentRunByIdentifier(_ context.Context, identifier string) (persistence.LatestDispatch, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.latestDispatch[identifier]
+	return d, ok, nil
+}
 
 func (s *stubStore) MarkStageHopObserved(context.Context, string) error { return nil }
 

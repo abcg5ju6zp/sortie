@@ -61,8 +61,14 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - A workspace directory swapped for a symbolic link after preparation refuses every `.sortie` write, read, and removal for that workspace and leaves the link's target unchanged
 - Every workspace launch, including a per-turn or auxiliary one, refuses a linked workspace path and starts no subprocess
 - Hook environment variables (`SORTIE_ISSUE_ID`, `SORTIE_ISSUE_IDENTIFIER`, `SORTIE_WORKSPACE`, `SORTIE_ATTEMPT`) are set correctly
-- The periodic sweep excludes workspace keys held by running entries and scheduled retries, and keys held by a pending reaction entry whose kind pins its workspace, while a non-pinning kind leaves its key a candidate
-- Within one sweep pass the terminal check runs before the age bound, and a key removed by the terminal check is not re-evaluated by the age bound
+- The periodic sweep excludes workspace keys held by running entries and scheduled retries, keys held by a pending reaction entry whose kind pins its workspace, and keys held by an active cleanup round, while a non-pinning kind leaves its key a candidate
+- Within one sweep pass the terminal check runs before the age bound, and a key adopted by the terminal gate is not re-evaluated by the age bound
+- A terminal observation from reconcile, worker exit, sweep, or startup is idempotent per pinned path: exactly one active cleanup round exists for the path, and the round pins the actual path (not one reconstructed after a root reload), issue identity, last dispatch facts, terminal observation, and a snapshot of the before_remove hook
+- The cleanup gate refuses new dispatch on both the poll and retry lanes for the round's issue id and workspace key, across a simulated restart; a completed round releases the gate
+- A cleanup round never hooks or removes while its running occupant is alive, and a reconcile-created round is confirmed quiesced by the worker exit on the same event-loop wake
+- The before_remove hook launches at most once per round: succeeded, non-zero-exit failed, timeout, and an interrupted marker from a crashed process never relaunch; only a pinned SSH host unreachable result (exit 255 with `SORTIE_SSH_HOST` set) retries the hook with exponential backoff
+- A partial tree removal records `failed` and retries only the removal stage, never the hook; an absent pinned path completes `already_gone` without recreating the directory; a symlink or non-directory pinned path records `unsafe` and leaves it for an operator
+- Startup recovery marks active rounds whose pinned path is absent as completed already_gone, adopts terminal disk directories with no active round as startup-source rounds, leaves non-terminal and in-flight directories alone, suppresses adoption when the tracker read fails, and treats a directory reappearing after a completed round as a new episode with a new row
 - The age bound removes a workspace whose latest recorded activity precedes the retention window, anchoring on the later of the recorded completion and the recorded push
 - A workspace with no parseable activity timestamp is retained regardless of age
 - A retention value of `0` or below the floor disables the age bound; a value between `1` and the floor is rejected at config parse time
@@ -109,7 +115,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - A reading of no state keeps the running agent and changes no snapshot or retry on its first consecutive reading and stops it without workspace cleanup on the second, a reading in a configured state between the two clears the first, and a run that ends before the second reading takes the exit disposition of its last configured state
 - Retry handling reschedules an issue that reads no state at the same attempt, keeping its session, continuation context, and reaction kind, releases the claim and deletes the retry entry on the second consecutive reading, and never resets the issue's hop record
 - An empty per-turn state refresh does not end the turn loop and leaves the last state read as the exit's observed state
-- Terminal state stops running agent and cleans workspace
+- Terminal state stops the running agent and pins a cleanup round that removes the workspace after the worker exits, with no hook run before quiescence and no new dispatch for the issue meanwhile
 - Reconciliation with no running issues is a no-op
 - An issue reported terminal releases its pending reaction entries, reaction attempt counters, pending retry, and claim, whether or not it has a running worker, leaving fingerprint rows intact
 - A failed tracker state refresh keeps workers running and releases nothing

@@ -32,11 +32,55 @@ function start_service():
   for entry in persisted_retries:
     state = reconstruct_retry_timer(state, entry)
 
-  startup_terminal_workspace_cleanup()
+  # Terminal cleanup rounds load before the first dispatch decision,
+  # then reconcile to disk, adopt terminal directories, and process once.
+  populate_cleanup_round_gate(load_all_workspace_cleanup_rounds())
+  recover_cleanup_rounds_and_process()
   schedule_tick(delay_ms=0)
 
   event_loop(state)
 ```
+
+### 16.1.1 Terminal Cleanup Round (per due active round)
+
+```text
+advance_cleanup_round(round):
+  # Stage 2: no hook or removal while an agent still occupies the path.
+  if round.quiesced_at == "":
+    if running_entry_exists(round.issue_id): return wait
+    persist(quiesced_at=now)
+
+  # The pinned path is the only directory ever inspected or removed.
+  verify(round.workspace_path well-formed and under round.workspace_root)
+  existence = lstat_without_following_symlinks(round.workspace_path)
+  if existence == absent:     return complete(already_gone)
+  if existence == unsafe:     persist(removal_state="unsafe"); backoff; return blocked
+
+  # Stage 3: before_remove, at most once per round.
+  switch round.hook_state:
+    pending | host_unreachable:
+      persist(hook_state="running", started_at=now, attempts++)  # before launch
+      outcome = run_pinned_before_remove_hook(round)
+      persist(hook_state=outcome, finished_at=now, exit_code, output)
+      if outcome == host_unreachable: backoff; return retry
+    running:                    # crash mid-hook
+      persist(hook_state="interrupted")   # never re-launch
+    succeeded | failed | timeout | interrupted | skipped:
+      pass                                 # confirmed; never re-launch
+
+  # Stage 4: remove and verify; failures retry only this stage.
+  existence = lstat(round.workspace_path)
+  if existence == absent:     return complete(already_gone)
+  if existence == unsafe:     persist(removal_state="unsafe"); backoff; return blocked
+  rm_error = remove_tree(round.workspace_path)
+  if lstat(round.workspace_path) == absent: return complete(removed)
+  persist(removal_state="failed", attempts++, last_error=rm_error); backoff
+```
+
+`host_unreachable` is classified only when the round pins a non-empty
+SSH host and the hook exits with OpenSSH's connection-failure status;
+every other non-success is a confirmed outcome and proceeds to removal
+without a second launch.
 
 ### 16.2 Poll-and-Dispatch Tick
 
@@ -54,6 +98,9 @@ on_tick(state):
   if state.sweep_tick_counter >= sweep_every_n_ticks:
     state.sweep_tick_counter = 0
     sweep_workspaces(state)
+
+  # Runs even when preflight failed: it reads only pinned round data.
+  process_due_cleanup_rounds(state)
 
   if validation is not ok:
     log_validation_error(validation)
@@ -122,7 +169,9 @@ function reconcile_running_issues(state):
       continue
     entry.no_state_observed = false
     if issue.state in terminal_states:
-      state = terminate_running_issue(state, issue.id, cleanup_workspace=true)
+      # Pins a cleanup round before releasing runtime state; the worker
+      # exit confirms quiescence and the round engine removes the tree.
+      state = terminate_running_issue(state, issue.id, pin_cleanup_round=true)
     else if issue.state in active_states:
       entry.issue = issue
     else:

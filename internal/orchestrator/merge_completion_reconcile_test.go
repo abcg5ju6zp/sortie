@@ -1578,15 +1578,18 @@ func TestReconcileMergeCompletion_SweepCollectsOnlyTheWrittenTerminalList(t *tes
 		mustMkdirSweep(t, filepath.Join(tmpDir, "PROJ-MGC-SWEEP-1"))
 		tracker := &sweepTracker{statesByKey: map[string]string{"PROJ-MGC-SWEEP-1": "done"}}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		rounds := newFakeRoundStore()
 
 		SweepWorkspaces(state, SweepWorkspacesParams{
 			WorkspaceRoot:  tmpDir,
 			TrackerAdapter: tracker,
 			TerminalStates: []string{"done"},
+			CleanupRounds:  rounds,
 			Ctx:            context.Background(),
 			Logger:         discardLogger(),
 			Metrics:        &domain.NoopMetrics{},
 		})
+		runSweepCleanupEngine(t, state, rounds, nil)
 
 		assertSweepDirRemoved(t, filepath.Join(tmpDir, "PROJ-MGC-SWEEP-1"))
 	})

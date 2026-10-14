@@ -3587,7 +3587,7 @@ If a hook needs additional secrets or environment values, arrange for them expli
 | `after_create`  | Workspace directory newly created | **Fatal** — aborts workspace creation. The partially-prepared directory may be removed.                     |
 | `before_run`    | Before each agent attempt         | **Fatal** — aborts the current run attempt. The orchestrator treats this as a worker failure and may retry. |
 | `after_run`     | After each agent attempt          | **Logged and ignored** — the run result is already determined.                                              |
-| `before_remove` | Before workspace deletion         | **Logged and ignored** — cleanup still proceeds.                                                            |
+| `before_remove` | Before workspace deletion         | **Logged and ignored** — cleanup still proceeds. Terminal cleanup runs the hook at most once per cleanup round: a non-zero exit, timeout, or a process interrupted mid-hook is recorded and never re-run (only an unreachable pinned `SORTIE_SSH_HOST` retries the hook); a half-removed workspace resumes without re-running the hook after a restart. |
 
 Timeouts are treated the same as failures for each hook's failure semantics.
 

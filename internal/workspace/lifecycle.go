@@ -3,10 +3,8 @@ package workspace
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/sortie-ai/sortie/internal/agent/procutil"
@@ -340,34 +338,9 @@ func Cleanup(ctx context.Context, params CleanupParams) error {
 	detachedCtx := context.WithoutCancel(ctx)
 	env := HookEnv(params.IssueID, params.Identifier, pathResult.Path, params.Attempt, params.SSHHost)
 
-	if params.BeforeRemove != "" {
-		logger.InfoContext(ctx, "running hook", slog.String("hook", "before_remove"), slog.String("workspace", pathResult.Path))
-		res, hookErr := RunHook(detachedCtx, HookParams{
-			Script:    params.BeforeRemove,
-			Dir:       pathResult.Path,
-			Env:       env,
-			TimeoutMS: params.HookTimeoutMS,
-		})
-		if hookErr != nil {
-			var he *HookError
-			errors.As(hookErr, &he)
-			attrs := []slog.Attr{slog.String("hook", "before_remove"), slog.String("workspace", pathResult.Path), slog.Any("error", hookErr)}
-			if he != nil && he.Output != "" {
-				attrs = append(attrs, slog.String("hook_output", he.Output))
-			}
-			logger.LogAttrs(ctx, slog.LevelWarn, "before_remove hook failed", attrs...)
-			if he != nil {
-				logHookLeftovers(ctx, logger, "before_remove", pathResult.Path, he.TerminatedLeftovers)
-			}
-		} else {
-			logHookLeftovers(ctx, logger, "before_remove", pathResult.Path, res.TerminatedLeftovers)
-			if res.Output != "" {
-				logger.DebugContext(ctx, "hook completed", slog.String("hook", "before_remove"), slog.String("workspace", pathResult.Path), slog.String("hook_output", res.Output))
-			}
-		}
-	}
+	runBeforeRemoveHook(detachedCtx, logger, pathResult.Path, env, params.BeforeRemove, params.HookTimeoutMS)
 
-	return os.RemoveAll(pathResult.Path)
+	return RemoveWorkspaceTree(pathResult.Path)
 }
 
 // CleanupByPathParams holds the inputs for workspace directory removal
@@ -418,18 +391,8 @@ type CleanupByPathParams struct {
 // Returns an error if the path is empty, not absolute, not in canonical
 // form, resolves to the filesystem root, or if directory removal fails.
 func CleanupByPath(ctx context.Context, params CleanupByPathParams) error {
-	if params.Path == "" {
-		return errors.New("workspace path must not be empty")
-	}
-	if !filepath.IsAbs(params.Path) {
-		return errors.New("workspace path must be absolute")
-	}
-	cleaned := filepath.Clean(params.Path)
-	if cleaned != params.Path {
-		return fmt.Errorf("workspace path must be in canonical form: got %q, cleaned to %q", params.Path, cleaned)
-	}
-	if cleaned == "/" {
-		return errors.New("refusing to remove filesystem root")
+	if err := verifyRemovablePath(params.Path); err != nil {
+		return err
 	}
 
 	_, statErr := os.Stat(params.Path)
@@ -445,34 +408,9 @@ func CleanupByPath(ctx context.Context, params CleanupByPathParams) error {
 	detachedCtx := context.WithoutCancel(ctx)
 	env := HookEnv(params.IssueID, params.Identifier, params.Path, params.Attempt, params.SSHHost)
 
-	if params.BeforeRemove != "" {
-		logger.InfoContext(ctx, "running hook", slog.String("hook", "before_remove"), slog.String("workspace", params.Path))
-		res, hookErr := RunHook(detachedCtx, HookParams{
-			Script:    params.BeforeRemove,
-			Dir:       params.Path,
-			Env:       env,
-			TimeoutMS: params.HookTimeoutMS,
-		})
-		if hookErr != nil {
-			var he *HookError
-			errors.As(hookErr, &he)
-			attrs := []slog.Attr{slog.String("hook", "before_remove"), slog.String("workspace", params.Path), slog.Any("error", hookErr)}
-			if he != nil && he.Output != "" {
-				attrs = append(attrs, slog.String("hook_output", he.Output))
-			}
-			logger.LogAttrs(ctx, slog.LevelWarn, "before_remove hook failed", attrs...)
-			if he != nil {
-				logHookLeftovers(ctx, logger, "before_remove", params.Path, he.TerminatedLeftovers)
-			}
-		} else {
-			logHookLeftovers(ctx, logger, "before_remove", params.Path, res.TerminatedLeftovers)
-			if res.Output != "" {
-				logger.DebugContext(ctx, "hook completed", slog.String("hook", "before_remove"), slog.String("workspace", params.Path), slog.String("hook_output", res.Output))
-			}
-		}
-	}
+	runBeforeRemoveHook(detachedCtx, logger, params.Path, env, params.BeforeRemove, params.HookTimeoutMS)
 
-	return os.RemoveAll(params.Path)
+	return RemoveWorkspaceTree(params.Path)
 }
 
 // CleanupTerminalParams holds the inputs for batch workspace removal

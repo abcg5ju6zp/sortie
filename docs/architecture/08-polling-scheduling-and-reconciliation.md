@@ -297,15 +297,34 @@ Part J: Merge completion reconciliation (when `reactions.merge_completion` is co
 
 ### 8.6 Startup Terminal Workspace Cleanup
 
-When Sortie starts:
+Terminal cleanup on startup is the recovery entry point of the
+resumable cleanup-round pipeline (section 9.1). Rounds are loaded from
+the database into the dispatch gate before the first dispatch decision
+is made. When Sortie starts it then:
 
-1. Enumerate workspace directories on disk.
-2. Map directory names back to issue identifiers.
-3. Query the tracker for the states of those specific issues.
-4. For each issue in a terminal state, remove the corresponding workspace directory.
-5. If the terminal-issues fetch fails, log a warning and continue startup.
+1. Loads every `workspace_cleanup_rounds` row into state.
+2. Reconciles each active round against its pinned disk path: a path
+   that no longer exists is recorded completed `already_gone` without
+   recreating the directory or re-running a hook; a path that is now a
+   symlink or a non-directory entry is parked as `unsafe` for an
+   operator and never touched; an existing directory stays with its
+   round.
+3. Enumerates workspace directories on disk, excluding in-flight work
+   (running, retry, pinned reactions) and keys an active round already
+   owns.
+4. Queries the tracker for the states of the remaining keys and adopts
+   each terminal one as a new quiesced round. A directory that
+   reappeared after a *completed* round is a new episode and is
+   evaluated normally; completed rows never suppress adoption.
+5. If the terminal-issues fetch fails, logs a warning and skips
+   adoption only: active rounds are still reconciled, and the next
+   sweep adopts whatever was missed.
+6. Runs the cleanup-round engine once, so startup cleanup completes
+   everything immediately finishable.
 
-This approach scopes the query to workspaces that actually exist on disk, avoiding expensive full-project terminal issue sweeps for large trackers.
+This scopes the query to workspaces that actually exist on disk,
+avoiding expensive full-project terminal issue sweeps for large
+trackers.
 
 ### 8.7 Periodic Workspace Sweep
 
@@ -330,6 +349,9 @@ sweep_workspaces(state, config):
   for entry in state.pending_reactions:
     if reaction_kind_pins_workspace(entry.kind):
       set_if_absent(exclusions, key_of(entry), "reaction")
+  for round in state.cleanup_rounds:
+    if round.status == active:
+      set_if_absent(exclusions, round.workspace_key, "cleanup_round")
 
   remaining = keys - exclusions.keys
   states = tracker.fetch_issue_states_by_identifiers(remaining)
@@ -339,15 +361,20 @@ sweep_workspaces(state, config):
   terminal_keys = [k for k in remaining if states[k] is known and terminal]
   age_keys      = remaining - terminal_keys
 
-  remove_workspaces(terminal_keys)      # the terminal gate
+  adopt_as_cleanup_rounds(terminal_keys)  # the terminal gate; engine, below, removes
   run_age_bound(age_keys, config.workspace.retention_days)
   emit_sweep_summary()
+
+# Every tick (and once at startup, and on every worker-exit wake), after
+# reconcile and the throttled sweep above:
+process_due_cleanup_rounds()    # gate -> quiesce -> hook (once) -> verified remove
 ```
 
 Rules that govern the pass:
 
-- The candidate set for a pass is every workspace key the listing returned. A key is excluded from evaluation before any tracker call when it belongs to a running entry, a scheduled retry, or a pending reaction entry whose kind pins its workspace. Exclusion precedence is running, then retry, then reaction, so a key present in more than one source is attributed to exactly one reason and the pass's outcome counters partition the candidate set (Section 13.1).
+- The candidate set for a pass is every workspace key the listing returned. A key is excluded from evaluation before any tracker call when it belongs to a running entry, a scheduled retry, a pending reaction entry whose kind pins its workspace, or an **active cleanup round**. Exclusion precedence is running, then retry, then reaction, then cleanup_round, so a key present in more than one source is attributed to exactly one reason and the pass's outcome counters partition the candidate set (Section 13.1).
 - A pending reaction entry pins its workspace only when its kind carries an expiry. A kind that polls an external fact indefinitely (§11F and §11G) does not pin, because pinning it would hold a workspace on disk for as long as that unbounded poll runs. A kind the orchestrator does not recognize pins, the non-destructive default.
-- The terminal gate removes every evaluated key the tracker reports in a terminal state. A key whose state the tracker does not report on is not removed by this gate.
+- The terminal gate adopts every evaluated key the tracker reports in a terminal state as a quiesced cleanup round (section 9.1), pinning the path it enumerated and the hook snapshot in force; it no longer removes directories inline. The cleanup-round engine, which runs after the sweep on the same tick, performs the at-most-once hook and the verified removal. A key whose state the tracker does not report is not adopted by this gate.
+- A key held by an active cleanup round is never evaluated by either gate, even if its tracker state is terminal again: the round is the single owner of that workspace until it records completion.
 - The age bound then evaluates whatever the terminal gate left, under the rules in Section 9.1. A failed tracker read leaves every evaluated key unclassified, so all of them reach the age bound rather than being skipped.
-- Each pass that produced a candidate set emits exactly one summary record, including a pass over zero keys and a pass that removed nothing (Section 13.1). A pass that could not list the workspace root emits no summary and removes nothing.
+- Each pass that produced a candidate set emits exactly one summary record, including a pass over zero keys and a pass that adopted/removed nothing (Section 13.1). A pass that could not list the workspace root emits no summary and removes nothing.

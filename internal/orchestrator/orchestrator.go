@@ -75,6 +75,13 @@ type OrchestratorStore interface {
 	DeleteStageHop(ctx context.Context, issueID string) error
 	ListStageHops(ctx context.Context) ([]persistence.StageHop, error)
 	RecordRunStageResult(ctx context.Context, runID int64, targetRule, result string) error
+
+	CreateCleanupRound(ctx context.Context, round persistence.CleanupRound) (persistence.CleanupRound, error)
+	SaveCleanupRound(ctx context.Context, round persistence.CleanupRound) error
+	GetActiveCleanupRoundByPath(ctx context.Context, path string) (*persistence.CleanupRound, error)
+	ListCleanupRounds(ctx context.Context, activeOnly bool) ([]persistence.CleanupRound, error)
+	CompleteCleanupRound(ctx context.Context, id int64, reason, completedAt string) error
+	LatestAgentRunByIdentifier(ctx context.Context, identifier string) (persistence.LatestDispatch, bool, error)
 }
 
 var _ OrchestratorStore = (*persistence.Store)(nil)
@@ -566,6 +573,7 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 			Logger:                            o.logger,
 			BeforeRemoveHook:                  cfg.Hooks.BeforeRemove,
 			HookTimeoutMS:                     cfg.Hooks.TimeoutMS,
+			CleanupRounds:                     o.store,
 			TrackerAdapter:                    o.trackerAdapter,
 			HandoffState:                      cfg.Tracker.HandoffState,
 			NoChangeState:                     cfg.Tracker.NoChangeState,
@@ -586,6 +594,16 @@ func (o *Orchestrator) handleWorkerExit(ctx context.Context, workerExit WorkerRe
 			MergeCompletionReactionConfigured: o.mergeCompletionReactionConfigured,
 		})
 	}
+	// Quiesced rounds finish their hook and tree removal on the same
+	// event-loop wake that removed their running entry.
+	ProcessCleanupRounds(ctx, o.state, ProcessCleanupRoundsParams{
+		Store:          o.store,
+		Ctx:            ctx,
+		Logger:         o.logger,
+		Metrics:        o.metrics,
+		PollIntervalMS: cfg.Polling.IntervalMS,
+		MaxBackoffMS:   cfg.Agent.MaxRetryBackoffMS,
+	})
 	o.updateGauges(time.Now())
 	o.notifyObservers()
 }
@@ -669,6 +687,7 @@ func (o *Orchestrator) Run(ctx context.Context) {
 				Metrics:                o.metrics,
 				HostPool:               o.hostPool,
 				WorkflowFile:           o.workflowFile(),
+				WorkspaceRoot:          cfg.Workspace.Root,
 			})
 			o.updateGauges(time.Now())
 			o.notifyObservers()
@@ -832,6 +851,9 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		MergeCompletionReactionConfigured: o.mergeCompletionReactionConfigured,
 		WorkspaceRoot:                     cfg.Workspace.Root,
 		CITriage:                          o.ciTriage,
+		CleanupRounds:                     o.store,
+		BeforeRemoveHook:                  cfg.Hooks.BeforeRemove,
+		HookTimeoutMS:                     cfg.Hooks.TimeoutMS,
 	})
 
 	// Sweep workspaces periodically to catch issues that transitioned after
@@ -847,11 +869,25 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 			HookTimeoutMS:    cfg.Hooks.TimeoutMS,
 			RetentionDays:    cfg.Workspace.RetentionDays,
 			Store:            o.store,
+			CleanupRounds:    o.store,
 			Ctx:              ctx,
 			Logger:           o.logger,
 			Metrics:          o.metrics,
 		})
 	}
+
+	// Advance due terminal cleanup rounds every tick after reconcile and
+	// sweep, so rounds adopted this pass can finish this pass. The engine
+	// reads only each round's pinned snapshot, so it runs even when
+	// dispatch preflight failed.
+	ProcessCleanupRounds(ctx, o.state, ProcessCleanupRoundsParams{
+		Store:          o.store,
+		Ctx:            ctx,
+		Logger:         o.logger,
+		Metrics:        o.metrics,
+		PollIntervalMS: cfg.Polling.IntervalMS,
+		MaxBackoffMS:   cfg.Agent.MaxRetryBackoffMS,
+	})
 
 	// On preflight failure, skip dispatch but still notify observers.
 	if !validation.OK() {
@@ -993,6 +1029,7 @@ func (o *Orchestrator) handleTick(ctx context.Context) {
 		})
 		DispatchIssue(dispatchCtx, o.state, issue, nil, host, o.makeWorkerFn("", host, resolution.AgentKind, resolution.TemplateID, "", adapter, attemptSettings))
 		if entry := o.state.Running[issue.ID]; entry != nil {
+			PinDispatchWorkspacePath(o.state, issue.ID, cfg.Workspace.Root, issue.Identifier)
 			entry.ContinuationContext = seed
 			entry.WorkflowFile = o.workflowFile()
 			entry.AgentKind = resolution.AgentKind
@@ -1825,6 +1862,7 @@ func (o *Orchestrator) drainRunningWorkers() {
 				Logger:                            o.logger,
 				BeforeRemoveHook:                  cfg.Hooks.BeforeRemove,
 				HookTimeoutMS:                     cfg.Hooks.TimeoutMS,
+				CleanupRounds:                     o.store,
 				TrackerAdapter:                    o.trackerAdapter,
 				HandoffState:                      cfg.Tracker.HandoffState,
 				NoChangeState:                     cfg.Tracker.NoChangeState,

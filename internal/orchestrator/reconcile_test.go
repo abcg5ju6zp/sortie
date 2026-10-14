@@ -1741,6 +1741,32 @@ func defaultSweepParams(t *testing.T, root string, tracker *sweepTracker) SweepW
 	}
 }
 
+// defaultSweepParamsWithRounds returns sweep params whose terminal gate
+// adopts workspaces into the given cleanup round store.
+func defaultSweepParamsWithRounds(t *testing.T, root string, tracker *sweepTracker, rounds CleanupRoundStore) SweepWorkspacesParams {
+	t.Helper()
+	p := defaultSweepParams(t, root, tracker)
+	p.CleanupRounds = rounds
+	return p
+}
+
+// runSweepCleanupEngine advances the rounds a sweep just adopted, the
+// way the poll tick does immediately after SweepWorkspaces.
+func runSweepCleanupEngine(t *testing.T, state *State, rounds CleanupRoundStore, metrics domain.Metrics) {
+	t.Helper()
+	if metrics == nil {
+		metrics = &domain.NoopMetrics{}
+	}
+	ProcessCleanupRounds(context.Background(), state, ProcessCleanupRoundsParams{
+		Store:          rounds,
+		Ctx:            context.Background(),
+		Logger:         discardLogger(),
+		Metrics:        metrics,
+		PollIntervalMS: 100,
+		MaxBackoffMS:   5000,
+	})
+}
+
 // mustMkdirSweep creates a directory under path or fatals the test.
 func mustMkdirSweep(t *testing.T, path string) {
 	t.Helper()
@@ -1868,8 +1894,10 @@ func TestSweepWorkspaces(t *testing.T) {
 		}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
 		state.Running["id1"] = &RunningEntry{Identifier: ""}
+		rounds := newFakeRoundStore()
 
-		SweepWorkspaces(state, defaultSweepParams(t, tmpDir, tracker))
+		SweepWorkspaces(state, defaultSweepParamsWithRounds(t, tmpDir, tracker, rounds))
+		runSweepCleanupEngine(t, state, rounds, nil)
 
 		if tracker.calledWith == nil {
 			t.Fatal("FetchIssueStatesByIdentifiers not called, want called with [PROJ-4]")
@@ -1895,8 +1923,10 @@ func TestSweepWorkspaces(t *testing.T) {
 		}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
 		state.Running["id5"] = &RunningEntry{Identifier: "PROJ-5"}
+		rounds := newFakeRoundStore()
 
-		SweepWorkspaces(state, defaultSweepParams(t, tmpDir, tracker))
+		SweepWorkspaces(state, defaultSweepParamsWithRounds(t, tmpDir, tracker, rounds))
+		runSweepCleanupEngine(t, state, rounds, nil)
 
 		assertSweepDirExists(t, filepath.Join(tmpDir, "PROJ-5"))
 		assertSweepDirRemoved(t, filepath.Join(tmpDir, "PROJ-6"))
@@ -1916,8 +1946,10 @@ func TestSweepWorkspaces(t *testing.T) {
 			},
 		}
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
+		rounds := newFakeRoundStore()
 
-		SweepWorkspaces(state, defaultSweepParams(t, tmpDir, tracker))
+		SweepWorkspaces(state, defaultSweepParamsWithRounds(t, tmpDir, tracker, rounds))
+		runSweepCleanupEngine(t, state, rounds, nil)
 
 		assertSweepDirRemoved(t, filepath.Join(tmpDir, "PROJ-7"))
 		assertSweepDirExists(t, filepath.Join(tmpDir, "PROJ-8"))
@@ -1968,7 +2000,8 @@ func TestSweepWorkspaces(t *testing.T) {
 		state := NewState(5000, 4, 0, nil, AgentTotals{})
 
 		spy := &spyMetrics{}
-		params := defaultSweepParams(t, tmpDir, tracker)
+		rounds := newFakeRoundStore()
+		params := defaultSweepParamsWithRounds(t, tmpDir, tracker, rounds)
 		params.Metrics = spy
 
 		SweepWorkspaces(state, params)
@@ -1986,6 +2019,7 @@ func TestSweepWorkspaces(t *testing.T) {
 		if sweepCount != 1 {
 			t.Errorf("IncReconciliationActions(%q) called %d times, want 1", actionSweepCleanup, sweepCount)
 		}
+		runSweepCleanupEngine(t, state, rounds, spy)
 		assertSweepDirRemoved(t, filepath.Join(tmpDir, "PROJ-10"))
 	})
 }
@@ -2436,12 +2470,14 @@ func TestSweepWorkspaces_TerminalAndOldCountedOnceUnderTerminal(t *testing.T) {
 	tracker := &sweepTracker{statesByKey: map[string]string{"PROJ-BOTH": "Done"}}
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
 	handler := &sweepLogHandler{}
-	params := defaultSweepParams(t, tmpDir, tracker)
+	rounds := newFakeRoundStore()
+	params := defaultSweepParamsWithRounds(t, tmpDir, tracker, rounds)
 	params.RetentionDays = config.WorkspaceRetentionMinDays
 	params.Store = &sweepStoreDouble{}
 	params.Logger = slog.New(handler)
 
 	SweepWorkspaces(state, params)
+	runSweepCleanupEngine(t, state, rounds, nil)
 
 	assertSweepDirRemoved(t, wsPath)
 	rec, _ := handler.findByMessage("sweep: pass complete")
@@ -2804,12 +2840,14 @@ func TestSweepWorkspaces_MetricsRecordBothMechanismsInSamePass(t *testing.T) {
 	tracker := &sweepTracker{statesByKey: map[string]string{"PROJ-METRIC-TERM": "Done"}}
 	state := NewState(5000, 4, 0, nil, AgentTotals{})
 	spy := &spyMetrics{}
-	params := defaultSweepParams(t, tmpDir, tracker)
+	rounds := newFakeRoundStore()
+	params := defaultSweepParamsWithRounds(t, tmpDir, tracker, rounds)
 	params.Metrics = spy
 	params.RetentionDays = config.WorkspaceRetentionMinDays
 	params.Store = &sweepStoreDouble{}
 
 	SweepWorkspaces(state, params)
+	runSweepCleanupEngine(t, state, rounds, spy)
 
 	assertSweepDirRemoved(t, terminalWsPath)
 	assertSweepDirRemoved(t, ageWsPath)

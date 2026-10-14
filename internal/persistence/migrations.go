@@ -92,6 +92,9 @@ var migration026SQL string
 //go:embed sql/027_dispatch_context.sql
 var migration027SQL string
 
+//go:embed sql/028_workspace_cleanup_rounds.sql
+var migration028SQL string
+
 var migrations = []Migration{
 	{Version: 1, Description: "core persistence tables", SQL: migration001SQL},
 	{Version: 2, Description: "extended token metrics", SQL: migration002SQL},
@@ -120,4 +123,5 @@ var migrations = []Migration{
 	{Version: 25, Description: "issue identity on retry entries and run history", SQL: migration025SQL},
 	{Version: 26, Description: "retry trigger and parked issue identity", SQL: migration026SQL},
 	{Version: 27, Description: "dispatch context on retry entries, run history, and stage hops", SQL: migration027SQL},
+	{Version: 28, Description: "resumable cleanup rounds for terminal-state workspaces", SQL: migration028SQL},
 }

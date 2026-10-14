@@ -17,10 +17,62 @@ Workspace persistence:
 
 Workspace cleanup runs through the following mechanisms, ordered and non-overlapping in intent:
 
-- **The terminal gate** is the primary mechanism. It is always on and unconditional: whenever the tracker reports an issue's state as a member of `tracker.terminal_states`, the workspace for that issue is removed, whether that gate fires from startup cleanup, active-run reconciliation, or the periodic sweep.
+- **The terminal gate** is the primary mechanism, implemented as a durable **cleanup round** per terminal workspace. It is always on and unconditional in ordering: whenever the tracker reports an issue's state as a member of `tracker.terminal_states`, a round is created for that workspace, whether that observation arrives through startup recovery, active-run reconciliation, worker exit, or the periodic sweep. The round itself performs the at-most-once hook and the verified tree removal (see "Cleanup rounds" below).
 - **The age bound** is a backstop for the population the terminal gate can never reach: an issue parked in the workflow's handoff state with no external automation advancing it, an issue left active after a permanent failure, an issue moved to a state the configuration does not name, or an issue deleted from the tracker entirely. It is opt-in and off by default, configured by `workspace.retention_days`, and evaluated only by the periodic sweep. A workspace is removable by age when its latest recorded activity is older than the configured window. That activity is anchored on the later of two timestamps: the most recent `completed_at` recorded in the run history for the workspace's identifier, and the `pushed_at` value recorded in the workspace's `.sortie/scm.json`. A workspace with neither a parseable completion nor a parseable recorded push is retained regardless of how long it has sat on disk: absence of a record is absence of evidence, not evidence of age.
 
 The age bound never fires on a workspace the terminal gate would have removed on the same pass, because the terminal check runs first. It applies only to the periodic sweep, not to startup cleanup or active-run reconciliation; see the polling and reconciliation material for why.
+
+#### Cleanup rounds
+
+A cleanup round is a SQLite row (`workspace_cleanup_rounds`,
+migration 028) created once per terminal episode and driven by a
+single-writer engine that runs on every poll tick, once at startup,
+and on the event-loop wake where a terminal worker exited. Its columns
+record both the facts pinned at creation and the independently
+confirmable stages.
+
+Pinned facts are immutable for the round's life: the **actual path**
+(the running worker's prepared path, else the enumerated or
+run-recorded path, never a path reconstructed from current config),
+the workspace key and the root derived as the path's directory, the
+issue identity, the last dispatch facts (dispatch id, attempt, agent
+kind, SSH host, dispatch time, run-history run id when available), the
+terminal state name and its observation source
+(`reconcile`/`worker_exit`/`sweep`/`startup`), and a snapshot of the
+`before_remove` script and its timeout. A later `workspace.root` or
+hooks hot-reload affects only rounds created afterward; an existing
+round keeps its own directory and script.
+
+Stages run in this order; every stage is persisted before its side
+effect is attempted, so a crash resumes without repeating a confirmed
+stage:
+
+1. **Gate (dispatch blocked)**. The round's existence refuses new
+   dispatch for its issue ID or workspace key on both the poll and
+   retry lanes, across restarts.
+2. **Quiesce**. Hook and removal do not start until no running entry
+   occupies the directory. A reconcile-created round for a live worker
+   waits for that worker's exit; sweep/startup/non-running
+   observations are quiesced immediately.
+3. **before_remove, at most once**. A "hook started" marker is written
+   before launch; the recorded result is `succeeded`, `failed` (a local
+   launch failure or non-zero exit), `timeout`, `interrupted` (a
+   started marker left without a result by a process death),
+   `host_unreachable`, or `skipped` when no hook is configured (see
+   9.4 for the retry rule).
+4. **Tree removal, verified**. The pinned path is re-verified
+   (well-formed, inside the pinned root, an existing non-symlink
+   directory; Invariant 9), removed, and re-stat-ed. A path already
+   absent completes `already_gone` without creating a directory or
+   running a hook. A path that still exists, or became a symlink or
+   non-directory, records `failed`/`unsafe` with the error and an
+   attempt count and retries on exponential backoff; a confirmed hook
+   stage is never re-run for these.
+
+A completed row is retained as the fact the path was cleaned. A
+directory that reappears under the same path after completion is a new
+episode: it gets a new round when terminal again. The age-bound
+removal remains a separate direct path and is not rounded.
 
 ### 9.2 Workspace Creation and Reuse
 
@@ -77,7 +129,7 @@ Failure semantics:
 - `after_create` failure or timeout is fatal to workspace creation.
 - `before_run` failure or timeout is fatal to the current run attempt.
 - `after_run` failure or timeout is logged and ignored.
-- `before_remove` failure or timeout is logged and ignored.
+- `before_remove` failure or timeout is logged and ignored as a removal gate: the cleanup round still verifies and removes the tree. Within a cleanup round the result is classified durably: `failed` (non-zero exit or local launch error), `timeout`, `interrupted` (the process died after the hook-start marker was written), `succeeded`, or `host_unreachable`. The hook is launched **at most once** for the round on every result except `host_unreachable`: a failed, timed-out, or interrupted hook demonstrably ran (or may have run to completion), so re-running a destructive script is forbidden; `host_unreachable` (the pinned `SORTIE_SSH_HOST` is non-empty and the hook exited with OpenSSH's connection-failure status 255) means the script never reached its host, so it is retried on exponential backoff. Tree-removal failures (`failed`/`unsafe`) retry only the removal stage, never the hook.
 
 Hook environment variables available to all hooks:
 
@@ -197,7 +249,7 @@ Invariant 3: Workspace key is sanitized.
 - Only `[A-Za-z0-9._-]` allowed in workspace directory names.
 - Replace all other characters with `_`.
 
-Invariant 4: A workspace key held by an entry in the running map or the retry map is never a sweep candidate, whatever its age, and so is removed by neither the terminal gate nor the age bound on that pass. These exclusions are absolute; the age bound does not weaken them.
+Invariant 4: A workspace key held by an entry in the running map, the retry map, a workspace-pinning pending reaction entry, or an active cleanup round is never a sweep candidate, whatever its age, and so is removed by neither the terminal gate nor the age bound on that pass. These exclusions are absolute; the age bound does not weaken them. The cleanup-round exclusion additionally keeps the sweep from touching a directory a round is already processing between ticks or across a restart.
 
 Invariant 4a: A workspace key held by a pending reaction entry is a sweep candidate unless that entry's kind carries an expiry. A kind whose pending entry is bounded by a TTL pins its workspace for as long as the entry lives; a kind that polls an external fact for an unbounded time does not, because pinning it would hold the directory for as long as that poll runs. A reaction kind the orchestrator does not recognize pins, so an unclassified kind fails toward retention rather than removal. A kind that does not pin MUST NOT depend on the workspace directory surviving between its own polls. A kind whose pending entry is configured with an unbounded watch window (`watch_window_ms: 0`) still pins its workspace for as long as the entry lives; the entry's own terminal-state release remains the exit that ends the pin. Pinning stays keyed on kind, not on the configured value.
 
